@@ -14,6 +14,14 @@ let refreshRequested = false;
 let authRevision = 0;
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
+function readDemoToken(token: string) {
+  const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}');
+  const link = links[token], expiresAt = new Date(link?.expiresAt ?? '').getTime();
+  if (!link || !Number.isFinite(expiresAt) || Date.now() >= expiresAt) throw new Error('Tautan tidak berlaku atau sudah kedaluwarsa. Hubungi HR.');
+  const employee = get(app).employees.find(e => e.id === link.employeeId);
+  if (!employee || employee.status !== 'active') throw new Error('Akun karyawan tidak aktif. Hubungi HR.');
+  return { links, link, employee };
+}
 const user = () => { const u = get(app).user; if (!u || u.status !== 'active') throw new Error('Silakan masuk dengan akun aktif.'); return u; };
 export const isAdmin = (employee: Employee | undefined | null = get(app).user) => employee?.roles.includes('admin_hr') ?? false;
 export const isApprover = (employee: Employee | undefined | null = get(app).user) => hasApproverAccess(employee, get(app).employees);
@@ -169,7 +177,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { await supabase.auth.signOut(); app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
+  async logout() { if (supabase) { const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && e.status === 'active'); if (!employee) throw new Error('Akun contoh tidak ditemukan.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
@@ -226,6 +234,7 @@ export const actions = {
   async issueLink(employeeId: string, purpose: 'activate' | 'reset') {
     requireAdmin(); if (configured) { const result = await edge(purpose === 'activate' ? 'issue_activation' : 'issue_reset', { employee_id: employeeId }); await refresh(); return { url: result.url, message: result.message, expiresAt: result.expires_at }; }
     const employee = get(app).employees.find(e => e.id === employeeId); if (!employee) throw new Error('Karyawan tidak ditemukan.');
+    if (employee.status !== 'active') throw new Error('Akun karyawan tidak aktif. Hubungi HR.');
     const token = id() + id(), expiresAt = new Date(Date.now() + 86400000).toISOString();
     const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}');
     for (const key of Object.keys(links)) if (links[key].employeeId === employeeId && links[key].purpose === purpose) delete links[key];
@@ -236,15 +245,19 @@ export const actions = {
   },
   async inspectToken(token: string) {
     if (configured) return edge('inspect_token', { token });
-    const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}'), link = links[token];
-    if (!link || Date.now() >= new Date(link.expiresAt).getTime()) throw new Error('Tautan tidak berlaku atau sudah kedaluwarsa. Hubungi HR.');
-    const employee = get(app).employees.find(e => e.id === link.employeeId)!; return { purpose: link.purpose, employee_number: employee.employeeNumber, full_name: employee.fullName, expires_at: link.expiresAt };
+    const { link, employee } = readDemoToken(token);
+    return { purpose: link.purpose, employee_number: employee.employeeNumber, full_name: employee.fullName, expires_at: link.expiresAt };
   },
   async activate(token: string, password: string, purpose = 'activate') {
-    if (password.length < 10) throw new Error('Kata sandi minimal 10 karakter.');
+    if (password.length < 10 || password.length > 128) throw new Error('Kata sandi harus 10–128 karakter.');
     if (configured) return edge(purpose === 'reset' ? 'reset_password' : 'activate', { token, password });
-    await actions.inspectToken(token); const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}'); const link = links[token];
-    const passwords=JSON.parse(localStorage.getItem('rk-demo-passwords')??'{}'),salt=id();passwords[link.employeeId]={salt,hash:await demoPasswordHash(password,salt)};localStorage.setItem('rk-demo-passwords',JSON.stringify(passwords));
+    const inspected = readDemoToken(token);
+    if (inspected.link.purpose !== purpose) throw new Error('Jenis tautan tidak sesuai.');
+    const salt = id(), hash = await demoPasswordHash(password, salt);
+    // Hashing yields control: recheck that the employee and token still permit activation.
+    const { links, link } = readDemoToken(token);
+    if (link.purpose !== purpose || link.employeeId !== inspected.employee.id) throw new Error('Jenis tautan tidak sesuai.');
+    const passwords=JSON.parse(localStorage.getItem('rk-demo-passwords')??'{}');passwords[link.employeeId]={salt,hash};localStorage.setItem('rk-demo-passwords',JSON.stringify(passwords));
     commit(s => { s.employees.find(e => e.id === link.employeeId)!.accountStatus = 'active'; }, 'account_activated', link.employeeId); delete links[token]; localStorage.setItem('rk-demo-links', JSON.stringify(links));
     return { ok: true, employee_number: get(app).employees.find(e => e.id === link.employeeId)!.employeeNumber };
   },

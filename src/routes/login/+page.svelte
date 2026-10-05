@@ -1,8 +1,13 @@
 <script lang="ts">
   import { app, actions } from '#lib/state/app';
-  import { goto } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/state';
   import Icon from '#lib/components/Icon.svelte';
   let number = '', password = '', busy = false, error = '';
+  afterNavigate(() => {
+    const suggestedNumber = page.state.employeeNumber;
+    if (suggestedNumber && /^RK\d{6,}$/.test(suggestedNumber)) number = suggestedNumber;
+  });
   $: if ($app.initialized && $app.user) void goto('/dashboard', { replaceState:true });
   async function login() { busy=true;error='';try{await actions.login(number,password);await goto('/dashboard');}catch(e){error=e instanceof Error?e.message:'Belum berhasil masuk.';}finally{busy=false;} }
   async function demo(employeeId:string) { busy=true;try{await actions.switchDemoUser(employeeId);await goto('/dashboard');}finally{busy=false;} }

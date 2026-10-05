@@ -22,6 +22,8 @@ Buka URL lokal yang ditampilkan terminal. Biarkan kedua nilai `.env` kosong untu
 
 Nama, outlet, lokasi, dan permohonan dalam demo semuanya fiktif. GPS masih diperiksa terhadap koordinat outlet contoh. Ubah titik outlet melalui Organisasi saat mencoba dari lokasi sendiri. Demo tidak mengunggah selfie ke Supabase; pratinjau selfie lokal tidak bertahan setelah reload. Tautan aktivasi/pemulihan demo hanya bekerja pada browser yang sama; penggunaan nyata di perangkat karyawan memerlukan mode live.
 
+Ikuti [uji pendaftaran lokal](docs/local-pilot.md) untuk mencoba alur HR → undangan → aktivasi → login karyawan. Tombol **Masuk dengan akun ini** setelah aktivasi/pemulihan mengakhiri sesi sebelumnya dan mengisi nomor karyawan pada halaman masuk; kata sandi tetap harus dimasukkan sendiri.
+
 ## Konfigurasi frontend live
 
 Isi hanya kunci **publik** di `.env` dan pada environment build hosting:
