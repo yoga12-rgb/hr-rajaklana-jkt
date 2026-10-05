@@ -13,9 +13,10 @@
     ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }] : []),
     { href:'/leave',label:'Cuti & izin',icon:'calendar' },
     ...(admin ? [{ href:'/employees',label:'Karyawan',icon:'users' },{ href:'/organization',label:'Organisasi',icon:'building' },{ href:'/reports',label:'Rekap & riwayat',icon:'chart' }] : []),
-    { href:'/profile',label:'Profil saya',icon:'user' }
+    { href:'/profile',label:'Profil saya',icon:'user' },
+    { href:'/guide',label:'Panduan',icon:'file' }
   ];
-  $: mobileNav = nav.filter(n => !['/organization','/reports'].includes(n.href));
+  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide'].includes(n.href));
   $: if ($app.initialized && !$app.user) void goto('/login', { replaceState:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };
@@ -24,6 +25,7 @@
   async function install() { await installEvent?.prompt(); installEvent = null; }
   async function logout() { await actions.logout(); await goto('/login'); }
 </script>
+<svelte:head><title>{pathname === '/guide' ? 'Panduan penggunaan & ketentuan · Rajaklana HR' : 'Rajaklana HR · Jabodetabek'}</title></svelte:head>
 {#if !$app.initialized}<div class="loading"><img src="/icon.svg" alt=""/><p>Menyiapkan ruang kerja Anda…</p></div>{:else if $app.user}
 <div class="shell">
   <aside class="sidebar">
