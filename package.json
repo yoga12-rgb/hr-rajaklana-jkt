@@ -1,0 +1,36 @@
+{
+  "name": "rajaklana-hr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#lib/state/*": "./src/lib/state/*.ts",
+    "#lib/types": "./src/lib/types.ts",
+    "#lib/domain": "./src/lib/domain.ts",
+    "#lib/components/format": "./src/lib/components/format.ts",
+    "#lib/components/*": "./src/lib/components/*"
+  },
+  "scripts": {
+    "dev": "vite dev --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "@sveltejs/kit": "3.0.0",
+    "svelte": "5.57.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@sveltejs/adapter-static": "4.0.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/node": "^26.6.4",
+    "svelte-check": "^4.0.0",
+    "typescript": "^6.0.0",
+    "vite": "8.3.2",
+    "vitest": "^4.0.0"
+  }
+}

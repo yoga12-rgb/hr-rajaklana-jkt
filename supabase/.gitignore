@@ -1,0 +1,5 @@
+.verification/
+.temp/
+.branches/
+.env*
+!.env.example
