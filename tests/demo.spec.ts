@@ -225,7 +225,7 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByText('Pembatalan menunggu keputusan', { exact: true })).toBeVisible();
     await switchUser(page, 'employee-1');
     await openRequest(page, reason, true);
-    await page.getByRole('dialog').getByRole('button', { name: 'Setujui perubahan', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Setujui pembatalan', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await switchUser(page, 'employee-4');
     await expectBalance(page, 12);

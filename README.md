@@ -24,6 +24,8 @@ Nama, outlet, lokasi, dan permohonan dalam demo semuanya fiktif. GPS masih diper
 
 Ikuti [uji pendaftaran lokal](docs/local-pilot.md) untuk mencoba alur HR → undangan → aktivasi → login karyawan. Tombol **Masuk dengan akun ini** setelah aktivasi/pemulihan mengakhiri sesi sebelumnya dan mengisi nomor karyawan pada halaman masuk; kata sandi tetap harus dimasukkan sendiri.
 
+Setelah data siap, ikuti [uji operasional lokal](docs/operational-pilot.md) untuk clock in/out kasir, cuti, izin beberapa jam, dan keputusan atasan. Demo mengikuti validasi periode izin, pembatalan tanggal lampau, serta pembulatan keterlambatan backend. Durasi 8 jam sudah termasuk istirahat; clock out lebih awal tetap dicatat untuk ditinjau HR.
+
 ## Konfigurasi frontend live
 
 Isi hanya kunci **publik** di `.env` dan pada environment build hosting:

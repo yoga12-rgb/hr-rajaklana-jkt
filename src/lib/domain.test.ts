@@ -22,6 +22,8 @@ describe('Absensi kasir', () => {
     expect(attendanceTiming('2026-10-03T00:05:00Z', 'morning', outlet).lateMinutes).toBe(0);
     expect(attendanceTiming('2026-10-03T00:12:00Z', 'morning', outlet).lateMinutes).toBe(12);
     expect(attendanceTiming('2026-10-03T08:10:00Z', 'afternoon', outlet).lateMinutes).toBe(10);
+    expect(attendanceTiming('2026-10-03T00:05:01Z', 'morning', outlet).lateMinutes).toBe(6);
+    expect(attendanceTiming('2026-10-03T00:00:01Z', 'morning', { ...outlet, lateToleranceMinutes: 0 }).lateMinutes).toBe(1);
   });
   it('middle tidak diberi keterlambatan buatan', () => expect(attendanceTiming('2026-10-03T04:30:00Z', 'middle', outlet)).toEqual({ scheduledStart: null, lateMinutes: 0 }));
   it('jarak lokasi masuk/outlet benar', () => {

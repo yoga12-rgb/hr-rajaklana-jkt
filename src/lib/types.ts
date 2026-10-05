@@ -20,6 +20,7 @@ export interface Employee {
 export interface LeaveAdjustment {
   id: string; type: 'change' | 'cancel'; startDate?: string; endDate?: string;
   reason: string; status: 'pending' | 'approved' | 'rejected'; requestedAt: string;
+  note?: string; decidedAt?: string; deciderName?: string;
 }
 export interface LeaveRequest {
   id: string; employeeId: string; type: 'annual' | 'personal' | 'sick'; startDate: string; endDate: string;

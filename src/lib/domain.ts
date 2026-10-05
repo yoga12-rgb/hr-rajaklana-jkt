@@ -28,7 +28,7 @@ export function attendanceTiming(clockIn: string, shift: Shift, outlet: Outlet):
   const time = shift === 'morning' ? outlet.morningStart : outlet.afternoonStart;
   const scheduledStart = new Date(`${jakartaDate(clockIn)}T${time}:00+07:00`).toISOString();
   const delta = (new Date(clockIn).getTime() - new Date(scheduledStart).getTime()) / 60000;
-  return { scheduledStart, lateMinutes: delta > outlet.lateToleranceMinutes ? Math.max(0, Math.floor(delta)) : 0 };
+  return { scheduledStart, lateMinutes: delta > outlet.lateToleranceMinutes ? Math.max(0, Math.ceil(delta)) : 0 };
 }
 export function dateRange(start: string, end: string): string[] {
   const a = new Date(`${start}T00:00:00Z`), b = new Date(`${end}T00:00:00Z`);
