@@ -46,7 +46,7 @@
     </main>
   </div>
 </div>
-<nav class="bottom-nav" aria-label="Navigasi ponsel">{#each mobileNav as item}<a class:active={pathname.startsWith(item.href)} href={item.href}><Icon name={item.icon} size={21}/><span>{item.label==='Cuti & izin'?'Pengajuan':item.label==='Profil saya'?'Profil':item.label}</span></a>{/each}</nav>
+<nav class="bottom-nav" aria-label="Navigasi ponsel">{#each mobileNav as item (item.href)}<a class:active={pathname.startsWith(item.href)} aria-current={pathname.startsWith(item.href) ? 'page' : undefined} href={item.href}><Icon name={item.icon} size={21}/><span>{item.label==='Cuti & izin'?'Pengajuan':item.label==='Profil saya'?'Profil':item.label}</span></a>{/each}</nav>
 {/if}
 <style>
 .shell { display: flex; min-height: 100dvh; }
@@ -102,9 +102,11 @@ main { max-width: 1320px; margin: auto; padding: 27px 42px 0; }
   .sidebar { display: none; } .main-area { margin-left: 0; } .topbar { height: 68px; padding: 0 20px; } .breadcrumb { font-size: 10px; gap: 8px; } .topbar-right { gap: 12px; } .account > span:not(.avatar) { display: none; } .connection { font-size: 9px; }
   main { padding: 22px 18px calc(110px + env(safe-area-inset-bottom)); }
   .demo-strip { font-size: 9px; padding: 10px 12px; margin-bottom: 24px; align-items: flex-start; } .demo-strip > span { flex-wrap: wrap; gap: 4px; } .demo-strip a { font-size: 0; } .demo-strip a :global(svg) { width: 16px; height: 16px; }
-  .bottom-nav { display: flex; position: fixed; bottom: calc(10px + env(safe-area-inset-bottom)); left: 12px; right: 12px; z-index: 30; background: #f6f1e3f5; backdrop-filter: blur(14px); border: 1px solid var(--panel-border); box-shadow: 4px 4px 12px #c6bc9b80, -4px -4px 10px #ffffffb0; border-radius: 22px; padding: 9px 7px; justify-content: space-around; }
-  .bottom-nav a { display: flex; align-items: center; flex-direction: column; gap: 5px; min-width: 48px; min-height: 48px; font-size: 9px; color: var(--muted); padding: 7px 6px; border-radius: 14px; }
-  .bottom-nav a.active { color: var(--accent); background: var(--surface); box-shadow: var(--inset); font-weight: 700; }
+  .bottom-nav { display: flex; position: fixed; bottom: calc(10px + env(safe-area-inset-bottom)); left: 12px; right: 12px; z-index: 30; background: #f6f1e3f5; backdrop-filter: blur(14px); border: 1px solid var(--panel-border); box-shadow: 4px 4px 12px #c6bc9b80, -4px -4px 10px #ffffffb0; border-radius: 22px; padding: 9px 7px; }
+  .bottom-nav a { display: flex; flex: 1 1 0; align-items: center; justify-content: center; flex-direction: column; gap: 5px; min-width: 0; min-height: 52px; font-size: 9px; font-weight: 600; line-height: 12px; color: var(--muted); padding: 7px 4px; border-radius: 14px; transition: color .18s ease, background-color .18s ease, box-shadow .18s ease; }
+  .bottom-nav a :global(svg) { display: block; width: 21px; height: 21px; flex: 0 0 21px; }
+  .bottom-nav a > span { white-space: nowrap; }
+  .bottom-nav a.active { color: var(--accent); background: var(--surface); box-shadow: var(--inset); }
   .footer > span:last-child { display: none; }
 }
 </style>
