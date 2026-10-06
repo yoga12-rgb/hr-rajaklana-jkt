@@ -140,11 +140,11 @@
   .tabs button.active { color: var(--accent); background: var(--surface); border-bottom-color: transparent; box-shadow: var(--inset); font-weight: 600; }
   .tabs span { color: var(--accent); background: #ebe2c4; }
   .request:hover { background: #f1ead4; }
-  .request-symbol { background: var(--surface); color: var(--accent); border-color: #ffffff9c; box-shadow: var(--raised-sm); border-radius: 14px; }
+  .request-symbol { background: var(--surface); color: var(--accent); border-color: var(--panel-border); box-shadow: var(--raised-sm); border-radius: 14px; }
   .request-info h3, .details dd, .review-form h3, .info-box strong { color: var(--ink); }
   .adjustment-tag { background: #ede2c8; color: #79591f; border-radius: 7px; }
-  .info-box { background: var(--surface); color: #6a5f3c; border: 1px solid #ffffff9c; box-shadow: var(--inset); border-radius: 14px; }
-  .adjustment-box { background: var(--surface-cream); border-color: #d8ccae; border-radius: 14px; box-shadow: inset 3px 3px 7px #d6cfba80, inset -3px -3px 7px #ffffff; }
+  .info-box { background: var(--surface); color: #6a5f3c; border: 1px solid var(--panel-border); box-shadow: var(--inset); border-radius: 14px; }
+  .adjustment-box { background: var(--surface-cream); border-color: var(--panel-border); border-radius: 14px; box-shadow: var(--inset); }
   .adjustment-box strong, .adjustment-box p { color: #765a23; }
   .adjustment-note { white-space: pre-wrap; }
   @media (max-width: 600px) { .tabs { gap: .15rem; } .tabs button { padding: .6rem .45rem; } .list-heading { padding: .4rem .65rem; } }

@@ -32,7 +32,7 @@
 .one { width: 570px; height: 570px; right: -350px; bottom: -90px; }
 .two { width: 420px; height: 420px; right: -270px; bottom: -15px; box-shadow: inset 10px 10px 25px #d0aa35, inset -10px -10px 25px #ffde6b; }
 .form-section { display: flex; align-items: center; justify-content: center; padding: 60px 40px; background: var(--surface); }
-.form-card { width: min(440px, 100%); background: var(--surface); border: 1px solid #ffffffb0; border-radius: 28px; padding: 34px; box-shadow: 12px 12px 28px #e7dbb6, -12px -12px 28px #ffffff; }
+.form-card { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--panel-border); border-radius: 28px; padding: 34px; box-shadow: var(--raised); }
 .welcome { font-size: 9px; letter-spacing: 1.7px; color: var(--muted); }
 .form-card h2 { font-size: 27px; font-weight: 700; margin: 15px 0; }
 .form-card > p { font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 30px; }
@@ -40,7 +40,7 @@
 .form-card form > .btn { margin-top: 5px; justify-content: space-between; padding: 14px 17px; }
 .forgot { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 11px; line-height: 1.7; margin: 18px 0 28px; }
 .forgot :global(svg) { flex-shrink: 0; margin-top: 2px; }
-.demo { border: 1px solid #ffffff8c; background: var(--surface); padding: 18px; border-radius: 17px; box-shadow: var(--inset); }
+.demo { border: 1px solid var(--panel-border); background: var(--surface); padding: 18px; border-radius: 17px; box-shadow: var(--inset); }
 .demo strong { font-size: 12px; }
 .demo p { font-size: 11px; line-height: 1.7; color: var(--muted); margin: 7px 0 13px; }
 .demo-buttons { display: flex; gap: 9px; flex-wrap: wrap; }

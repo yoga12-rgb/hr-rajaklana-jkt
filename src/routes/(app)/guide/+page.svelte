@@ -152,7 +152,7 @@
   .guide-section a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
   .guide-section p { margin-bottom: 14px; }
   .guide-section p:last-child { margin-bottom: 0; }
-  .guide-section .rule { border: 1px solid #ffffff9c; box-shadow: var(--inset); padding: 15px 17px; border-radius: 14px; color: #655b39; }
+  .guide-section .rule { border: 1px solid var(--panel-border); box-shadow: var(--inset); padding: 15px 17px; border-radius: 14px; color: #655b39; }
   .guide-section .hint { font-size: 12px; color: var(--muted); }
   .shift-table { border: 1px solid var(--border); border-radius: 13px; overflow: hidden; margin: 18px 0; }
   table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }

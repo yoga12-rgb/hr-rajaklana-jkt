@@ -48,6 +48,6 @@ h1 { font-size: 25px; margin: 18px 0; }
 p { font-size: 13px; line-height: 1.8; color: var(--muted); }
 form { display: flex; flex-direction: column; gap: 18px; }
 .foot { font-size: 10px; margin: 25px 0; }
-.notice { background: var(--surface); box-shadow: var(--inset); border: 1px solid #ffffff8c; padding: 13px; border-radius: 12px; font-size: 11px; margin: 16px 0; }
+.notice { background: var(--surface); box-shadow: var(--inset); border: 1px solid var(--panel-border); padding: 13px; border-radius: 12px; font-size: 11px; margin: 16px 0; }
 @media (max-width: 600px) { .panel { padding: 24px; } }
 </style>
