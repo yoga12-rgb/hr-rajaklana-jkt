@@ -1,8 +1,7 @@
-// Run: npm install --prefix supabase/.verification --no-save --no-package-lock @electric-sql/pglite
-//      node supabase/tests/database.mjs
+// Run: npm ci && npm run test:database
 // PGlite executes actual Postgres functions/RLS. Only Supabase-owned auth/storage
 // plumbing is mocked; production migrations themselves are not rewritten on disk.
-import { PGlite } from '../.verification/node_modules/@electric-sql/pglite/dist/index.js';
+import { PGlite } from '@electric-sql/pglite';
 import { readFile, readdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 

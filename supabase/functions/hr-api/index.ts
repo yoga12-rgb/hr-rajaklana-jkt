@@ -1,11 +1,13 @@
-import { createClient } from 'npm:@supabase/supabase-js@2';
+import { createClient } from 'npm:@supabase/supabase-js@2.117.2';
+import { corsHeaders } from 'npm:@supabase/supabase-js@2.117.2/cors';
+import { configureOrigins, guardOriginRequest } from './origins.ts';
 
 // Service credentials never leave this worker. Public actions have narrow inputs;
 // admin actions additionally use getUser and the database's role checks.
 const url = Deno.env.get('SUPABASE_URL')!;
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-const origin = Deno.env.get('APP_ORIGIN');
+const origins = configureOrigins(Deno.env.get('APP_ORIGIN'), Deno.env.get('APP_ALLOWED_ORIGINS'));
 const options = { auth: { persistSession: false, autoRefreshToken: false } };
 const admin = createClient(url, serviceKey, options);
 const passwordClient = () => createClient(url, anonKey, options);
@@ -53,25 +55,13 @@ async function authenticated(req: Request) {
   return createClient(url, anonKey, { ...options, global: { headers: { Authorization: `Bearer ${jwt}` } } });
 }
 function baseOrigin() {
-  if (!origin) throw new ApiError('APP_ORIGIN belum dikonfigurasi', 503);
-  const parsed = new URL(origin);
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(parsed.hostname))) {
-    throw new ApiError('APP_ORIGIN harus menggunakan HTTPS', 503);
-  }
-  return parsed.origin;
-}
-function cors(req: Request): Headers {
-  const headers = new Headers({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Vary': 'Origin' });
-  const requestOrigin = req.headers.get('Origin');
-  if (requestOrigin && requestOrigin === origin) headers.set('Access-Control-Allow-Origin', requestOrigin);
-  headers.set('Access-Control-Allow-Headers', 'authorization, apikey, content-type, x-client-info');
-  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  return headers;
+  if (!origins.policy) throw new ApiError(origins.error, 503);
+  return origins.policy.appOrigin;
 }
 
 Deno.serve(async (req: Request) => {
-  const headers = cors(req);
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+  const { headers, response } = guardOriginRequest(req, origins, corsHeaders['Access-Control-Allow-Headers']);
+  if (response) return response;
   if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers });
   let body: Record<string, unknown>;
   try {

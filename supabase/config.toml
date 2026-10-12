@@ -28,5 +28,9 @@ enable_confirmations = true
 enabled = true
 file_size_limit = "5MiB"
 
+# Photo/document buckets use ordinary Storage on the Free plan.
+[storage.vector]
+enabled = false
+
 [functions.hr-api]
 verify_jwt = false

@@ -1,0 +1,21 @@
+# Upload only the frontend's build inputs. Local credentials and verification
+# artifacts remain outside the Vercel deployment source bundle.
+.git/
+.github/
+.vercel/
+.svelte-kit/
+node_modules/
+build/
+docs/
+tests/
+supabase/.verification/
+supabase/.temp/
+supabase/tests/
+supabase/deployment/
+playwright-report/
+test-results/
+coverage/
+src/**/*.test.ts
+.env
+.env.*
+*.log

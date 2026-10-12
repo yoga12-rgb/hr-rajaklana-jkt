@@ -5,6 +5,8 @@
   import { app, actions, isAdmin, isCashier } from '#lib/state/app';
   import Icon from '#lib/components/Icon.svelte';
   import { onMount } from 'svelte';
+  import { validateApplicationEnvironment } from '../../lib/configuration';
+  const applicationEnvironment = validateApplicationEnvironment(import.meta.env.PUBLIC_APP_ENV);
   let installEvent: (Event & { prompt(): Promise<void> }) | null = null;
   $: admin = isAdmin($app.user);
   $: cashier = isCashier($app.user);
@@ -38,6 +40,7 @@
   <div class="main-area">
     <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={!$app.connected}><span></span>{$app.connected?'Terhubung':'Offline'}</span><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
+      {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
       {#if $app.mode==='demo'}<div class="demo-strip"><span><Icon name="info" size={15}/><strong>Mode demo</strong> · Data contoh tersimpan di browser ini.</span><a href="/profile">Ganti akun contoh <Icon name="arrow-right" size={13}/></a></div>{/if}
       {#if !$app.connected}<div class="error">Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.</div>{/if}
       {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" on:click={()=>actions.refresh()}>Coba lagi</button></div>{/if}
@@ -89,6 +92,10 @@
 .account small { display: block; font-size: 9px; color: var(--muted); margin-top: 4px; }
 main { max-width: 1320px; margin: auto; padding: 27px 42px 0; }
 .demo-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 10px; color: #71653f; border: 1px solid var(--panel-border); background: var(--surface); box-shadow: var(--inset); border-radius: 12px; padding: 11px 14px; margin-bottom: 27px; }
+.preview-strip { display: flex; align-items: center; gap: 11px; padding: 13px 15px; margin-bottom: 22px; border: 1px solid var(--panel-border); border-left: 4px solid var(--primary); border-radius: 12px; background: var(--surface-cream); color: var(--accent); box-shadow: var(--inset); }
+.preview-strip :global(svg) { flex-shrink: 0; }
+.preview-strip strong { display: block; font-size: 12px; }
+.preview-strip span { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
 .demo-strip > span, .demo-strip a { display: flex; align-items: center; gap: 6px; }
 .demo-strip strong { font-weight: 600; }
 .demo-strip a { font-weight: 600; color: var(--accent); flex-shrink: 0; }

@@ -1,3 +1,34 @@
+export type ApplicationEnvironment = 'production' | 'preview' | 'development';
+
+export function validateApplicationEnvironment(value = '', fallback: ApplicationEnvironment = 'development'): ApplicationEnvironment {
+  const environment = value.trim() || fallback;
+  if (environment === 'production' || environment === 'preview' || environment === 'development') return environment;
+  throw new Error('PUBLIC_APP_ENV harus production, preview, atau development.');
+}
+
+/** Guards hosted builds without exposing configuration or credential values. */
+export function validateDeploymentConfiguration(
+  env: Record<string, string | undefined>,
+  platform: { hosted?: boolean; environment?: string } = {}
+) {
+  const platformEnvironment = validateApplicationEnvironment(platform.environment);
+  const environment = validateApplicationEnvironment(env.PUBLIC_APP_ENV, platform.hosted ? platformEnvironment : 'development');
+  if (platform.hosted && environment !== platformEnvironment) {
+    throw new Error('PUBLIC_APP_ENV tidak sesuai dengan environment deployment Vercel. Periksa konfigurasi Production dan Preview.');
+  }
+  const supabase = validatePublicSupabaseConfiguration(env.PUBLIC_SUPABASE_URL, env.PUBLIC_SUPABASE_ANON_KEY);
+  if ((platform.hosted || environment !== 'development') && supabase.mode === 'demo') {
+    throw new Error('Deployment memerlukan PUBLIC_SUPABASE_URL dan PUBLIC_SUPABASE_ANON_KEY. Mode demo hanya untuk pengembangan lokal.');
+  }
+  if (platform.hosted && supabase.mode === 'live') {
+    const url = new URL(supabase.url);
+    if (url.protocol !== 'https:' || url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\./.test(url.hostname)) {
+      throw new Error('Deployment hosted harus menggunakan proyek Supabase HTTPS yang dapat diakses melalui internet.');
+    }
+  }
+  return { environment, supabase };
+}
+
 /** Validates public build settings without including their values in errors. */
 export function validatePublicSupabaseConfiguration(urlValue = '', keyValue = '') {
   const url = urlValue.trim(), key = keyValue.trim();

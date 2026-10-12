@@ -4,13 +4,17 @@ Aplikasi HR dengan SvelteKit + TypeScript, navigasi SPA dan PWA. Cakupan awal: d
 
 ## Status
 
-Frontend dapat dijalankan dalam **mode demo berlabel jelas** ketika konfigurasi publik Supabase kosong. Data contoh disimpan pada browser ini saja; bukan data perusahaan, bukan backend operasional, dan tidak disinkronkan antar perangkat. Belum ada proyek Supabase hosted yang terhubung atau website produksi yang dipublikasikan dari repositori ini.
+Frontend dapat dijalankan dalam **mode demo lokal berlabel jelas** ketika konfigurasi publik Supabase kosong. Data contoh disimpan pada browser ini saja; bukan data perusahaan, bukan backend operasional, dan tidak disinkronkan antar perangkat.
 
-Mode live sudah memiliki jalur integrasi, migrasi, RLS, bucket privat, RPC transaksi, dan Edge Function. Jalur tersebut harus diuji pada proyek Supabase nyata sebelum produksi. Demo tidak membuktikan keamanan RLS, pengiriman realtime antar perangkat, atau kamera/GPS ponsel nyata.
+Pada penyiapan 12 Oktober 2026, backend hosted telah disiapkan terpisah pada Supabase Free: Production `iywvnopsooroediwawnd` dan Preview `lypsqrwjzrmuyqtdcegr`. Enam migrasi diterapkan pada keduanya dan Edge Function `hr-api` aktif dengan source yang sama. Domain utama Vercel `hr-rajaklana-jkt.vercel.app` telah ditetapkan; rilis frontend belum terverifikasi READY dan alias Preview `hr-rajaklana-jkt-preview.vercel.app` masih menunggu verifikasi. Admin HR pertama belum dibuat; pengguna perlu memilih password sendiri melalui `/setup` setelah frontend siap. Lihat [status dan konfigurasi lingkungan](docs/deployment-environments.md).
+
+Kedua lingkungan hanya untuk uji coba dengan data fiktif. Login/aktivasi, hak akses, foto privat, realtime antar perangkat, serta kamera/GPS ponsel harus diuji melalui layanan hosted sebelum pemakaian operasional. Tidak ada upgrade berbayar otomatis.
 
 ## Jalankan lokal
 
 Gunakan Node.js LTS modern (22.12 atau lebih baru) dan npm. Pada Windows gunakan `npm.cmd` bila PowerShell memblokir wrapper `.ps1`.
+
+CI dan deployment menggunakan Node.js 24.
 
 ```powershell
 npm.cmd ci
@@ -39,43 +43,45 @@ Isi hanya kunci **publik** di `.env` dan pada environment build hosting:
 ```dotenv
 PUBLIC_SUPABASE_URL=https://PROJECT_REF.supabase.co
 PUBLIC_SUPABASE_ANON_KEY=PUBLIC_ANON_OR_PUBLISHABLE_KEY
+PUBLIC_APP_ENV=production
 ```
 
 File `.env` diabaikan Git. Jangan memasukkan `service_role`, secret key, password database, atau bootstrap secret pada variabel `PUBLIC_*`, frontend, tangkapan layar, atau Git. Restart dev server/rebuild sesudah mengubah environment. Konfigurasi salah harus menghasilkan pesan kegagalan, bukan beralih ke data demo seolah login berhasil.
 
-Dev server dan build memeriksa pasangan URL/kunci terlebih dahulu. Konfigurasi yang hanya terisi sebagian, URL yang tidak sesuai, serta secret/service role key ditolak tanpa mencetak nilainya. Mode demo hanya berjalan ketika kedua nilai kosong. Validasi bentuk ini bukan pemeriksaan koneksi ke proyek hosted. [Jenis kunci Supabase](https://supabase.com/docs/guides/getting-started/api-keys).
+Dev server dan build memeriksa pasangan URL/kunci terlebih dahulu. Konfigurasi yang hanya terisi sebagian, URL yang tidak sesuai, serta secret/service role key ditolak tanpa mencetak nilainya. Mode demo hanya berjalan di lingkungan lokal (`PUBLIC_APP_ENV=development`) ketika kedua nilai kosong. Build hosted Production/Preview harus memiliki konfigurasi Supabase yang lengkap. Validasi bentuk ini bukan pemeriksaan koneksi ke proyek hosted. [Jenis kunci Supabase](https://supabase.com/docs/guides/getting-started/api-keys).
 
 Pada Beranda Admin HR, **Persiapan tim** merangkum outlet yang lokasi absensinya belum lengkap, akun karyawan yang belum aktif, dan atasan pengajuan yang belum siap. Tautan mengarah ke Organisasi atau Karyawan untuk dilengkapi. Ringkasan ini membantu penyiapan data; pengujian layanan live dan perangkat tetap diperlukan sebelum pemakaian outlet.
 
 ## Siapkan Supabase
 
-Proyek hosted memerlukan akses pemilik proyek. Perintah di bawah adalah panduan setup dan belum dijalankan ke layanan hosted.
+Backend hosted untuk kedua lingkungan telah disiapkan. Langkah di bawah adalah referensi penyiapan/rilis untuk operator; pilih project reference yang benar sebelum menjalankan perintah dan jangan membuat ulang proyek yang sudah tersedia.
 
-1. Buat proyek Supabase dan catat project reference serta URL/kunci publik.
+1. Gunakan proyek Production atau Preview pada [daftar lingkungan](docs/deployment-environments.md), dan catat URL/kunci publik yang sesuai.
 2. Login CLI, tautkan proyek yang benar, dan pratinjau migrasi sebelum menerapkan.
 
 ```powershell
-npx.cmd supabase login
-npx.cmd supabase link --project-ref PROJECT_REF
-npx.cmd supabase db push --dry-run
-npx.cmd supabase db push
+npx.cmd supabase@2.111.0 login
+npx.cmd supabase@2.111.0 link --project-ref PROJECT_REF
+npx.cmd supabase@2.111.0 db push --dry-run
+npx.cmd supabase@2.111.0 db push
 ```
 
-Migrasi diterapkan menurut urutan nama di `supabase/migrations`. Migrasi menyiapkan organisasi awal, tabel HR, fungsi transaksi, audit, RLS, token akun, serta bucket privat. Pada proyek yang telah memiliki data, tinjau SQL dan siapkan backup dahulu. [Referensi resmi migrasi Supabase](https://supabase.com/docs/reference/cli/supabase-db-push).
+Migrasi diterapkan menurut urutan nama di `supabase/migrations`. Migrasi menyiapkan organisasi awal, tabel HR, fungsi transaksi, audit, RLS, token akun, serta bucket privat. Enam migrasi saat ini telah diterapkan dan riwayat versinya sesuai repositori. Pengguna telah menyetujui penghapusan 13 tabel aplikasi lama beserta datanya pada Production; Auth/Storage dan dua akun Auth lama dipertahankan. Proses ini tidak membuat arsip data lama dan bukan langkah deploy rutin. Perubahan berikutnya harus ditinjau pada Preview terlebih dahulu. [Referensi resmi migrasi Supabase](https://supabase.com/docs/reference/cli/supabase-db-push).
 
 3. Pada Auth settings matikan public signup; minimum password 10 karakter. Set Site URL ke origin frontend HTTPS. Tidak perlu SMTP untuk aktivasi melalui WhatsApp karena akun dibuat server dan kata sandi diatur melalui token aplikasi.
 4. Siapkan secret **server Edge Function** pada berkas lokal yang diabaikan Git, misalnya `.env.hr-api`:
 
 ```dotenv
 APP_ORIGIN=https://DOMAIN_APLIKASI
+APP_ALLOWED_ORIGINS=
 HR_BOOTSTRAP_SECRET=RANDOM_SECRET_AT_LEAST_32_CHARACTERS
 ```
 
-`SUPABASE_URL`, `SUPABASE_ANON_KEY`, dan `SUPABASE_SERVICE_ROLE_KEY` tersedia pada lingkungan hosted Edge Function. `APP_ORIGIN` harus persis origin frontend, tanpa slash di akhir. Untuk lokal boleh `http://127.0.0.1:5173`. Bootstrap secret dibuat acak, digunakan sementara, dan disimpan server saja.
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, dan `SUPABASE_SERVICE_ROLE_KEY` tersedia pada lingkungan hosted Edge Function. `APP_ORIGIN` adalah origin frontend utama dan tujuan tautan akun. `APP_ALLOWED_ORIGINS` opsional berisi origin tambahan yang eksplisit, dipisahkan koma; tidak menerima wildcard atau URL dengan path. Untuk lokal boleh `http://127.0.0.1:5173`. Bootstrap secret dibuat acak, digunakan sementara, dan disimpan server saja. Berkas kode bootstrap lokal tiap lingkungan dijelaskan di [panduan deployment](docs/deployment-environments.md); jangan memasukkan nilainya ke Git atau frontend.
 
 ```powershell
-npx.cmd supabase secrets set --env-file .env.hr-api
-npx.cmd supabase functions deploy hr-api --no-verify-jwt
+npx.cmd supabase@2.111.0 secrets set --env-file .env.hr-api
+npx.cmd supabase@2.111.0 functions deploy hr-api --no-verify-jwt
 ```
 
 Verifier platform dinonaktifkan karena fungsi mendukung login/aktivasi publik. Aksi administrasi tetap memverifikasi token pengguna dan otorisasi database secara eksplisit. [Panduan resmi deployment Edge Functions](https://supabase.com/docs/guides/functions/deploy).
@@ -96,13 +102,15 @@ Verifier platform dinonaktifkan karena fungsi mendukung login/aktivasi publik. A
 Respons mengembalikan nomor karyawan untuk login. Endpoint hanya bekerja sebelum Admin HR pertama tersedia. Sesudah berhasil, hapus bootstrap secret dari server dan berkas lokal:
 
 ```powershell
-npx.cmd supabase secrets unset HR_BOOTSTRAP_SECRET
+npx.cmd supabase@2.111.0 secrets unset HR_BOOTSTRAP_SECRET
 ```
 
 6. Login admin, lengkapi koordinat/jam/radius outlet, tambah karyawan, pilih atasan, dan beri hak Admin HR kepada supervisor yang ditunjuk. Outlet bootstrap sengaja belum memiliki koordinat; absensi tidak akan berhasil sampai diatur.
 7. Periksa publication `supabase_realtime` untuk tabel yang digunakan dan uji bahwa akun lain mendapat perubahan sesuai hak aksesnya. Jangan menjadikan bucket selfie publik.
 
 Untuk backend lokal (Docker dan Supabase CLI dibutuhkan), gunakan `supabase start`, `supabase db reset`, kemudian `supabase functions serve hr-api --env-file .env.hr-api`. `db reset` menghapus database lokal dan tidak boleh digunakan sebagai langkah biasa pada database berisi data penting.
+
+Vector Storage secara eksplisit dimatikan pada `supabase/config.toml` agar config push tetap sesuai paket Free. Selfie dan dokumen memakai Storage biasa; tidak ada layanan berbayar yang diaktifkan.
 
 ## Build dan hosting
 
@@ -113,7 +121,9 @@ npm.cmd run build
 npm.cmd run preview
 ```
 
-Build statis berada di `build/` dengan fallback SPA `200.html`. `vercel.json` menyiapkan rewrite dan header. Pada Vercel gunakan build command `npm run build`, output directory `build`, serta kedua public environment variables di atas.
+Build statis berada di `build/` dengan fallback SPA `200.html`. `vercel.json` menyiapkan rewrite dan header. Pada Vercel gunakan build command `npm run build`, output directory `build`, Node.js 24, serta public environment variables di atas.
+
+Pemisahan branch, database, akun, foto, konfigurasi server, dan langkah bootstrap dijelaskan di [Production dan Preview](docs/deployment-environments.md). CI pada `.github/workflows/ci.yml` menjalankan instalasi terkunci, pemeriksaan Svelte/TypeScript, unit test, tes database PGlite, 13 fixture penggantian schema lama, dan build tanpa akses layanan hosted. CI ini belum menjadi gate deployment Vercel; Git integration dan hasil deployment perlu diverifikasi terpisah.
 
 **Vercel Hobby dibatasi untuk penggunaan pribadi nonkomersial.** Operasional HR perusahaan perlu paket atau penyedia hosting yang sesuai. Kode statis ini dapat dipasang pada hosting HTTPS lain yang mendukung fallback SPA. [Ketentuan Vercel Hobby](https://vercel.com/docs/plans/hobby).
 
@@ -124,6 +134,8 @@ Supabase Free dapat dipakai untuk memulai pengujian dengan memantau kapasitas da
 ```powershell
 npm.cmd run check
 npm.cmd test
+npm.cmd run test:database
+npm.cmd run test:database:legacy
 npm.cmd run build
 npm.cmd run test:e2e
 ```
@@ -140,7 +152,7 @@ npm.cmd run test:e2e
 
 E2E hanya berjalan pada mode demo yang terlihat; setiap test mendapat konteks browser terpisah. Izin geolokasi dan stream kamera dari canvas bertanda `TEST CAMERA ONLY` **hanya untuk pengujian** dan tidak menjadi jalan pintas pada aplikasi. Uji mencakup navigasi mobile/desktop, master data dinamis, karyawan, persetujuan/perubahan/pembatalan saldo, larangan persetujuan sendiri, validasi GPS/selfie clock in/out, catatan manual HR, reset kata sandi satu kali pakai, serta manifest/cache/offline PWA pada build produksi. Tetap uji kamera, GPS, dan PWA pada ponsel nyata sebelum pemakaian outlet.
 
-Uji migrasi dan RLS terpisah tersedia di `supabase/tests/database.mjs` menggunakan PGlite. Harness meniru plumbing Auth/Storage Supabase dan menjalankan SQL migrasi asli. Ini bukan pengganti uji Auth, Storage, dan Edge Function pada proyek hosted.
+Uji migrasi dan RLS terpisah tersedia melalui `npm run test:database` menggunakan PGlite yang terpasang dari lockfile. Harness meniru plumbing Auth/Storage Supabase dan menjalankan SQL migrasi asli di memori; tidak membutuhkan folder `supabase/.verification`, Docker, atau kredensial hosting. Ini bukan pengganti uji Auth, Storage, dan Edge Function pada proyek hosted.
 
 ## Operasional dan privasi
 
