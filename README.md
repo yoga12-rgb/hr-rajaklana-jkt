@@ -6,7 +6,9 @@ Aplikasi HR dengan SvelteKit + TypeScript, navigasi SPA dan PWA. Cakupan awal: d
 
 Frontend dapat dijalankan dalam **mode demo lokal berlabel jelas** ketika konfigurasi publik Supabase kosong. Data contoh disimpan pada browser ini saja; bukan data perusahaan, bukan backend operasional, dan tidak disinkronkan antar perangkat.
 
-Pada penyiapan 12 Oktober 2026, backend hosted telah disiapkan terpisah pada Supabase Free: Production `iywvnopsooroediwawnd` dan Preview `lypsqrwjzrmuyqtdcegr`. Enam migrasi diterapkan pada keduanya dan Edge Function `hr-api` aktif dengan source yang sama. Domain utama Vercel `hr-rajaklana-jkt.vercel.app` telah ditetapkan; rilis frontend belum terverifikasi READY dan alias Preview `hr-rajaklana-jkt-preview.vercel.app` masih menunggu verifikasi. Admin HR pertama belum dibuat; pengguna perlu memilih password sendiri melalui `/setup` setelah frontend siap. Lihat [status dan konfigurasi lingkungan](docs/deployment-environments.md).
+Deployment Production dan Preview telah berstatus **READY** pada 12 Oktober 2026: [Production](https://hr-rajaklana-jkt.vercel.app) dan [Preview](https://hr-rajaklana-jkt-preview.vercel.app). Preview tetap memakai proteksi akses Vercel. Keduanya dibangun dari commit `2f4f96a` dan terhubung ke proyek Supabase Free yang terpisah: Production `iywvnopsooroediwawnd`, Preview `lypsqrwjzrmuyqtdcegr`. Enam migrasi diterapkan pada keduanya dan Edge Function `hr-api` aktif dengan source yang sama. Admin HR pertama belum dibuat; pengguna perlu memasukkan kode bootstrap privat dan memilih password sendiri melalui `/setup`. Lihat [konfigurasi lingkungan](docs/deployment-environments.md) dan [hasil verifikasi hosted](docs/hosted-verification.md).
+
+Deployment saat ini dibuat melalui CLI. **Git integration Vercel belum terhubung**, sehingga push GitHub belum menerbitkan aplikasi otomatis. Pengguna telah menyetujui koneksi Git, tetapi Vercel menolak penautan dengan HTTP 400 karena akun integrasi belum memiliki akses admin/write ke repositori. Pemilik perlu menghubungkan akun GitHub yang berhak dan mengizinkan Vercel GitHub App mengakses repositori melalui pengaturan Git proyek. GitHub Actions memeriksa kode tanpa menjalankan deployment atau migrasi hosted.
 
 Kedua lingkungan hanya untuk uji coba dengan data fiktif. Login/aktivasi, hak akses, foto privat, realtime antar perangkat, serta kamera/GPS ponsel harus diuji melalui layanan hosted sebelum pemakaian operasional. Tidak ada upgrade berbayar otomatis.
 
@@ -86,7 +88,7 @@ npx.cmd supabase@2.111.0 functions deploy hr-api --no-verify-jwt
 
 Verifier platform dinonaktifkan karena fungsi mendukung login/aktivasi publik. Aksi administrasi tetap memverifikasi token pengguna dan otorisasi database secara eksplisit. [Panduan resmi deployment Edge Functions](https://supabase.com/docs/guides/functions/deploy).
 
-5. Buka `/setup` pada frontend yang sudah terhubung Supabase. Isi nama admin, WhatsApp, nama outlet pertama, kode pengaturan awal (`HR_BOOTSTRAP_SECRET`), dan kata sandi pribadi. Halaman ini hanya dapat membuat admin pertama. Alternatif untuk operator teknis: POST ke `https://PROJECT_REF.supabase.co/functions/v1/hr-api`, header `apikey: PUBLIC_ANON_OR_PUBLISHABLE_KEY` dan `Content-Type: application/json`. Body:
+5. Buka `/setup` pada frontend yang sudah terhubung Supabase. Isi enam kolom: nama lengkap, nomor WhatsApp, nama outlet pertama, kode pengaturan awal (`HR_BOOTSTRAP_SECRET`), kata sandi akun, dan konfirmasi kata sandi. Pilih kata sandi pribadi sendiri, minimal 10 karakter. Halaman ini hanya dapat membuat admin pertama. Alternatif untuk operator teknis: POST ke `https://PROJECT_REF.supabase.co/functions/v1/hr-api`, header `apikey: PUBLIC_ANON_OR_PUBLISHABLE_KEY` dan `Content-Type: application/json`. Body:
 
 ```json
 {
@@ -121,9 +123,9 @@ npm.cmd run build
 npm.cmd run preview
 ```
 
-Build statis berada di `build/` dengan fallback SPA `200.html`. `vercel.json` menyiapkan rewrite dan header. Pada Vercel gunakan build command `npm run build`, output directory `build`, Node.js 24, serta public environment variables di atas.
+Build statis berada di `build/` dengan fallback SPA `200.html`. `vercel.json` menyiapkan rewrite dan header. Konfigurasi build Vercel memakai `npm run check && npm run build`, output directory `build`, Node.js 24, serta public environment variables di atas.
 
-Pemisahan branch, database, akun, foto, konfigurasi server, dan langkah bootstrap dijelaskan di [Production dan Preview](docs/deployment-environments.md). CI pada `.github/workflows/ci.yml` menjalankan instalasi terkunci, pemeriksaan Svelte/TypeScript, unit test, tes database PGlite, 13 fixture penggantian schema lama, dan build tanpa akses layanan hosted. CI ini belum menjadi gate deployment Vercel; Git integration dan hasil deployment perlu diverifikasi terpisah.
+Pemisahan branch, database, akun, foto, konfigurasi server, dan langkah bootstrap dijelaskan di [Production dan Preview](docs/deployment-environments.md). CI pada `.github/workflows/ci.yml` menjalankan instalasi terkunci, pemeriksaan Svelte/TypeScript, unit test, tes database PGlite, 13 fixture penggantian schema lama, dan build tanpa akses layanan hosted. CI ini belum menjadi gate deployment Vercel. Deployment melalui CLI dilakukan terpisah; integrasi Git Vercel belum terhubung.
 
 **Vercel Hobby dibatasi untuk penggunaan pribadi nonkomersial.** Operasional HR perusahaan perlu paket atau penyedia hosting yang sesuai. Kode statis ini dapat dipasang pada hosting HTTPS lain yang mendukung fallback SPA. [Ketentuan Vercel Hobby](https://vercel.com/docs/plans/hobby).
 
