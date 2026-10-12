@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { actions, app } from './state/app';
+import { actions, app, attendanceOutlet } from './state/app';
 import { initialDemo } from './state/demo';
 import type { ClockInInput, ClockOutInput } from './types';
 
@@ -46,6 +46,7 @@ describe('Pencatatan absensi kasir lokal', () => {
       inLatitude: coordinates.latitude, inLongitude: coordinates.longitude,
       inAccuracy: 10, inDistance: 0, selfieUrl: 'blob:selfie-uji', corrected: false
     });
+    expect(record.outletSnapshot).toEqual({ morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0, latitude: coordinates.latitude, longitude: coordinates.longitude, radiusMeters: 100 });
     expect(state.auditEntries[0]).toMatchObject({ actorId: 'employee-4', action: 'clock_in', entityId: record.id });
     // Foto demo hanya hidup pada sesi browser; data URL tidak dipersistenkan.
     expect(localStorage.getItem('rajaklana-hr-demo-v1')).not.toContain('blob:selfie-uji');
@@ -145,6 +146,43 @@ describe('Pencatatan absensi kasir lokal', () => {
     expect(get(app).leaveLedger).toHaveLength(0);
   });
 
+  it('clock out lintas tengah malam memakai lokasi/radius awal meskipun outlet berubah', async () => {
+    vi.setSystemTime(new Date('2026-10-06T16:30:00Z'));
+    await actions.clockIn(input({ shift: 'middle' }));
+    app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, latitude: -6.3, longitude: 106.9, radiusMeters: 20 } : outlet) }));
+    const record = get(app).attendanceRecords[0], current = get(app).outlets.find(outlet => outlet.id === record.outletId)!;
+    expect(attendanceOutlet(record,current)).toMatchObject({ latitude: coordinates.latitude, longitude: coordinates.longitude, radiusMeters: 100 });
+    vi.setSystemTime(new Date('2026-10-07T00:30:00Z'));
+    const original = structuredClone(get(app));
+    await expect(actions.clockOut({ ...coordinates, latitude: -6.3, longitude: 106.9 })).rejects.toThrow('Radius yang diizinkan');
+    expect(get(app)).toEqual(original);
+    await actions.clockOut(coordinates);
+    expect(get(app).attendanceRecords[0]).toMatchObject({ clockOut: '2026-10-07T00:30:00.000Z', durationMinutes: 480, outDistance: 0 });
+  });
+
+  it('catatan lokal lama tanpa snapshot tetap dapat clock out memakai outlet tersedia', async () => {
+    await actions.clockIn(input());
+    app.update(state => ({ ...state, attendanceRecords: state.attendanceRecords.map(({ outletSnapshot, ...record }) => record) }));
+    const record = get(app).attendanceRecords[0], outlet = get(app).outlets[0];
+    expect(attendanceOutlet(record,outlet)).toEqual(outlet);
+    vi.setSystemTime(new Date('2026-10-06T08:10:00Z'));
+    await actions.clockOut(coordinates);
+    expect(get(app).attendanceRecords[0].durationMinutes).toBe(480);
+  });
+
+  it('tetap dapat menyelesaikan sesi setelah outlet dinonaktifkan, tetapi clock in baru ditolak', async () => {
+    await actions.clockIn(input());
+    app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, active: false, latitude: null, longitude: null } : outlet) }));
+    const record = get(app).attendanceRecords[0], outlet = get(app).outlets[0];
+    expect(attendanceOutlet(record,outlet)).toMatchObject({ active: false, latitude: coordinates.latitude, longitude: coordinates.longitude });
+    vi.setSystemTime(new Date('2026-10-06T08:10:00Z'));
+    await actions.clockOut(coordinates);
+    expect(get(app).attendanceRecords[0]).toMatchObject({ durationMinutes: 480, outDistance: 0 });
+    vi.setSystemTime(new Date('2026-10-07T00:10:00Z'));
+    await expect(actions.clockIn(input())).rejects.toThrow('Outlet tidak aktif');
+    expect(get(app).attendanceRecords).toHaveLength(1);
+  });
+
   it('menolak absensi offline dan clock out tanpa sesi', async () => {
     await expect(actions.clockOut(coordinates)).rejects.toThrow('Tidak ada sesi kerja aktif');
     vi.stubGlobal('navigator', { onLine: false });
@@ -192,7 +230,7 @@ describe('Koreksi absensi oleh HR', () => {
     const recordId = await prepareRecord(), originalState = get(app);
     const valid = { clockIn: '2026-10-06T00:05:00Z', clockOut: '2026-10-06T08:05:00Z', reason: 'Konfirmasi jam kasir.' };
     for (const changes of [
-      { clockIn: 'bukan-tanggal' }, { clockOut: 'bukan-tanggal' },
+      { clockIn: 'bukan-tanggal' }, { clockOut: 'bukan-tanggal' }, { clockOut: '' },
       { clockIn: '2026-10-06T09:00:00Z' }, { clockOut: '2026-10-06T09:00:00Z' },
       { clockIn: '2026-10-05T00:05:00Z' },
       { clockOut: '2026-10-06T00:04:59Z' }, { reason: '    ' }, { reason: 'a' },
@@ -230,6 +268,61 @@ describe('Koreksi absensi oleh HR', () => {
     expect(get(app)).toEqual(original);
     expect(get(app).attendanceRecords.filter(record => record.clockOut === null)).toHaveLength(1);
   });
+
+  it('mempertahankan jam shift dan toleransi awal ketika outlet berubah sebelum koreksi', async () => {
+    app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, lateToleranceMinutes: 5 } : outlet) }));
+    const recordId = await prepareRecord();
+    app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, morningStart: '08:00', afternoonStart: '16:00', lateToleranceMinutes: 20 } : outlet) }));
+    await actions.correctAttendance(recordId, { clockIn: '2026-10-06T00:05:01Z', clockOut: '2026-10-06T08:05:01Z', reason: 'Konfirmasi jam pulang kasir.' });
+    expect(get(app).attendanceRecords[0]).toMatchObject({ scheduledStart: '2026-10-06T00:00:00.000Z', lateMinutes: 6, outletSnapshot: { morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 5 } });
+    await actions.correctAttendance(recordId, { clockIn: '2026-10-06T00:05:00Z', clockOut: '2026-10-06T08:05:00Z', reason: 'Konfirmasi batas toleransi kasir.' });
+    expect(get(app).attendanceRecords[0].lateMinutes).toBe(0);
+    await actions.correctAttendance(recordId, { clockIn: '2026-10-06T08:10:00Z', clockOut: '2026-10-06T08:20:00Z', shift: 'afternoon', reason: 'Perbaikan pilihan shift kasir.' });
+    expect(get(app).attendanceRecords[0]).toMatchObject({ scheduledStart: '2026-10-06T08:00:00.000Z', lateMinutes: 10 });
+  });
+
+  it('koreksi catatan lama tanpa snapshot tetap memakai fallback outlet dan menyimpannya', async () => {
+    const recordId = await prepareRecord();
+    app.update(state => ({ ...state, attendanceRecords: state.attendanceRecords.map(({ outletSnapshot, ...record }) => record) }));
+    await actions.correctAttendance(recordId, { clockIn: '2026-10-06T00:05:00Z', clockOut: '2026-10-06T08:05:00Z', reason: 'Konfirmasi absensi lokal lama.' });
+    expect(get(app).attendanceRecords[0]).toMatchObject({ lateMinutes: 5, outletSnapshot: { morningStart: '07:00', lateToleranceMinutes: 0 } });
+  });
+
+  it.each([false,true])('menolak koreksi yang bertabrakan dengan sesi tanggal berikutnya (terbuka=%s)', async open => {
+    vi.setSystemTime(new Date('2026-10-07T09:00:00Z'));
+    app.update(state => ({ ...state, user: state.employees.find(employee => employee.id === 'employee-1')! }));
+    await actions.recordManualAttendance({ employeeId: 'employee-4', shift: 'afternoon', clockIn: '2026-10-05T16:00:00Z', clockOut: '2026-10-05T23:00:00Z', reason: 'Sesi malam telah dikonfirmasi.' });
+    const first = get(app).attendanceRecords[0];
+    await actions.recordManualAttendance({ employeeId: 'employee-4', shift: 'morning', clockIn: '2026-10-06T00:00:00Z', clockOut: open ? null : '2026-10-06T08:00:00Z', reason: 'Sesi pagi telah dikonfirmasi.' });
+    const original = structuredClone(get(app));
+    await expect(actions.correctAttendance(first.id, { clockIn: first.clockIn, clockOut: '2026-10-06T01:00:00Z', reason: 'Usulan perpanjangan sesi malam.' })).rejects.toThrow('Waktu absensi bertabrakan');
+    expect(get(app)).toEqual(original);
+    // Adjacent endpoints are valid; the corrected row itself is excluded.
+    await actions.correctAttendance(first.id, { clockIn: first.clockIn, clockOut: '2026-10-06T00:00:00Z', reason: 'Akhir sesi malam dikonfirmasi.' });
+    expect(get(app).attendanceRecords.find(record => record.id === first.id)?.durationMinutes).toBe(480);
+  });
+
+  it('tidak membuka kembali catatan lama melewati sesi berikutnya yang sudah tertutup', async () => {
+    const recordId = await prepareRecord();
+    vi.setSystemTime(new Date('2026-10-07T09:00:00Z'));
+    await actions.recordManualAttendance({ employeeId: 'employee-4', shift: 'morning', clockIn: '2026-10-07T00:00:00Z', clockOut: '2026-10-07T08:00:00Z', reason: 'Sesi pagi berikutnya dikonfirmasi.' });
+    const original = structuredClone(get(app));
+    await expect(actions.correctAttendance(recordId, { clockIn: '2026-10-06T00:05:00Z', clockOut: null, reason: 'Buka kembali sesi sebelumnya.' })).rejects.toThrow('Waktu absensi bertabrakan');
+    expect(get(app)).toEqual(original);
+  });
+
+  it('rentang nol menit tidak bertabrakan sebagai koreksi maupun catatan pembanding', async () => {
+    vi.setSystemTime(new Date('2026-10-06T09:00:00Z'));
+    app.update(state => ({ ...state, user: state.employees.find(employee => employee.id === 'employee-1')! }));
+    await actions.recordManualAttendance({ employeeId: 'employee-4', shift: 'afternoon', clockIn: '2026-10-05T16:00:00Z', clockOut: '2026-10-06T01:00:00Z', reason: 'Sesi malam dikonfirmasi kasir.' });
+    const first = get(app).attendanceRecords[0];
+    await actions.recordManualAttendance({ employeeId: 'employee-4', shift: 'morning', clockIn: '2026-10-06T00:00:00Z', clockOut: '2026-10-06T00:00:00Z', reason: 'Catatan nol menit dikonfirmasi kasir.' });
+    const zero = get(app).attendanceRecords[0];
+    await actions.correctAttendance(zero.id, { clockIn: '2026-10-06T00:30:00Z', clockOut: '2026-10-06T00:30:00Z', reason: 'Perbaikan jam catatan nol menit.' });
+    expect(get(app).attendanceRecords.find(record => record.id === zero.id)?.durationMinutes).toBe(0);
+    await actions.correctAttendance(first.id, { clockIn: first.clockIn, clockOut: '2026-10-06T02:00:00Z', reason: 'Perbaikan jam pulang sesi malam.' });
+    expect(get(app).attendanceRecords.find(record => record.id === first.id)?.durationMinutes).toBe(600);
+  });
 });
 
 describe('Pencatatan manual untuk kendala absensi', () => {
@@ -251,6 +344,7 @@ describe('Pencatatan manual untuk kendala absensi', () => {
       inLatitude: null, inLongitude: null, inAccuracy: null, inDistance: null,
       selfiePath: '', corrected: true, correctionReason: reason
     });
+    expect(record.outletSnapshot).toMatchObject({ morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0, latitude: coordinates.latitude, longitude: coordinates.longitude, radiusMeters: 100 });
     expect(record.selfieUrl).toBeUndefined();
     expect(state.auditEntries[0]).toMatchObject({
       actorId: 'employee-1', action: 'attendance_manual', entityId: record.id, detail: reason

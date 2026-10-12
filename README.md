@@ -28,6 +28,8 @@ Setelah data siap, ikuti [uji operasional lokal](docs/operational-pilot.md) untu
 
 Panduan penggunaan dan ketentuan tersedia di `/guide` setelah login. Buka **Panduan** pada menu komputer atau **Profil → Panduan penggunaan** pada ponsel. Halaman ini merangkum alur tiap peran, ketentuan cuti/absensi, batas demo, dan langkah saat mengalami kendala.
 
+Hasil audit, perbaikan, serta verifikasi terbaru tercatat pada [uji operasional lokal 12 Oktober 2026](docs/local-validation-2026-10-12.md), termasuk alur saldo cuti, izin beberapa jam, koreksi lintas tengah malam, dan pencabutan tautan akun.
+
 ## Konfigurasi frontend live
 
 Isi hanya kunci **publik** di `.env` dan pada environment build hosting:

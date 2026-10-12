@@ -12,4 +12,6 @@ Gunakan data contoh selama aplikasi masih menampilkan **Mode demo**. Data, akun,
 
 Hasil yang diharapkan: status akun berubah dari **Belum diundang** → **Menunggu aktivasi** → **Aktif**. Tautan yang sudah dipakai, diganti, atau melewati 24 jam ditolak. Karyawan yang dinonaktifkan tidak dapat menggunakan tautan yang pernah diterbitkan.
 
+Coba menonaktifkan lalu mengaktifkan kembali karyawan melalui HR. Tautan aktivasi maupun pemulihan yang diterbitkan sebelum penonaktifan harus tetap ditolak. Terbitkan tautan baru untuk melanjutkan; tautan karyawan lain tetap berlaku.
+
 Setelah Supabase tersedia, ulangi pada dua perangkat berbeda untuk memeriksa aktivasi WhatsApp, penyimpanan bersama, dan akses tiap peran. Kamera, GPS, serta pemasangan PWA perlu diuji pada ponsel outlet melalui HTTPS.

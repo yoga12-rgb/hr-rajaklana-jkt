@@ -101,17 +101,24 @@ const attendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2
 assert.equal(attendance.required_minutes,480);
 assert.equal(attendance.work_date,clock.today);
 await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,selfie],'selfie baru');
+await asUser(adminAuth);
+await db.query(`update public.outlets set active=false,latitude=-6.3,longitude=106.9,radius_m=20 where id=$1`,[outlet.id]);
+await asUser(cashierAuth);
+await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.3,106.9,10],'di luar radius');
 await expectError('select public.attendance_clock_out($1,$2,$3)',[-7,106.8,10],'di luar radius');
 await db.query('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10]);
 await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10],'Tidak ada clock in');
 console.log('Attendance OK: GPS,accuracy,selfie,permissions,duplicate,out');
 await asUser(adminAuth);
-await db.query(`update public.outlets set morning_starts_at='09:00' where id=$1`,[outlet.id]);
+await db.query(`update public.outlets set active=true,morning_starts_at='09:00',late_tolerance_minutes=60,latitude=-6.2,longitude=106.8,radius_m=100 where id=$1`,[outlet.id]);
 const corrected=(await scalar('select to_jsonb(public.attendance_correct($1,$2,$3,$4,$5)) as row',[
   attendance.id,attendance.clock_in,(await scalar('select clock_out from public.attendance where id=$1',[attendance.id])).clock_out,
   'Koreksi shift untuk pemeriksaan','morning'])).row;
 assert.equal(corrected.expected_in,attendance.expected_in,'correction preserves historicalshiftstart');
+assert.equal(corrected.tolerance_minutes,attendance.tolerance_minutes,'correction preserves historicaltolerance');
+assert.equal(corrected.late_minutes,attendance.late_minutes,'changed outlet settings do not rewrite pastlateness');
 assert.equal(corrected.corrected,true);
+await db.query(`update public.outlets set late_tolerance_minutes=0 where id=$1`,[outlet.id]);
 const adminSelfie=`${adminAuth}/own-selfie.jpg`;
 await db.query(`insert into storage.objects(bucket_id,name) values('attendance-selfies',$1)`,[adminSelfie]);
 const ownAttendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5)) as row',['morning',-6.2,106.8,10,adminSelfie])).row;
@@ -158,6 +165,33 @@ await asUser(bakerAuth);
 assert.equal((await db.query('select * from public.attendance where id=$1',[manual.id])).rows.length,0,'unrelated employee cannot read manual record');
 await asUser(cashierAuth);
 console.log('Manual attendance OK: HR/noown,reason,times,permissions,overlap,source,evidence,audit,RLS');
+
+await asUser(adminAuth);
+const overlapDates=await scalar(`select ((now() at time zone 'Asia/Jakarta')::date-4)::text as first,
+  ((now() at time zone 'Asia/Jakarta')::date-3)::text as second`);
+for (const [employeeId,open] of [[cashierId,false],[bakerId,true]]) {
+  const firstIn=`${overlapDates.first}T23:00:00+07:00`,firstOut=`${overlapDates.second}T06:00:00+07:00`;
+  const nextIn=`${overlapDates.second}T07:00:00+07:00`,nextOut=`${overlapDates.second}T15:00:00+07:00`;
+  const first=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
+    [employeeId,'afternoon',firstIn,firstOut,'Sesi malam dikonfirmasi SPV'])).row;
+  const next=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
+    [employeeId,'morning',nextIn,open ? null : nextOut,'Sesi pagi dikonfirmasi SPV'])).row;
+  const auditBefore=(await scalar('select count(*)::int as count from public.audit_events where entity_id=$1',[first.id])).count;
+  await expectError('select public.attendance_correct($1,$2,$3,$4)',
+    [first.id,firstIn,`${overlapDates.second}T08:00:00+07:00`,'Usulan perpanjangan sesi malam'],'bertabrakan');
+  assert.deepEqual((await scalar('select to_jsonb(a) as row from public.attendance a where id=$1',[first.id])).row,first,
+    `overlap with ${open ? 'open' : 'closed'} next session leaves attendance unchanged`);
+  assert.equal((await scalar('select count(*)::int as count from public.audit_events where entity_id=$1',[first.id])).count,auditBefore,
+    'rejected overlap writes no audit');
+  const adjacent=(await scalar('select to_jsonb(public.attendance_correct($1,$2,$3,$4)) as row',
+    [first.id,firstIn,nextIn,'Akhir sesi malam dikonfirmasi SPV'])).row;
+  assert.equal(adjacent.worked_minutes,480,'adjacent sessions allowed and corrected row excluded');
+  if (open) await db.query('select public.attendance_correct($1,$2,$3,$4)',[next.id,nextIn,nextOut,'Konfirmasi jam pulang sesi pagi']);
+  await expectError('select public.attendance_correct($1,$2,$3,$4)',
+    [first.id,firstIn,null,'Usulan membuka kembali sesi malam'],'bertabrakan');
+}
+await asUser(cashierAuth);
+console.log('Correction overlap OK: closed/open,crossmidnight,adjacent,noauditonfailure,reopening');
 
 const future=`${clock.year}-12-30`;
 const request=(await scalar(`select to_jsonb(public.leave_submit('annual',$1::date,$1::date,'Keperluan keluarga')) as row`,[future])).row;

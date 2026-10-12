@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import { app, actions, isAdmin, isCashier, displayName, shiftLabel, attendancePermission } from '#lib/state/app';
+  import { app, actions, isAdmin, isCashier, displayName, shiftLabel, attendancePermission, attendanceOutlet } from '#lib/state/app';
   import type { Shift, AttendanceRecord } from '#lib/types';
   import PageHeading from '#lib/components/PageHeading.svelte';
   import Icon from '#lib/components/Icon.svelte';
@@ -19,7 +19,8 @@
   $: admin = isAdmin($app.user ?? undefined);
   $: cashier = isCashier($app.user ?? undefined);
   $: activeSession = $app.attendanceRecords.find((record) => record.employeeId === $app.user?.id && !record.clockOut);
-  $: selectedOutlet = $app.outlets.find((outlet) => outlet.id === outletId);
+  $: currentOutlet = $app.outlets.find((outlet) => outlet.id === outletId);
+  $: selectedOutlet = mode === 'out' && activeSession && currentOutlet ? attendanceOutlet(activeSession,currentOutlet) : currentOutlet;
   $: myRecords = $app.attendanceRecords.filter((record) => record.employeeId === $app.user?.id);
   $: rows = (admin ? $app.attendanceRecords : myRecords).filter((record) => (!filterDate || jakartaDate(record.clockIn) === filterDate) && (!outletFilter || record.outletId === outletFilter)).slice().sort((a, b) => b.clockIn.localeCompare(a.clockIn));
   $: distance = location && selectedOutlet && typeof selectedOutlet.latitude === 'number' && typeof selectedOutlet.longitude === 'number' ? meters(location.latitude, location.longitude, selectedOutlet.latitude, selectedOutlet.longitude) : null;

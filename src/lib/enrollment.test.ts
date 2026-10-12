@@ -78,6 +78,38 @@ describe('Undangan dan aktivasi akun demo lokal', () => {
     expect(localStorage.getItem('rk-demo-passwords')).toBeNull();
   });
 
+  it.each(['activate', 'reset'] as const)('mencabut tautan %s saat HR menonaktifkan karyawan dan tidak memulihkannya setelah aktif kembali', async (purpose) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-06T03:00:00Z'));
+    if (purpose === 'reset') {
+      const activation = tokenFrom((await actions.issueLink(employeeId, 'activate')).url);
+      await actions.activate(activation, password);
+    }
+    const oldToken = tokenFrom((await actions.issueLink(employeeId, purpose)).url);
+    const otherToken = tokenFrom((await actions.issueLink('employee-6', 'reset')).url);
+    const previousPasswords = localStorage.getItem('rk-demo-passwords');
+
+    await actions.saveEmployee({ ...account(), status: 'inactive', exitDate: '2026-10-06', exitReason: 'Selesai masa kerja' });
+    expect(account()).toMatchObject({ status: 'inactive', accountStatus: 'disabled' });
+    await expect(actions.inspectToken(oldToken)).rejects.toThrow();
+    await actions.saveEmployee({ ...account(), status: 'active' });
+    expect(account()).toMatchObject({ status: 'active', accountStatus: 'disabled' });
+
+    await expect(actions.inspectToken(oldToken)).rejects.toThrow('Tautan tidak berlaku');
+    await expect(actions.activate(oldToken, 'KataSandiLamaTidakBoleh123!', purpose)).rejects.toThrow('Tautan tidak berlaku');
+    expect(account().accountStatus).toBe('disabled');
+    expect(localStorage.getItem('rk-demo-passwords')).toBe(previousPasswords);
+    expect(await actions.inspectToken(otherToken)).toMatchObject({ purpose: 'reset', employee_number: 'RK000006' });
+
+    const newToken = tokenFrom((await actions.issueLink(employeeId, purpose)).url);
+    expect(await actions.inspectToken(newToken)).toMatchObject({ purpose, employee_number: 'RK000004' });
+    await actions.activate(newToken, 'KataSandiBaru123!', purpose);
+    expect(account().accountStatus).toBe('active');
+    await actions.logout();
+    await actions.login('RK000004', 'KataSandiBaru123!');
+    expect(get(app).user?.id).toBe(employeeId);
+  });
+
   it('menolak tautan yang merujuk karyawan yang tidak lagi tersedia', async () => {
     const token = tokenFrom((await actions.issueLink(employeeId, 'activate')).url);
     app.update(state => ({ ...state, employees: state.employees.filter(employee => employee.id !== employeeId) }));

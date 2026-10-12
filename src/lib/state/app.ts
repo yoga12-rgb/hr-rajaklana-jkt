@@ -28,6 +28,23 @@ export const isApprover = (employee: Employee | undefined | null = get(app).user
 export const isCashier = (employee: Employee | undefined | null = get(app).user) => !!employee && get(app).positions.some(p => p.id === employee.positionId && p.isCashier);
 export const displayName = (employeeId: string) => get(app).employees.find(e => e.id === employeeId)?.fullName ?? 'Karyawan';
 export const shiftLabel = (shift: Shift) => ({ morning: 'Pagi', afternoon: 'Sore', middle: 'Middle' })[shift];
+function attendanceSnapshot(outlet: Outlet): NonNullable<AttendanceRecord['outletSnapshot']> {
+  const { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters } = outlet;
+  return { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters };
+}
+export function attendanceOutlet(record: AttendanceRecord, outlet: Outlet): Outlet {
+  // Older local records have no snapshot; retain their existing outlet fallback.
+  return { ...outlet, ...record.outletSnapshot };
+}
+function attendanceOverlaps(records: AttendanceRecord[], employeeId: string, clockIn: string, clockOut: string | null, excludedId?: string): boolean {
+  const start = +new Date(clockIn), end = clockOut === null ? Infinity : +new Date(clockOut);
+  if (start === end) return false;
+  return records.some(record => {
+    const recordStart = +new Date(record.clockIn), recordEnd = record.clockOut === null ? Infinity : +new Date(record.clockOut);
+    return record.id !== excludedId && record.employeeId === employeeId && recordStart !== recordEnd
+      && recordStart < end && start < recordEnd;
+  });
+}
 export function attendancePermission(record: AttendanceRecord): string {
   const permission = get(app).leaveRequests.find(r=>r.employeeId===record.employeeId&&r.status==='approved'&&r.extent==='late_arrival'&&r.startDate===jakartaDate(record.clockIn));
   if (!permission) return '';
@@ -113,7 +130,7 @@ async function refreshNow() {
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
     const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
       const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device' };
+      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
     }));
     let auditEntries: AppState['auditEntries'] = [];
     if (isAdmin(current)) {
@@ -211,6 +228,11 @@ export const actions = {
       const employee: Employee = { ...initialDemo().employees[0], ...input, id: employeeId, roles: [...new Set<Role>(['employee', ...(input.roles ?? [])])], employeeNumber: before?.employeeNumber ?? `RK${String(Math.max(0, ...state.employees.map(e => Number(e.employeeNumber.slice(2)))) + 1).padStart(6, '0')}`, accountStatus: input.status === 'inactive' ? 'disabled' : before?.accountStatus ?? 'not_invited' };
       const index = state.employees.findIndex(e => e.id === employeeId); if (index < 0) state.employees.push(employee); else state.employees[index] = employee;
     }, 'employee_saved', employeeId, 'Perubahan data karyawan');
+    if (input.status === 'inactive') {
+      const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}');
+      for (const token of Object.keys(links)) if (links[token]?.employeeId === employeeId) delete links[token];
+      localStorage.setItem('rk-demo-links', JSON.stringify(links));
+    }
   },
   async saveDepartment(input: Partial<Department>) {
     requireAdmin(); if (!input.name?.trim()) throw new Error('Nama departemen wajib diisi.');
@@ -322,10 +344,10 @@ export const actions = {
     if(s.attendanceRecords.some(r => r.employeeId === u.id && !r.clockOut)) throw new Error('Masih ada sesi kerja yang belum clock out.');
     if(s.attendanceRecords.some(r => r.employeeId === u.id && jakartaDate(r.clockIn) === jakartaDate())) throw new Error('Clock in hari ini sudah tercatat. Untuk koreksi, hubungi SPV.');
     if(configured) { const { data: { session } } = await supabase!.auth.getSession(); const path = `${session!.user.id}/${id()}.jpg`; const upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'}); if(upload.error) fail(upload.error); try { await rpc('attendance_clock_in',{p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path}); } catch(e) { await supabase!.storage.from('attendance-selfies').remove([path]); throw e; } await refresh(); return; }
-    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',selfieUrl:URL.createObjectURL(input.selfie),corrected:false,correctionReason:'' }); },'clock_in',recordId);
+    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',selfieUrl:URL.createObjectURL(input.selfie),corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
   },
   async clockOut(input: ClockOutInput) {
-    const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = get(app).outlets.find(o => o.id === record.outletId)!; const distance = validateGeo(input,outlet);
+    const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = attendanceOutlet(record,get(app).outlets.find(o => o.id === record.outletId)!); const distance = validateGeo(input,outlet);
     if(configured) { await rpc('attendance_clock_out',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy}); await refresh(); return; }
     const now = new Date().toISOString(); commit(s => { const r = s.attendanceRecords.find(x => x.id === record.id)!; r.clockOut = now; r.durationMinutes = Math.floor((+new Date(now)-+new Date(r.clockIn))/60000); r.outLatitude = input.latitude; r.outLongitude = input.longitude; r.outDistance = distance; r.outAccuracy = input.accuracy; },'clock_out',record.id);
   },
@@ -336,8 +358,9 @@ export const actions = {
     if (jakartaDate(input.clockIn) !== jakartaDate(r.clockIn)) throw new Error('Tanggal kerja tidak dapat diubah.');
     if (!['morning', 'afternoon', 'middle'].includes(input.shift ?? r.shift)) throw new Error('Shift tidak valid.');
     if (!input.clockOut && get(app).attendanceRecords.some(row => row.id !== r.id && row.employeeId === r.employeeId && !row.clockOut)) throw new Error('Masih ada sesi kerja lain yang belum clock out.');
+    if (attendanceOverlaps(get(app).attendanceRecords,r.employeeId,input.clockIn,input.clockOut,r.id)) throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');
     if(configured) { await rpc('attendance_correct',{p_id:recordId,p_clock_in:input.clockIn,p_clock_out:input.clockOut || null,p_shift:input.shift ?? null,p_reason:input.reason}); await refresh(); return; }
-    commit(s => { const row = s.attendanceRecords.find(x => x.id === recordId)!; const before = JSON.stringify(row); Object.assign(row,{ clockIn:input.clockIn,clockOut:input.clockOut,shift:input.shift ?? row.shift,corrected:true,correctionReason:input.reason,durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null }); Object.assign(row,attendanceTiming(input.clockIn,row.shift,s.outlets.find(o => o.id === row.outletId)!)); s.auditEntries.unshift({id:id(),actorId:user().id,action:'attendance_original',entityId:recordId,at:new Date().toISOString(),detail:before}); },'attendance_corrected',recordId,input.reason);
+    commit(s => { const row = s.attendanceRecords.find(x => x.id === recordId)!; const before = JSON.stringify(row); const outlet = attendanceOutlet(row,s.outlets.find(o => o.id === row.outletId)!); Object.assign(row,{ clockIn:input.clockIn,clockOut:input.clockOut,shift:input.shift ?? row.shift,corrected:true,correctionReason:input.reason,durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,outletSnapshot:attendanceSnapshot(outlet) }); Object.assign(row,attendanceTiming(input.clockIn,row.shift,outlet)); s.auditEntries.unshift({id:id(),actorId:user().id,action:'attendance_original',entityId:recordId,at:new Date().toISOString(),detail:before}); },'attendance_corrected',recordId,input.reason);
   },
   async recordManualAttendance(input: { employeeId: string; shift: Shift; clockIn: string; clockOut: string | null; reason: string }) {
     requireAdmin(); const employee=get(app).employees.find(e=>e.id===input.employeeId);
@@ -348,6 +371,6 @@ export const actions = {
     if(!Number.isFinite(+new Date(input.clockIn)) || +new Date(input.clockIn)>Date.now() || (input.clockOut && (!Number.isFinite(+new Date(input.clockOut)) || input.clockOut<input.clockIn || +new Date(input.clockOut)>Date.now())))throw new Error('Waktu absensi tidak valid atau belum terjadi.');
     if(configured){await rpc('attendance_record_manual',{p_employee_id:input.employeeId,p_shift:input.shift,p_clock_in:input.clockIn,p_clock_out:input.clockOut,p_reason:input.reason});await refresh();return;}
     const outlet=get(app).outlets.find(o=>o.id===employee.outletId)!;
-    const recordId=id();commit(s=>{if(s.attendanceRecords.some(r=>r.employeeId===employee.id&&(!r.clockOut||jakartaDate(r.clockIn)===jakartaDate(input.clockIn))))throw new Error('Catatan pada tanggal ini sudah ada atau sesi sebelumnya belum selesai. Gunakan koreksi.');if(s.attendanceRecords.some(r=>r.employeeId===employee.id && +new Date(r.clockIn)<(input.clockOut ? +new Date(input.clockOut) : Infinity) && +new Date(input.clockIn)<(r.clockOut ? +new Date(r.clockOut) : Infinity)))throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');s.attendanceRecords.unshift({id:recordId,employeeId:employee.id,outletId:outlet.id,shift:input.shift,clockIn:input.clockIn,clockOut:input.clockOut,...attendanceTiming(input.clockIn,input.shift,outlet),durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,inLatitude:null,inLongitude:null,inAccuracy:null,inDistance:null,selfiePath:'',corrected:true,correctionReason:input.reason,source:'manual'});},'attendance_manual',recordId,input.reason);
+    const recordId=id();commit(s=>{if(s.attendanceRecords.some(r=>r.employeeId===employee.id&&(!r.clockOut||jakartaDate(r.clockIn)===jakartaDate(input.clockIn))))throw new Error('Catatan pada tanggal ini sudah ada atau sesi sebelumnya belum selesai. Gunakan koreksi.');if(attendanceOverlaps(s.attendanceRecords,employee.id,input.clockIn,input.clockOut))throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');s.attendanceRecords.unshift({id:recordId,employeeId:employee.id,outletId:outlet.id,shift:input.shift,clockIn:input.clockIn,clockOut:input.clockOut,...attendanceTiming(input.clockIn,input.shift,outlet),durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,inLatitude:null,inLongitude:null,inAccuracy:null,inDistance:null,selfiePath:'',corrected:true,correctionReason:input.reason,source:'manual',outletSnapshot:attendanceSnapshot(outlet)});},'attendance_manual',recordId,input.reason);
   }
 };

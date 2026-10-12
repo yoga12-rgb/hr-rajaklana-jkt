@@ -36,6 +36,7 @@ export interface AttendanceRecord {
   outLatitude?: number | null; outLongitude?: number | null; outDistance?: number | null; outAccuracy?: number | null;
   selfiePath: string; selfieUrl?: string; corrected: boolean; correctionReason: string;
   source?: 'device' | 'manual';
+  outletSnapshot?: Pick<Outlet, 'morningStart' | 'afternoonStart' | 'lateToleranceMinutes' | 'latitude' | 'longitude' | 'radiusMeters'>;
 }
 export interface AuditEntry { id: string; actorId: string; action: string; entityId: string; at: string; detail: string }
 export interface LeaveLedgerEntry { id: string; employeeId: string; year: number; days: number; requestId: string }

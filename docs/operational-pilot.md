@@ -11,6 +11,10 @@ Gunakan data contoh ketika aplikasi menampilkan **Mode demo**. Tetap pada browse
 
 Coba juga menolak perubahan tanggal dengan alasan. Nadia harus tetap melihat tanggal/saldo lama serta status, pemberi keputusan, dan catatan penolakan pada detail pengajuan. Setelah penolakan, Nadia dapat mengajukan perubahan baru. Untuk status **Perlu dilengkapi**, gunakan **Lengkapi pengajuan → Kirim ulang**.
 
+Pada absensi, coba koreksi sesi lintas tengah malam agar melewati awal sesi berikutnya: harus ditolak tanpa mengubah catatan. Waktu akhir yang tepat sama dengan awal sesi berikutnya diperbolehkan. Pada catatan baru, perubahan jam shift/toleransi outlet tidak boleh mengubah hitungan keterlambatan ketika HR mengoreksi jam pulang. Sesi terbuka memakai koordinat/radius yang tersimpan saat masuk untuk clock out.
+
+Lihat [hasil uji lokal 12 Oktober 2026](local-validation-2026-10-12.md) untuk contoh saldo, jam, dan bukti tampilan yang telah diperiksa.
+
 Catat hanya kendala yang ditemui: akun, langkah, hasil yang muncul, dan hasil yang diharapkan. Data demo, waktu dari perangkat, pratinjau foto yang hilang setelah reload, dan pergantian akun contoh belum membuktikan perilaku layanan Supabase.
 
 Setelah proyek Supabase tersedia, ulangi alur inti pada dua perangkat berbeda. Pada ponsel outlet melalui HTTPS, periksa kamera/GPS nyata, clock out melewati tengah malam, pembaruan antar akun, serta pemasangan dan pembaruan PWA sebelum memakai data operasional.
