@@ -37,6 +37,14 @@ const expectError = async (sql,params,fragment) => {
   try { await db.query(sql,params); assert.fail(`Expected error: ${fragment}`); }
   catch (error) { assert.ok(error.message.includes(fragment), error.message); }
 };
+const captureSignature='public.attendance_clock_in(text,double precision,double precision,double precision,text,timestamptz,text)';
+assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',captureSignature,'EXECUTE'])).allowed,true);
+assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',captureSignature,'EXECUTE'])).allowed,false);
+const captureFunction=await scalar(`select pronargdefaults as defaults,prosecdef as secured,proconfig as config from pg_proc where oid=$1::regprocedure`,[captureSignature]);
+assert.equal(captureFunction.defaults,0,
+  'metadata overload has no defaults that could make five-argument RPC ambiguous');
+assert.equal(captureFunction.secured,true,'metadata wrapper retains security-definer execution');
+assert.ok(captureFunction.config.includes('search_path=""'),'metadata wrapper fixes its search path');
 // First-admin creation must preserve the exact reserved Auth alias. Roll back
 // its fixture so the remaining access-control tests start with their own actors.
 await db.exec('begin');
@@ -97,9 +105,27 @@ await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['middle',
 await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-7,106.8,10,selfie],'di luar radius');
 await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,500,selfie],'belum cukup akurat');
 await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,`${adminAuth}/fake.jpg`],'Selfie wajib');
-const attendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5)) as row',['morning',-6.2,106.8,10,selfie])).row;
+const capturedAt=(await scalar(`select (clock_timestamp()-interval '35 seconds')::text as captured`)).captured;
+const captureArgs=['morning',-6.2,106.8,10,selfie,capturedAt,'  Nama Outlet Saat Foto  '];
+for(const metadata of [[null,'Outlet Foto'],[capturedAt,null],[capturedAt,'  '],[null,null]]) {
+  await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),...metadata],'harus lengkap');
+}
+for(const invalid of ['infinity','-infinity']) {
+  await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),invalid,'Outlet Foto'],'tidak valid');
+}
+await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',
+  ['middle',-6.2,106.8,10,selfie,capturedAt,'Outlet Foto'],'belum diizinkan');
+await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',
+  ['morning',-7,106.8,10,selfie,capturedAt,'Outlet Foto'],'di luar radius');
+assert.equal((await scalar('select count(*)::int as count from public.attendance')).count,0,
+  'rejected metadata and GPS leave no attendance row');
+const attendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)) as row',captureArgs)).row;
 assert.equal(attendance.required_minutes,480);
 assert.equal(attendance.work_date,clock.today);
+assert.equal(+new Date(attendance.selfie_captured_at),+new Date(capturedAt));
+assert.ok(+new Date(attendance.selfie_captured_at)<+new Date(attendance.clock_in),'device capture instant stays separate from server clock in');
+assert.equal(attendance.selfie_outlet_name,'Nama Outlet Saat Foto');
+await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',captureArgs,'selfie baru');
 await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,selfie],'selfie baru');
 await asUser(adminAuth);
 await db.query(`update public.outlets set active=false,latitude=-6.3,longitude=106.9,radius_m=20 where id=$1`,[outlet.id]);
@@ -108,7 +134,7 @@ await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.3,106.9,10]
 await expectError('select public.attendance_clock_out($1,$2,$3)',[-7,106.8,10],'di luar radius');
 await db.query('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10]);
 await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10],'Tidak ada clock in');
-console.log('Attendance OK: GPS,accuracy,selfie,permissions,duplicate,out');
+console.log('Attendance OK: GPS,accuracy,selfie,capturemetadata,permissions,duplicate,out');
 await asUser(adminAuth);
 await db.query(`update public.outlets set active=true,morning_starts_at='09:00',late_tolerance_minutes=60,latitude=-6.2,longitude=106.8,radius_m=100 where id=$1`,[outlet.id]);
 const corrected=(await scalar('select to_jsonb(public.attendance_correct($1,$2,$3,$4,$5)) as row',[
@@ -118,10 +144,14 @@ assert.equal(corrected.expected_in,attendance.expected_in,'correction preserves 
 assert.equal(corrected.tolerance_minutes,attendance.tolerance_minutes,'correction preserves historicaltolerance');
 assert.equal(corrected.late_minutes,attendance.late_minutes,'changed outlet settings do not rewrite pastlateness');
 assert.equal(corrected.corrected,true);
+assert.equal(corrected.selfie_captured_at,attendance.selfie_captured_at,'correction preserves camera capture instant');
+assert.equal(corrected.selfie_outlet_name,attendance.selfie_outlet_name,'correction preserves capture outlet snapshot');
 await db.query(`update public.outlets set late_tolerance_minutes=0 where id=$1`,[outlet.id]);
 const adminSelfie=`${adminAuth}/own-selfie.jpg`;
 await db.query(`insert into storage.objects(bucket_id,name) values('attendance-selfies',$1)`,[adminSelfie]);
 const ownAttendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5)) as row',['morning',-6.2,106.8,10,adminSelfie])).row;
+assert.equal(ownAttendance.selfie_captured_at,null,'legacy five-argument call remains usable without inventing capture evidence');
+assert.equal(ownAttendance.selfie_outlet_name,null);
 await expectError('select public.attendance_correct($1,$2,$3,$4)',[ownAttendance.id,ownAttendance.clock_in,null,'Mengoreksi absensi sendiri'],'sendiri');
 await db.query('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10]);
 console.log('Correction OK: reason/audit,historicalsnapshot,noowncorrection');
@@ -144,6 +174,8 @@ const manual=(await scalar('select to_jsonb(public.attendance_record_manual($1,$
 assert.equal(manual.source,'manual');
 assert.equal(manual.corrected,true);
 assert.equal(manual.selfie_path,null);
+assert.equal(manual.selfie_captured_at,null,'manual entries have no camera capture evidence');
+assert.equal(manual.selfie_outlet_name,null);
 assert.equal(manual.in_latitude,null);
 assert.equal(manual.in_distance_m,null);
 assert.equal(manual.worked_minutes,480);

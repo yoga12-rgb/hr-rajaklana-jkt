@@ -35,6 +35,8 @@ export interface AttendanceRecord {
   inLatitude: number | null; inLongitude: number | null; inAccuracy: number | null; inDistance: number | null;
   outLatitude?: number | null; outLongitude?: number | null; outDistance?: number | null; outAccuracy?: number | null;
   selfiePath: string; selfieUrl?: string; corrected: boolean; correctionReason: string;
+  // Device capture metadata is distinct from the recorded clock-in time.
+  selfieCapturedAt?: string; selfieOutletName?: string;
   source?: 'device' | 'manual';
   outletSnapshot?: Pick<Outlet, 'morningStart' | 'afternoonStart' | 'lateToleranceMinutes' | 'latitude' | 'longitude' | 'radiusMeters'>;
 }
@@ -50,5 +52,5 @@ export interface AppState {
 }
 export interface LeaveInput { type: LeaveRequest['type']; startDate: string; endDate: string; startTime?: string; endTime?: string; reason: string; attachment?: File; extent?: LeaveExtent }
 export interface LeaveDecision { decision: 'approve' | 'reject' | 'needs_info'; deductionDays: number; note?: string; externalApproverName?: string }
-export interface ClockInInput { outletId: string; shift: Shift; latitude: number; longitude: number; accuracy: number; selfie: Blob }
+export interface ClockInInput { outletId: string; shift: Shift; latitude: number; longitude: number; accuracy: number; selfie: Blob; selfieCapturedAt?: string; selfieOutletName?: string }
 export interface ClockOutInput { latitude: number; longitude: number; accuracy: number }

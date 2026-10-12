@@ -70,7 +70,7 @@
     <section class="panel guide-section" id="kehadiran">
       <div class="section-title"><span>03</span><h2>Kasir: masuk dan pulang</h2></div>
       <ol>
-        <li>Buka <strong>Kehadiran</strong>, pilih shift, izinkan lokasi perangkat, dan ambil <strong>selfie baru langsung dari kamera</strong>. Konfirmasi clock in; pastikan pesan berhasil dan catatan masuk muncul.</li>
+        <li>Buka <strong>Kehadiran</strong>, pilih shift, izinkan lokasi perangkat, dan ambil <strong>selfie baru langsung dari kamera</strong> setelah lokasi sesuai. Foto memuat nama outlet, koordinat GPS, serta tanggal dan jam pengambilan dalam WIB. Konfirmasi clock in; pastikan pesan berhasil dan catatan masuk muncul.</li>
         <li>Saat selesai bekerja, lakukan <strong>clock out</strong> dan periksa hasilnya. Lokasi diperiksa kembali; selfie hanya wajib saat clock in.</li>
       </ol>
       <div class="shift-table">
@@ -87,6 +87,7 @@
       <p>Jam kerja <strong>8 jam sudah termasuk istirahat</strong>; tidak ada clock istirahat. Jam awal Pagi/Sore, jam operasional, radius GPS, dan toleransi keterlambatan mengikuti pengaturan masing-masing outlet. Middle memerlukan izin HR dan tidak menghitung keterlambatan.</p>
       <p class="rule">Clock in dan clock out wajib berada dalam radius outlet dengan akurasi GPS yang memadai. Selesaikan sesi terbuka sebelum masuk kembali; satu clock in per hari. Keterlambatan tetap tercatat untuk ditinjau, termasuk saat ada izin datang terlambat.</p>
       <p class="hint">Durasi kurang dari 8 jam tetap dicatat untuk ditinjau SPV. Selisih durasi tidak otomatis menjadi lembur atau potongan cuti.</p>
+      <p class="hint">Waktu pengambilan foto mengikuti jam perangkat dan dicatat terpisah dari waktu clock in. Jika lokasi diperiksa ulang, ambil selfie ulang agar cap foto sesuai. Dari detail kehadiran, pilih <strong>Lihat foto penuh</strong> untuk membaca cap dengan lebih jelas.</p>
     </section>
 
     <section class="panel guide-section" id="hr">

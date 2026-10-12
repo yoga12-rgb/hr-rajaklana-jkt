@@ -22,6 +22,8 @@ Buka URL lokal yang ditampilkan terminal. Biarkan kedua nilai `.env` kosong untu
 
 Nama, outlet, lokasi, dan permohonan dalam demo semuanya fiktif. GPS masih diperiksa terhadap koordinat outlet contoh. Ubah titik outlet melalui Organisasi saat mencoba dari lokasi sendiri. Demo tidak mengunggah selfie ke Supabase; pratinjau selfie lokal tidak bertahan setelah reload. Tautan aktivasi/pemulihan demo hanya bekerja pada browser yang sama; penggunaan nyata di perangkat karyawan memerlukan mode live.
 
+Selfie baru memiliki cap nama outlet, koordinat/akurasi GPS, serta tanggal dan waktu pengambilan dalam WIB. Cap menjadi bagian dari JPEG, ditempatkan pada footer agar frame kamera tetap utuh. Waktu foto berasal dari perangkat dan disimpan terpisah dari waktu clock in; pemeriksaan ulang lokasi mengharuskan selfie diambil ulang. Lihat [verifikasi cap selfie](docs/selfie-watermark.md) untuk contoh visual dan batas pengujian.
+
 Ikuti [uji pendaftaran lokal](docs/local-pilot.md) untuk mencoba alur HR → undangan → aktivasi → login karyawan. Tombol **Masuk dengan akun ini** setelah aktivasi/pemulihan mengakhiri sesi sebelumnya dan mengisi nomor karyawan pada halaman masuk; kata sandi tetap harus dimasukkan sendiri.
 
 Setelah data siap, ikuti [uji operasional lokal](docs/operational-pilot.md) untuk clock in/out kasir, cuti, izin beberapa jam, dan keputusan atasan. Demo mengikuti validasi periode izin, pembatalan tanggal lampau, serta pembulatan keterlambatan backend. Durasi 8 jam sudah termasuk istirahat; clock out lebih awal tetap dicatat untuk ditinjau HR.

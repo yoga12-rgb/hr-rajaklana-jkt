@@ -4,7 +4,8 @@ import { actions, app, attendanceOutlet } from './state/app';
 import { initialDemo } from './state/demo';
 import type { ClockInInput, ClockOutInput } from './types';
 
-vi.mock('./state/client', () => ({ configured: false, supabase: null }));
+const clientMock = vi.hoisted(() => ({ configured: false, supabase: null as any }));
+vi.mock('./state/client', () => ({ get configured() { return clientMock.configured; }, get supabase() { return clientMock.supabase; } }));
 
 const coordinates: ClockOutInput = { latitude: -6.2, longitude: 106.816666, accuracy: 10 };
 const input = (overrides: Partial<ClockInInput> = {}): ClockInInput => ({
@@ -13,6 +14,8 @@ const input = (overrides: Partial<ClockInInput> = {}): ClockInInput => ({
 });
 
 beforeEach(() => {
+  clientMock.configured = false;
+  clientMock.supabase = null;
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-06T00:10:00Z'));
   vi.stubGlobal('navigator', { onLine: true });
@@ -47,9 +50,43 @@ describe('Pencatatan absensi kasir lokal', () => {
       inAccuracy: 10, inDistance: 0, selfieUrl: 'blob:selfie-uji', corrected: false
     });
     expect(record.outletSnapshot).toEqual({ morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0, latitude: coordinates.latitude, longitude: coordinates.longitude, radiusMeters: 100 });
+    expect(record.selfieCapturedAt).toBeUndefined();
+    expect(record.selfieOutletName).toBeUndefined();
     expect(state.auditEntries[0]).toMatchObject({ actorId: 'employee-4', action: 'clock_in', entityId: record.id });
     // Foto demo hanya hidup pada sesi browser; data URL tidak dipersistenkan.
     expect(localStorage.getItem('rajaklana-hr-demo-v1')).not.toContain('blob:selfie-uji');
+  });
+
+  it('menyimpan waktu kamera dan nama outlet saat pengambilan terpisah dari clock in', async () => {
+    const capture = { selfieCapturedAt: '2026-10-06T07:09:30+07:00', selfieOutletName: 'Outlet Saat Foto' };
+    await actions.clockIn(input(capture));
+    const record = get(app).attendanceRecords[0];
+    expect(record).toMatchObject({
+      clockIn: '2026-10-06T00:10:00.000Z', selfieCapturedAt: '2026-10-06T00:09:30.000Z',
+      selfieOutletName: capture.selfieOutletName, inLatitude: coordinates.latitude, inLongitude: coordinates.longitude
+    });
+    expect(JSON.parse(localStorage.getItem('rajaklana-hr-demo-v1')!).attendanceRecords[0]).toMatchObject({
+      selfieCapturedAt: record.selfieCapturedAt, selfieOutletName: capture.selfieOutletName
+    });
+    expect(record.selfieCapturedAt).not.toBe(record.clockIn);
+  });
+
+  it.each([
+    { selfieCapturedAt: '2026-10-06T00:09:30Z' },
+    { selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: '2026-10-06T00:09:30Z', selfieOutletName: '   ' },
+    { selfieCapturedAt: null, selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: 20261006, selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: '2026-10-06T00:09:30Z', selfieOutletName: 42 },
+    { selfieCapturedAt: 'tidak-valid', selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: '2026-02-31T00:09:30Z', selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: '2026-10-06T00:09:30', selfieOutletName: 'Outlet Foto' },
+    { selfieCapturedAt: '2026-10-06', selfieOutletName: 'Outlet Foto' }
+  ])('menolak metadata selfie tidak lengkap atau invalid tanpa menyimpan: %j', async metadata => {
+    await expect(actions.clockIn(input(metadata as Partial<ClockInInput>))).rejects.toThrow('selfie');
+    expect(get(app).attendanceRecords).toHaveLength(0);
+    expect(get(app).auditEntries).toHaveLength(0);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -195,15 +232,50 @@ describe('Pencatatan absensi kasir lokal', () => {
   });
 });
 
+describe('Pengiriman metadata selfie ke Supabase', () => {
+  it.each([false,true])('memilih argumen RPC untuk metadata tersedia=%s dan menghapus unggahan ketika ditolak', async withMetadata => {
+    const upload = vi.fn().mockResolvedValue({ error: null }), remove = vi.fn().mockResolvedValue({ error: null });
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'RPC simulasi ditolak' } });
+    clientMock.configured = true;
+    clientMock.supabase = {
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: 'auth-kasir' } } } }) },
+      storage: { from: vi.fn().mockReturnValue({ upload, remove }) }, rpc
+    };
+    const metadata = withMetadata ? { selfieCapturedAt: '2026-10-06T00:09:30Z', selfieOutletName: 'Outlet Saat Foto' } : {};
+    await expect(actions.clockIn(input(metadata))).rejects.toThrow('RPC simulasi ditolak');
+    expect(upload).toHaveBeenCalledOnce();
+    const [, args] = rpc.mock.calls[0];
+    expect(rpc.mock.calls[0][0]).toBe('attendance_clock_in');
+    expect(args).toEqual({
+      p_shift: 'morning', p_latitude: coordinates.latitude, p_longitude: coordinates.longitude,
+      p_accuracy_m: 10, p_selfie_path: expect.stringMatching(/^auth-kasir\/.+\.jpg$/),
+      ...(withMetadata ? { p_selfie_captured_at: '2026-10-06T00:09:30.000Z', p_selfie_outlet_name: 'Outlet Saat Foto' } : {})
+    });
+    expect(remove).toHaveBeenCalledWith([args.p_selfie_path]);
+    expect(get(app).attendanceRecords).toHaveLength(0);
+  });
+});
+
 describe('Koreksi absensi oleh HR', () => {
-  async function prepareRecord() {
-    await actions.clockIn(input());
+  async function prepareRecord(overrides: Partial<ClockInInput> = {}) {
+    await actions.clockIn(input(overrides));
     const record = get(app).attendanceRecords[0];
     vi.setSystemTime(new Date('2026-10-06T08:30:00Z'));
     await actions.clockOut(coordinates);
     app.update(state => ({ ...state, user: state.employees.find(employee => employee.id === 'employee-1')! }));
     return record.id;
   }
+
+  it('menjaga metadata pengambilan selfie setelah pulang, outlet diganti nama, dan jam dikoreksi', async () => {
+    const metadata = { selfieCapturedAt: '2026-10-06T00:09:30.000Z', selfieOutletName: 'Nama Outlet Saat Foto' };
+    const recordId = await prepareRecord(metadata);
+    app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, name: 'Nama Outlet Baru' } : outlet) }));
+    await actions.correctAttendance(recordId, { clockIn: '2026-10-06T00:05:00Z', clockOut: '2026-10-06T08:05:00Z', reason: 'Jam dikonfirmasi SPV.' });
+    const record = get(app).attendanceRecords[0];
+    expect(record).toMatchObject({ ...metadata, clockIn: '2026-10-06T00:05:00Z', inLatitude: coordinates.latitude, inLongitude: coordinates.longitude });
+    const original = get(app).auditEntries.find(entry => entry.action === 'attendance_original');
+    expect(JSON.parse(original!.detail)).toMatchObject(metadata);
+  });
 
   it('mengoreksi waktu, menghitung ulang keterlambatan dan menyimpan bukti catatan asli', async () => {
     const recordId = await prepareRecord();
@@ -346,6 +418,8 @@ describe('Pencatatan manual untuk kendala absensi', () => {
     });
     expect(record.outletSnapshot).toMatchObject({ morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0, latitude: coordinates.latitude, longitude: coordinates.longitude, radiusMeters: 100 });
     expect(record.selfieUrl).toBeUndefined();
+    expect(record.selfieCapturedAt).toBeUndefined();
+    expect(record.selfieOutletName).toBeUndefined();
     expect(state.auditEntries[0]).toMatchObject({
       actorId: 'employee-1', action: 'attendance_manual', entityId: record.id, detail: reason
     });

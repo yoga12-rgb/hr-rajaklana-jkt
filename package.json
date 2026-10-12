@@ -7,6 +7,7 @@
     "#lib/state/*": "./src/lib/state/*.ts",
     "#lib/types": "./src/lib/types.ts",
     "#lib/domain": "./src/lib/domain.ts",
+    "#lib/selfie": "./src/lib/selfie.ts",
     "#lib/components/format": "./src/lib/components/format.ts",
     "#lib/components/*": "./src/lib/components/*"
   },

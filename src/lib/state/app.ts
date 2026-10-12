@@ -32,6 +32,17 @@ function attendanceSnapshot(outlet: Outlet): NonNullable<AttendanceRecord['outle
   const { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters } = outlet;
   return { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters };
 }
+function selfieMetadata(input: ClockInInput): Pick<AttendanceRecord, 'selfieCapturedAt' | 'selfieOutletName'> {
+  if (input.selfieCapturedAt === undefined && input.selfieOutletName === undefined) return {};
+  const capturedAt = input.selfieCapturedAt, outletName = input.selfieOutletName;
+  if (typeof capturedAt !== 'string' || typeof outletName !== 'string' || !outletName.trim()) throw new Error('Waktu dan outlet pengambilan selfie harus lengkap. Ambil selfie kembali.');
+  // Require a real ISO instant, including its timezone, rather than a loose date.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(capturedAt)
+    || !Number.isFinite(Date.parse(capturedAt))) throw new Error('Waktu pengambilan selfie tidak valid. Ambil selfie kembali.');
+  const localParts = new Date(`${capturedAt.slice(0,19)}Z`);
+  if (!Number.isFinite(+localParts) || localParts.toISOString().slice(0,19) !== capturedAt.slice(0,19)) throw new Error('Waktu pengambilan selfie tidak valid. Ambil selfie kembali.');
+  return { selfieCapturedAt: new Date(capturedAt).toISOString(), selfieOutletName: outletName.trim() };
+}
 export function attendanceOutlet(record: AttendanceRecord, outlet: Outlet): Outlet {
   // Older local records have no snapshot; retain their existing outlet fallback.
   return { ...outlet, ...record.outletSnapshot };
@@ -130,7 +141,7 @@ async function refreshNow() {
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
     const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
       const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
+      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
     }));
     let auditEntries: AppState['auditEntries'] = [];
     if (isAdmin(current)) {
@@ -341,10 +352,11 @@ export const actions = {
     if (!['morning', 'afternoon', 'middle'].includes(input.shift)) throw new Error('Shift tidak valid.');
     const distance = validateGeo(input,outlet); if(input.shift === 'middle' && !u.canMiddleShift) throw new Error('Shift Middle memerlukan izin SPV.');
     if(!input.selfie.size || input.selfie.size > 5 * 1024 * 1024 || !input.selfie.type.startsWith('image/')) throw new Error('Ambil selfie langsung dari kamera, maksimal 5 MB.');
+    const metadata = selfieMetadata(input);
     if(s.attendanceRecords.some(r => r.employeeId === u.id && !r.clockOut)) throw new Error('Masih ada sesi kerja yang belum clock out.');
     if(s.attendanceRecords.some(r => r.employeeId === u.id && jakartaDate(r.clockIn) === jakartaDate())) throw new Error('Clock in hari ini sudah tercatat. Untuk koreksi, hubungi SPV.');
-    if(configured) { const { data: { session } } = await supabase!.auth.getSession(); const path = `${session!.user.id}/${id()}.jpg`; const upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'}); if(upload.error) fail(upload.error); try { await rpc('attendance_clock_in',{p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path}); } catch(e) { await supabase!.storage.from('attendance-selfies').remove([path]); throw e; } await refresh(); return; }
-    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',selfieUrl:URL.createObjectURL(input.selfie),corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
+    if(configured) { const { data: { session } } = await supabase!.auth.getSession(); const path = `${session!.user.id}/${id()}.jpg`; const upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'}); if(upload.error) fail(upload.error); try { await rpc('attendance_clock_in',{p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,...(metadata.selfieCapturedAt ? { p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName } : {})}); } catch(e) { await supabase!.storage.from('attendance-selfies').remove([path]); throw e; } await refresh(); return; }
+    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
   },
   async clockOut(input: ClockOutInput) {
     const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = attendanceOutlet(record,get(app).outlets.find(o => o.id === record.outletId)!); const distance = validateGeo(input,outlet);

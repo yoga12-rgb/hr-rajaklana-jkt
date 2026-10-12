@@ -2,6 +2,7 @@
   import { onDestroy, tick } from 'svelte';
   import { app, actions, isAdmin, isCashier, displayName, shiftLabel, attendancePermission, attendanceOutlet } from '#lib/state/app';
   import type { Shift, AttendanceRecord } from '#lib/types';
+  import { createStampedSelfie, selfieTimestampLabel, type SelfieStamp } from '#lib/selfie';
   import PageHeading from '#lib/components/PageHeading.svelte';
   import Icon from '#lib/components/Icon.svelte';
   import MetricCard from '#lib/components/MetricCard.svelte';
@@ -15,6 +16,8 @@
   let message = '', failed = false, cameraError = '', geoError = '';
   let location: { latitude: number; longitude: number; accuracy: number } | null = null;
   let video: HTMLVideoElement, stream: MediaStream | null = null, selfie: Blob | null = null, preview = '';
+  let selfieContext: (SelfieStamp & { outletId: string }) | null = null, capturing = false;
+  let captureRevision = 0, cameraRevision = 0, geoRevision = 0, modalRevision = 0;
   let filterDate = '', outletFilter = '';
   $: admin = isAdmin($app.user ?? undefined);
   $: cashier = isCashier($app.user ?? undefined);
@@ -30,14 +33,70 @@
   const jakartaDate = (value: string) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(value));
   function meters(lat1: number, lon1: number, lat2: number, lon2: number) { const rad = Math.PI / 180; const a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
   function stopCamera() { stream?.getTracks().forEach((track) => track.stop()); stream = null; }
-  function resetSelfie() { selfie = null; if (preview) URL.revokeObjectURL(preview); preview = ''; }
-  function close() { mode = null; stopCamera(); resetSelfie(); location = null; }
+  function resetSelfie() { captureRevision++; capturing = false; selfie = null; selfieContext = null; if (preview) URL.revokeObjectURL(preview); preview = ''; }
+  function close() { modalRevision++; mode = null; cameraRevision++; geoRevision++; cameraLoading = false; locating = false; stopCamera(); resetSelfie(); location = null; }
   function begin(value: 'in' | 'out') { mode = value; outletId = value === 'out' ? activeSession?.outletId ?? '' : $app.user?.outletId ?? ''; shift = 'morning'; message = ''; cameraError = ''; geoError = ''; location = null; resetSelfie(); getLocation(); }
-  function getLocation() { if (!navigator.geolocation) { geoError = 'Perangkat ini tidak mendukung lokasi.'; return; } locating = true; location = null; geoError = ''; navigator.geolocation.getCurrentPosition((position) => { location = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy }; locating = false; }, (error) => { locating = false; geoError = error.code === 1 ? 'Akses lokasi ditolak. Izinkan lokasi pada pengaturan browser atau perangkat.' : error.code === 3 ? 'Pencarian lokasi terlalu lama. Coba kembali di area terbuka.' : 'Lokasi belum tersedia. Aktifkan GPS lalu coba kembali.'; }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); }
-  async function startCamera() { cameraError = ''; cameraLoading = true; resetSelfie(); try { if (!navigator.mediaDevices?.getUserMedia) throw new Error('Kamera memerlukan HTTPS dan browser yang mendukung akses kamera.'); stopCamera(); stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } }, audio: false }); await tick(); if (mode !== 'in') { stopCamera(); return; } if (video) { video.srcObject = stream; await video.play(); } } catch (error) { stopCamera(); cameraError = error instanceof Error && error.name === 'NotAllowedError' ? 'Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.' : error instanceof Error ? error.message : 'Kamera tidak dapat dibuka.'; } finally { cameraLoading = false; } }
-  async function capture() { if (!video?.videoWidth) { cameraError = 'Kamera belum siap. Tunggu sebentar lalu coba kembali.'; return; } const canvas = document.createElement('canvas'); const scale = Math.min(1, 800 / video.videoWidth); canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale); const context = canvas.getContext('2d'); if (!context) return; context.drawImage(video, 0, 0, canvas.width, canvas.height); const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8)); if (!blob) { cameraError = 'Selfie belum berhasil diambil. Silakan coba kembali.'; return; } selfie = blob; preview = URL.createObjectURL(blob); stopCamera(); }
-  async function submit() { if (!location || !validLocation) { failed = true; message = 'Lokasi harus berada dalam radius outlet dengan akurasi GPS yang memadai.'; return; } if (mode === 'in' && !selfie) { failed = true; message = 'Ambil selfie langsung dari kamera terlebih dahulu.'; return; } saving = true; message = ''; try { if (mode === 'in') await actions.clockIn({ outletId, shift, ...location, selfie: selfie! }); else await actions.clockOut(location); const text = mode === 'in' ? 'Clock in berhasil dicatat. Selamat bekerja!' : 'Clock out berhasil dicatat. Terima kasih untuk hari ini.'; close(); failed = false; message = text; } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Absensi belum berhasil dicatat. Coba kembali.'; } finally { saving = false; } }
-  onDestroy(() => { stopCamera(); resetSelfie(); });
+  function getLocation() {
+    if (mode === 'in') resetSelfie();
+    const revision = ++geoRevision;
+    location = null; geoError = '';
+    if (!navigator.geolocation) { locating = false; geoError = 'Perangkat ini tidak mendukung lokasi.'; return; }
+    locating = true;
+    navigator.geolocation.getCurrentPosition(position => {
+      if (revision !== geoRevision || mode === null) return;
+      location = { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy }; locating = false;
+    }, error => {
+      if (revision !== geoRevision || mode === null) return;
+      locating = false; geoError = error.code === 1 ? 'Akses lokasi ditolak. Izinkan lokasi pada pengaturan browser atau perangkat.' : error.code === 3 ? 'Pencarian lokasi terlalu lama. Coba kembali di area terbuka.' : 'Lokasi belum tersedia. Aktifkan GPS lalu coba kembali.';
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
+  async function startCamera() {
+    const revision = ++cameraRevision;
+    cameraError = ''; cameraLoading = true; resetSelfie(); stopCamera();
+    let opened: MediaStream | null = null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Kamera memerlukan HTTPS dan browser yang mendukung akses kamera.');
+      opened = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } }, audio: false });
+      if (revision !== cameraRevision || mode !== 'in') { opened.getTracks().forEach(track => track.stop()); return; }
+      stream = opened; await tick();
+      if (revision !== cameraRevision || mode !== 'in') { opened.getTracks().forEach(track => track.stop()); if (stream === opened) stream = null; return; }
+      if (video) { video.srcObject = opened; await video.play(); }
+    } catch (error) {
+      if (revision !== cameraRevision) { opened?.getTracks().forEach(track => track.stop()); return; }
+      stopCamera(); cameraError = error instanceof Error && error.name === 'NotAllowedError' ? 'Akses kamera ditolak. Izinkan kamera di pengaturan browser lalu coba lagi.' : error instanceof Error ? error.message : 'Kamera tidak dapat dibuka.';
+    } finally { if (revision === cameraRevision) cameraLoading = false; }
+  }
+  async function capture() {
+    if (capturing) return;
+    if (mode !== 'in' || locating || !validLocation || !location || !selectedOutlet) { cameraError = 'Pastikan lokasi sesuai sebelum mengambil selfie.'; return; }
+    if (!video?.videoWidth) { cameraError = 'Kamera belum siap. Tunggu sebentar lalu coba kembali.'; return; }
+    const revision = ++captureRevision;
+    const snapshot = { outletId, outletName: selectedOutlet.name, ...location, capturedAt: new Date().toISOString() };
+    capturing = true; cameraError = '';
+    try {
+      const blob = await createStampedSelfie(video, snapshot);
+      if (revision !== captureRevision || mode !== 'in') return;
+      selfie = blob; selfieContext = snapshot; preview = URL.createObjectURL(blob); stopCamera();
+    } catch (error) { if (revision === captureRevision) cameraError = error instanceof Error ? error.message : 'Selfie belum berhasil diproses.'; }
+    finally { if (revision === captureRevision) capturing = false; }
+  }
+  async function submit() {
+    if (saving || mode === null) return;
+    const submittingMode = mode, revision = modalRevision;
+    if (!location || !validLocation) { failed = true; message = 'Lokasi harus berada dalam radius outlet dengan akurasi GPS yang memadai.'; return; }
+    if (mode === 'in' && (!selfie || !selfieContext || selfieContext.outletId !== outletId)) { failed = true; message = 'Ambil selfie langsung dari kamera terlebih dahulu.'; return; }
+    saving = true; message = '';
+    try {
+      if (submittingMode === 'in' && selfieContext) await actions.clockIn({ outletId, shift, latitude: selfieContext.latitude, longitude: selfieContext.longitude, accuracy: selfieContext.accuracy, selfie: selfie!, selfieCapturedAt: selfieContext.capturedAt, selfieOutletName: selfieContext.outletName });
+      else await actions.clockOut(location);
+      if (revision !== modalRevision) return;
+      const text = submittingMode === 'in' ? 'Clock in berhasil dicatat. Selamat bekerja!' : 'Clock out berhasil dicatat. Terima kasih untuk hari ini.';
+      close(); failed = false; message = text;
+    } catch (error) { if (revision === modalRevision) { failed = true; message = error instanceof Error ? error.message : 'Absensi belum berhasil dicatat. Coba kembali.'; } }
+    finally { saving = false; }
+  }
+  $: if (selfieContext && selfieContext.outletId !== outletId) resetSelfie();
+  onDestroy(close);
 </script>
 
 <PageHeading eyebrow="KEHADIRAN KASIR" title="Masuk & pulang" description="Catat kehadiran dengan lokasi outlet dan selfie. Delapan jam, termasuk istirahat."/>
@@ -51,13 +110,13 @@
 <Modal open={mode !== null} title={mode === 'in' ? 'Catat masuk kerja' : 'Catat pulang kerja'} description={mode === 'in' ? 'Lokasi dan selfie wajib agar SPV dapat melakukan pengecekan.' : 'Pastikan Anda masih berada di lokasi outlet.'} onclose={close}>
   {#if mode}<form on:submit|preventDefault={submit}>{#if mode === 'in'}<label class="field">Outlet<select class="select" bind:value={outletId} required><option value="">Pilih outlet</option>{#each $app.outlets.filter((outlet) => outlet.active && outlet.id === $app.user?.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><fieldset class="shift-choice"><legend>Shift hari ini</legend>{#each (['morning', 'afternoon', ...($app.user?.canMiddleShift ? ['middle'] : [])] as Shift[]) as value}<label class:selected={shift === value}><input type="radio" name="shift" bind:group={shift} value={value}/><Icon name={value === 'morning' ? 'sun' : value === 'afternoon' ? 'moon' : 'clock'} size={21}/><strong>{shiftLabel(value)}</strong><small>{value === 'morning' ? selectedOutlet?.morningStart || '07:00' : value === 'afternoon' ? selectedOutlet?.afternoonStart || '15:00' : 'Fleksibel'} · 8 jam</small></label>{/each}</fieldset>{:else}<div class="outlet-summary"><Icon name="building" size={19}/>{selectedOutlet?.name} · {activeSession ? shiftLabel(activeSession.shift) : ''}</div>{/if}
     <div class="geo-card"><div class="geo-top"><span class="geo-icon"><Icon name="pin" size={21}/></span><div><strong>{locating ? 'Memeriksa lokasi Anda…' : validLocation ? 'Lokasi sesuai' : location ? 'Lokasi belum memenuhi syarat' : 'Lokasi belum tersedia'}</strong><p>{location && distance !== null ? `${Math.round(distance)} m dari outlet · Radius ${selectedOutlet?.radiusMeters} m · Akurasi ±${Math.round(location.accuracy)} m` : 'Aktifkan GPS dan izinkan akses lokasi perangkat.'}</p></div></div>{#if geoError}<p class="geo-error">{geoError}</p>{/if}{#if location && location.accuracy > 100}<p class="geo-error">GPS belum cukup akurat. Coba di area terbuka dan periksa kembali.</p>{/if}{#if selectedOutlet && (selectedOutlet.latitude === null || selectedOutlet.longitude === null)}<p class="geo-error">Lokasi outlet belum diatur. Hubungi Admin HR.</p>{/if}<button class="btn btn-secondary" type="button" on:click={getLocation} disabled={locating}><Icon name="refresh" size={14}/>{locating ? 'Mencari…' : 'Periksa ulang lokasi'}</button></div>
-    {#if mode === 'in'}<div class="camera-section"><div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div><div class="camera-preview">{#if preview}<img src={preview} alt="Selfie yang akan dikirim"/>{:else}<video bind:this={video} autoplay muted playsinline aria-label="Pratinjau kamera selfie"></video>{#if !stream}<div class="camera-placeholder"><Icon name="camera" size={34} stroke={1.4}/><p>Ambil foto langsung dari kamera</p><small>Pastikan wajah terlihat dengan jelas</small></div>{/if}{/if}</div><div class="camera-actions">{#if selfie}<button class="btn btn-secondary" type="button" on:click={startCamera}>Ambil ulang</button><span><Icon name="check" size={15}/>Selfie siap</span>{:else if stream}<button class="btn btn-primary" type="button" on:click={capture}><Icon name="camera" size={17}/>Ambil selfie</button>{:else}<button class="btn btn-secondary" type="button" on:click={startCamera} disabled={cameraLoading}><Icon name="camera" size={17}/>{cameraLoading ? 'Membuka kamera…' : 'Buka kamera'}</button>{/if}</div>{#if cameraError}<Feedback message={cameraError} error/>{/if}</div>{/if}
+    {#if mode === 'in'}<div class="camera-section"><div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div><p class="hint">Foto mencantumkan outlet, GPS, tanggal dan jam pengambilan (WIB).</p><div class="camera-preview" class:has-photo={!!preview}>{#if preview}<img src={preview} alt="Selfie dengan cap outlet, lokasi dan waktu yang akan dikirim"/>{:else}<video bind:this={video} autoplay muted playsinline aria-label="Pratinjau kamera selfie"></video>{#if !stream}<div class="camera-placeholder"><Icon name="camera" size={34} stroke={1.4}/><p>Ambil foto langsung dari kamera</p><small>Pastikan wajah terlihat dengan jelas</small></div>{/if}{/if}</div><div class="camera-actions">{#if selfie}<button class="btn btn-secondary" type="button" on:click={startCamera} disabled={saving}>Ambil ulang</button><span><Icon name="check" size={15}/>Selfie bertag siap</span>{:else if stream}<button class="btn btn-primary" type="button" on:click={capture} disabled={capturing || locating || !validLocation}><Icon name="camera" size={17}/>{capturing ? 'Memproses selfie…' : 'Ambil selfie'}</button>{:else}<button class="btn btn-secondary" type="button" on:click={startCamera} disabled={cameraLoading || saving}><Icon name="camera" size={17}/>{cameraLoading ? 'Membuka kamera…' : 'Buka kamera'}</button>{/if}</div>{#if selfieContext}<p class="hint">Foto diambil {selfieTimestampLabel(selfieContext.capturedAt)}. Waktu foto mengikuti jam perangkat; clock in dicatat saat konfirmasi.</p>{/if}{#if cameraError}<Feedback message={cameraError} error/>{/if}</div>{/if}
     <Feedback {message} error={failed}/><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={close}>Batal</button><button class="btn btn-primary" type="submit" disabled={saving || locating || !validLocation || (mode === 'in' && !selfie)}>{saving ? 'Mencatat…' : mode === 'in' ? 'Konfirmasi clock in' : 'Konfirmasi clock out'}</button></div>
   </form>{/if}
 </Modal>
 
 <Modal open={selectedRecord !== null} title="Detail kehadiran" description={selectedRecord ? `${displayName(selectedRecord.employeeId)} · ${dateLabel(selectedRecord.clockIn)}` : ''} onclose={() => selectedRecord = null}>
-  {#if selectedRecord}<div class="attendance-detail"><div class="selfie-view">{#if selectedRecord.selfieUrl}<img src={selectedRecord.selfieUrl} alt={`Selfie masuk ${displayName(selectedRecord.employeeId)}`}/>{:else}<Icon name="camera" size={30}/><p>{selectedRecord.selfiePath ? 'Selfie tersimpan privat. Pratinjau belum tersedia.' : 'Tidak ada selfie pada catatan ini.'}</p>{/if}</div><dl><div><dt>Outlet & shift</dt><dd>{outletName(selectedRecord.outletId)} · {shiftLabel(selectedRecord.shift)}</dd></div><div><dt>Masuk / pulang</dt><dd>{timeLabel(selectedRecord.clockIn)} / {timeLabel(selectedRecord.clockOut)} WIB</dd></div><div><dt>Durasi</dt><dd>{durationLabel(selectedRecord.durationMinutes)}</dd></div><div><dt>Keterlambatan</dt><dd>{selectedRecord.shift === 'middle' ? 'Tidak dihitung untuk Middle' : `${selectedRecord.lateMinutes} menit`}</dd></div>{#if attendancePermission(selectedRecord)}<div><dt>Izin terlambat</dt><dd>{attendancePermission(selectedRecord)}</dd></div>{/if}{#if selectedRecord.source === 'manual'}<div><dt>Sumber pencatatan</dt><dd>Manual oleh HR · GPS dan selfie tidak diverifikasi</dd></div>{/if}<div><dt>Jarak clock in / out</dt><dd>{selectedRecord.inDistance === null ? '—' : `${Math.round(selectedRecord.inDistance)} m`} / {selectedRecord.outDistance == null ? '—' : `${Math.round(selectedRecord.outDistance)} m`}</dd></div><div><dt>Akurasi GPS masuk / pulang</dt><dd>{selectedRecord.inAccuracy == null ? '—' : `±${Math.round(selectedRecord.inAccuracy)} m`} / {selectedRecord.outAccuracy == null ? '—' : `±${Math.round(selectedRecord.outAccuracy)} m`}</dd></div>{#if selectedRecord.corrected}<div><dt>Koreksi HR</dt><dd>{selectedRecord.correctionReason}</dd></div>{/if}</dl></div>{#if admin}<a class="btn btn-secondary" href="/reports"><Icon name="edit" size={16}/>Koreksi melalui rekap HR</a>{/if}{/if}
+  {#if selectedRecord}<div class="attendance-detail"><div class="selfie-view">{#if selectedRecord.selfieUrl}<img src={selectedRecord.selfieUrl} alt={`Selfie masuk ${displayName(selectedRecord.employeeId)}`}/><a class="photo-link" href={selectedRecord.selfieUrl} target="_blank" rel="noopener noreferrer">Lihat foto penuh <Icon name="arrow-right" size={14}/></a>{:else}<Icon name="camera" size={30}/><p>{selectedRecord.selfiePath ? 'Selfie tersimpan privat. Pratinjau belum tersedia.' : 'Tidak ada selfie pada catatan ini.'}</p>{/if}</div><dl><div><dt>Outlet & shift</dt><dd>{outletName(selectedRecord.outletId)} · {shiftLabel(selectedRecord.shift)}</dd></div><div><dt>Masuk / pulang</dt><dd>{timeLabel(selectedRecord.clockIn)} / {timeLabel(selectedRecord.clockOut)} WIB</dd></div>{#if selectedRecord.selfieCapturedAt}<div><dt>Foto diambil (waktu perangkat)</dt><dd>{selfieTimestampLabel(selectedRecord.selfieCapturedAt)}</dd></div>{/if}{#if selectedRecord.selfieOutletName}<div><dt>Outlet pada foto</dt><dd>{selectedRecord.selfieOutletName}</dd></div>{/if}{#if selectedRecord.inLatitude != null && selectedRecord.inLongitude != null}<div><dt>Koordinat GPS masuk</dt><dd>{selectedRecord.inLatitude.toFixed(6)}, {selectedRecord.inLongitude.toFixed(6)}</dd></div>{/if}<div><dt>Durasi</dt><dd>{durationLabel(selectedRecord.durationMinutes)}</dd></div><div><dt>Keterlambatan</dt><dd>{selectedRecord.shift === 'middle' ? 'Tidak dihitung untuk Middle' : `${selectedRecord.lateMinutes} menit`}</dd></div>{#if attendancePermission(selectedRecord)}<div><dt>Izin terlambat</dt><dd>{attendancePermission(selectedRecord)}</dd></div>{/if}{#if selectedRecord.source === 'manual'}<div><dt>Sumber pencatatan</dt><dd>Manual oleh HR · GPS dan selfie tidak diverifikasi</dd></div>{/if}<div><dt>Jarak clock in / out</dt><dd>{selectedRecord.inDistance === null ? '—' : `${Math.round(selectedRecord.inDistance)} m`} / {selectedRecord.outDistance == null ? '—' : `${Math.round(selectedRecord.outDistance)} m`}</dd></div><div><dt>Akurasi GPS masuk / pulang</dt><dd>{selectedRecord.inAccuracy == null ? '—' : `±${Math.round(selectedRecord.inAccuracy)} m`} / {selectedRecord.outAccuracy == null ? '—' : `±${Math.round(selectedRecord.outAccuracy)} m`}</dd></div>{#if selectedRecord.corrected}<div><dt>Koreksi HR</dt><dd>{selectedRecord.correctionReason}</dd></div>{/if}</dl></div>{#if admin}<a class="btn btn-secondary" href="/reports"><Icon name="edit" size={16}/>Koreksi melalui rekap HR</a>{/if}{/if}
 </Modal>
 
 <style>
@@ -82,5 +141,10 @@
   .camera-preview { background: var(--surface); border-color: var(--control-border); border-radius: 18px; box-shadow: var(--inset); }
   .camera-actions span { color: #5c512e; }
   .selfie-view { background: var(--surface); border-color: var(--panel-border); box-shadow: var(--inset); border-radius: 16px; color: var(--muted); }
+  .camera-preview.has-photo { height: auto; }
+  .camera-preview img, .selfie-view img { display: block; width: 100%; height: auto; object-fit: contain; }
+  .selfie-view:has(img) { height: auto; min-height: 0; align-self: start; }
+  .photo-link { display: flex; justify-content: center; align-items: center; gap: 7px; min-height: 44px; width: 100%; padding: 10px; border-top: 1px solid var(--panel-border); color: var(--accent); font-size: 11px; }
+  .attendance-detail dd { overflow-wrap: anywhere; }
   .outlet-summary { color: var(--ink); }
 </style>
