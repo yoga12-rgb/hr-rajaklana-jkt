@@ -10,12 +10,14 @@
   import EmptyState from '#lib/components/EmptyState.svelte';
   import Modal from '#lib/components/Modal.svelte';
   import Feedback from '#lib/components/Feedback.svelte';
+  import SelfieGuide from '#lib/components/SelfieGuide.svelte';
   import { dateLabel, timeLabel, durationLabel, todayJakarta } from '#lib/components/format';
   let mode: 'in' | 'out' | null = null, selectedRecord: AttendanceRecord | null = null;
   let outletId = '', shift: Shift = 'morning', saving = false, locating = false, cameraLoading = false;
   let message = '', failed = false, cameraError = '', geoError = '';
   let location: { latitude: number; longitude: number; accuracy: number } | null = null;
   let video: HTMLVideoElement, stream: MediaStream | null = null, selfie: Blob | null = null, preview = '';
+  let videoAspectRatio = 1;
   let selfieContext: (SelfieStamp & { outletId: string }) | null = null, capturing = false;
   let captureRevision = 0, cameraRevision = 0, geoRevision = 0, modalRevision = 0;
   let filterDate = '', outletFilter = '';
@@ -32,7 +34,8 @@
   const outletName = (id: string) => $app.outlets.find((outlet) => outlet.id === id)?.name ?? '—';
   const jakartaDate = (value: string) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(value));
   function meters(lat1: number, lon1: number, lat2: number, lon2: number) { const rad = Math.PI / 180; const a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
-  function stopCamera() { stream?.getTracks().forEach((track) => track.stop()); stream = null; }
+  function stopCamera() { stream?.getTracks().forEach((track) => track.stop()); stream = null; videoAspectRatio = 1; }
+  function updateVideoRatio() { if (video?.videoWidth && video.videoHeight) videoAspectRatio = video.videoWidth / video.videoHeight; }
   function resetSelfie() { captureRevision++; capturing = false; selfie = null; selfieContext = null; if (preview) URL.revokeObjectURL(preview); preview = ''; }
   function close() { modalRevision++; mode = null; cameraRevision++; geoRevision++; cameraLoading = false; locating = false; stopCamera(); resetSelfie(); location = null; }
   function begin(value: 'in' | 'out') { mode = value; outletId = value === 'out' ? activeSession?.outletId ?? '' : $app.user?.outletId ?? ''; shift = 'morning'; message = ''; cameraError = ''; geoError = ''; location = null; resetSelfie(); getLocation(); }
@@ -110,7 +113,39 @@
 <Modal open={mode !== null} title={mode === 'in' ? 'Catat masuk kerja' : 'Catat pulang kerja'} description={mode === 'in' ? 'Lokasi dan selfie wajib agar SPV dapat melakukan pengecekan.' : 'Pastikan Anda masih berada di lokasi outlet.'} onclose={close}>
   {#if mode}<form on:submit|preventDefault={submit}>{#if mode === 'in'}<label class="field">Outlet<select class="select" bind:value={outletId} required><option value="">Pilih outlet</option>{#each $app.outlets.filter((outlet) => outlet.active && outlet.id === $app.user?.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><fieldset class="shift-choice"><legend>Shift hari ini</legend>{#each (['morning', 'afternoon', ...($app.user?.canMiddleShift ? ['middle'] : [])] as Shift[]) as value}<label class:selected={shift === value}><input type="radio" name="shift" bind:group={shift} value={value}/><Icon name={value === 'morning' ? 'sun' : value === 'afternoon' ? 'moon' : 'clock'} size={21}/><strong>{shiftLabel(value)}</strong><small>{value === 'morning' ? selectedOutlet?.morningStart || '07:00' : value === 'afternoon' ? selectedOutlet?.afternoonStart || '15:00' : 'Fleksibel'} · 8 jam</small></label>{/each}</fieldset>{:else}<div class="outlet-summary"><Icon name="building" size={19}/>{selectedOutlet?.name} · {activeSession ? shiftLabel(activeSession.shift) : ''}</div>{/if}
     <div class="geo-card"><div class="geo-top"><span class="geo-icon"><Icon name="pin" size={21}/></span><div><strong>{locating ? 'Memeriksa lokasi Anda…' : validLocation ? 'Lokasi sesuai' : location ? 'Lokasi belum memenuhi syarat' : 'Lokasi belum tersedia'}</strong><p>{location && distance !== null ? `${Math.round(distance)} m dari outlet · Radius ${selectedOutlet?.radiusMeters} m · Akurasi ±${Math.round(location.accuracy)} m` : 'Aktifkan GPS dan izinkan akses lokasi perangkat.'}</p></div></div>{#if geoError}<p class="geo-error">{geoError}</p>{/if}{#if location && location.accuracy > 100}<p class="geo-error">GPS belum cukup akurat. Coba di area terbuka dan periksa kembali.</p>{/if}{#if selectedOutlet && (selectedOutlet.latitude === null || selectedOutlet.longitude === null)}<p class="geo-error">Lokasi outlet belum diatur. Hubungi Admin HR.</p>{/if}<button class="btn btn-secondary" type="button" on:click={getLocation} disabled={locating}><Icon name="refresh" size={14}/>{locating ? 'Mencari…' : 'Periksa ulang lokasi'}</button></div>
-    {#if mode === 'in'}<div class="camera-section"><div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div><p class="hint">Foto mencantumkan outlet, GPS, tanggal dan jam pengambilan (WIB).</p><div class="camera-preview" class:has-photo={!!preview}>{#if preview}<img src={preview} alt="Selfie dengan cap outlet, lokasi dan waktu yang akan dikirim"/>{:else}<video bind:this={video} autoplay muted playsinline aria-label="Pratinjau kamera selfie"></video>{#if !stream}<div class="camera-placeholder"><Icon name="camera" size={34} stroke={1.4}/><p>Ambil foto langsung dari kamera</p><small>Pastikan wajah terlihat dengan jelas</small></div>{/if}{/if}</div><div class="camera-actions">{#if selfie}<button class="btn btn-secondary" type="button" on:click={startCamera} disabled={saving}>Ambil ulang</button><span><Icon name="check" size={15}/>Selfie bertag siap</span>{:else if stream}<button class="btn btn-primary" type="button" on:click={capture} disabled={capturing || locating || !validLocation}><Icon name="camera" size={17}/>{capturing ? 'Memproses selfie…' : 'Ambil selfie'}</button>{:else}<button class="btn btn-secondary" type="button" on:click={startCamera} disabled={cameraLoading || saving}><Icon name="camera" size={17}/>{cameraLoading ? 'Membuka kamera…' : 'Buka kamera'}</button>{/if}</div>{#if selfieContext}<p class="hint">Foto diambil {selfieTimestampLabel(selfieContext.capturedAt)}. Waktu foto mengikuti jam perangkat; clock in dicatat saat konfirmasi.</p>{/if}{#if cameraError}<Feedback message={cameraError} error/>{/if}</div>{/if}
+    {#if mode === 'in'}
+      <div class="camera-section">
+        <div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div>
+        <p class="hint">Foto mencantumkan outlet, GPS, tanggal dan jam pengambilan (WIB).</p>
+        <div class="camera-preview" class:has-photo={!!preview}>
+          {#if preview}
+            <img src={preview} alt="Selfie dengan cap outlet, lokasi dan waktu yang akan dikirim"/>
+          {:else}
+            <div class="camera-live" style:--camera-ratio={videoAspectRatio}>
+              <video bind:this={video} on:loadedmetadata={updateVideoRatio} on:resize={updateVideoRatio} autoplay muted playsinline aria-label="Pratinjau kamera selfie" aria-describedby={stream && !cameraLoading ? 'selfie-guide-instructions' : undefined}></video>
+              {#if stream && !cameraLoading}<SelfieGuide/>{/if}
+            </div>
+            {#if !stream}
+              <div class="camera-placeholder"><Icon name="camera" size={34} stroke={1.4}/><p>Ambil foto langsung dari kamera</p><small>Pastikan wajah terlihat dengan jelas</small></div>
+            {/if}
+          {/if}
+        </div>
+        {#if stream && !cameraLoading && !preview}
+          <p class="camera-guide-copy" id="selfie-guide-instructions"><strong>Posisikan wajah di dalam bingkai.</strong> Sejajarkan mata dengan garis putus-putus, lihat ke kamera, dan pastikan pencahayaan cukup.</p>
+        {/if}
+        <div class="camera-actions">
+          {#if selfie}
+            <button class="btn btn-secondary" type="button" on:click={startCamera} disabled={saving}>Ambil ulang</button><span><Icon name="check" size={15}/>Selfie bertag siap</span>
+          {:else if stream}
+            <button class="btn btn-primary" type="button" on:click={capture} disabled={cameraLoading || capturing || locating || !validLocation}><Icon name="camera" size={17}/>{capturing ? 'Memproses selfie…' : 'Ambil selfie'}</button>
+          {:else}
+            <button class="btn btn-secondary" type="button" on:click={startCamera} disabled={cameraLoading || saving}><Icon name="camera" size={17}/>{cameraLoading ? 'Membuka kamera…' : 'Buka kamera'}</button>
+          {/if}
+        </div>
+        {#if selfieContext}<p class="hint">Foto diambil {selfieTimestampLabel(selfieContext.capturedAt)}. Waktu foto mengikuti jam perangkat; clock in dicatat saat konfirmasi.</p>{/if}
+        {#if cameraError}<Feedback message={cameraError} error/>{/if}
+      </div>
+    {/if}
     <Feedback {message} error={failed}/><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={close}>Batal</button><button class="btn btn-primary" type="submit" disabled={saving || locating || !validLocation || (mode === 'in' && !selfie)}>{saving ? 'Mencatat…' : mode === 'in' ? 'Konfirmasi clock in' : 'Konfirmasi clock out'}</button></div>
   </form>{/if}
 </Modal>
@@ -143,6 +178,12 @@
   .selfie-view { background: var(--surface); border-color: var(--panel-border); box-shadow: var(--inset); border-radius: 16px; color: var(--muted); }
   .camera-preview.has-photo { height: auto; }
   .camera-preview img, .selfie-view img { display: block; width: 100%; height: auto; object-fit: contain; }
+  .camera-preview { --camera-height: 270px; display: grid; place-items: center; height: var(--camera-height); }
+  .camera-live { position: relative; width: min(100%, calc(var(--camera-height) * var(--camera-ratio))); aspect-ratio: var(--camera-ratio); }
+  .camera-live video { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .camera-guide-copy { margin: .8rem 0 0; font-size: .72rem; line-height: 1.7; color: var(--muted); }
+  .camera-guide-copy strong { display: block; color: var(--ink); font-weight: 600; }
+  @media (max-width: 600px) { .camera-preview { --camera-height: 250px; } }
   .selfie-view:has(img) { height: auto; min-height: 0; align-self: start; }
   .photo-link { display: flex; justify-content: center; align-items: center; gap: 7px; min-height: 44px; width: 100%; padding: 10px; border-top: 1px solid var(--panel-border); color: var(--accent); font-size: 11px; }
   .attendance-detail dd { overflow-wrap: anywhere; }
