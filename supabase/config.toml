@@ -21,7 +21,9 @@ enable_signup = false
 minimum_password_length = 10
 
 [auth.email]
-enable_signup = false
+# Keep email/password login available for employee numbers.
+# Public registration remains disabled by [auth].enable_signup above.
+enable_signup = true
 enable_confirmations = true
 
 [storage]

@@ -19,11 +19,14 @@ await db.exec(`
   alter table storage.objects enable row level security;
   grant usage on schema public,auth,storage to authenticated,service_role;
   grant select,insert,update,delete on storage.objects to authenticated;
+  -- Reproduce older projects without automatic service-role table grants.
+  alter default privileges in schema public revoke all on tables from service_role;
   create function storage.foldername(name text) returns text[] language sql immutable as $$ select string_to_array(name,'/'); $$;
   create publication supabase_realtime;
 `);
 const migrationDir = new URL('../migrations/', import.meta.url);
-for (const name of (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort()) {
+const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
+for (const name of migrationNames) {
   let sql = await readFile(new URL(name, migrationDir), 'utf8');
   // gen_random_uuid is built into Postgres17. The pgcrypto package is owned by
   // hosted Supabase but not bundled in PGlite; no other statement is removed.
@@ -36,6 +39,45 @@ const expectError = async (sql,params,fragment) => {
   try { await db.query(sql,params); assert.fail(`Expected error: ${fragment}`); }
   catch (error) { assert.ok(error.message.includes(fragment), error.message); }
 };
+const serviceReadMigration = migrationNames.find(name => name.endsWith('_hr_api_service_role_reads.sql'));
+assert.ok(serviceReadMigration, 'Explicit hr-api service-role read migration is required');
+const serviceReadSql = await readFile(new URL(serviceReadMigration,migrationDir),'utf8');
+// Exercise the exact direct reads used by hr-api under the actual database role.
+// Rollback keeps these permission/reproduction fixtures out of the domain tests.
+await db.exec('begin');
+await db.exec('revoke all on all tables in schema public from service_role');
+await db.query(`select set_config('request.jwt.claim.role','service_role',false)`);
+await db.exec('set role service_role');
+for (const table of ['employee_roles','employees']) {
+  await db.exec('savepoint missing_service_read');
+  await expectError(`select count(*) from public.${table}`,[],'permission denied');
+  await db.exec('rollback to savepoint missing_service_read');
+}
+// Existing SECURITY DEFINER RPCs already work without direct table/sequence grants.
+assert.equal((await scalar('select public.auth_rate_limit($1,10) as allowed',['9'.repeat(64)])).allowed,true);
+await db.exec('reset role');
+await db.exec(serviceReadSql);
+await db.exec('set role service_role');
+assert.equal((await scalar("select count(*)::int as admins from public.employee_roles where role='admin_hr'")).admins,0);
+assert.equal((await db.query('select id,status,account_status,auth_user_id from public.employees')).rows.length,0);
+// The additive migration does not open unrelated tables or allow direct writes.
+for (const statement of [
+  'select * from public.account_tokens',
+  'select * from public.departments',
+  "insert into public.employee_roles(employee_id,role) values(gen_random_uuid(),'admin_hr')",
+  'update public.employees set full_name=full_name',
+  'delete from public.employee_roles'
+]) {
+  await db.exec('savepoint service_least_privilege');
+  await expectError(statement,[],'permission denied');
+  await db.exec('rollback to savepoint service_least_privilege');
+}
+await db.exec('set role anon');
+await db.exec('savepoint anonymous_roles');
+await expectError("select count(*) from public.employee_roles where role='admin_hr'",[],'permission denied');
+await db.exec('rollback to savepoint anonymous_roles');
+await db.exec('rollback');
+console.log('Service reads OK: legacy missing-grant failure reproduced; bootstrap/login SELECTs repaired without client or write access');
 const captureSignature='public.attendance_clock_in(text,double precision,double precision,double precision,text,timestamptz,text)';
 assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',captureSignature,'EXECUTE'])).allowed,true);
 assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',captureSignature,'EXECUTE'])).allowed,false);
@@ -48,23 +90,30 @@ assert.ok(captureFunction.config.includes('search_path=""'),'metadata wrapper fi
 // its fixture so the remaining access-control tests start with their own actors.
 await db.exec('begin');
 await db.query(`select set_config('request.jwt.claim.role','service_role',false)`);
+await db.exec('set role service_role');
+assert.equal((await scalar("select count(*)::int as admins from public.employee_roles where role='admin_hr'")).admins,0);
 await db.exec('savepoint bootstrap_identity');
 await expectError('select public.bootstrap_admin($1,$2,$3,$4)',
   ['10000000-0000-0000-0000-000000000099','Admin Awal','081234567899','Outlet Bootstrap'],'Identitas akun');
 await db.exec('rollback to savepoint bootstrap_identity');
 const reservation=(await scalar('select public.reserve_employee_number() as number')).number;
 const bootstrapAuth='10000000-0000-0000-0000-000000000099';
+await db.exec('reset role');
 await db.query('insert into auth.users(id,email) values($1,$2)',[bootstrapAuth,`${reservation.toLowerCase()}@login.rajaklana.internal`]);
+await db.exec('set role service_role');
 const bootstrap=(await scalar('select to_jsonb(public.bootstrap_admin($1,$2,$3,$4)) as row',[bootstrapAuth,'Admin Awal','081234567899','Outlet Bootstrap'])).row;
 assert.equal(bootstrap.employee_number,reservation,'bootstrap preserves Authalias');
 assert.equal(bootstrap.auth_user_id,bootstrapAuth);
 assert.equal(bootstrap.approval_mode,'external');
+assert.equal((await scalar("select count(*)::int as admins from public.employee_roles where role='admin_hr'")).admins,1);
+assert.deepEqual(await scalar('select id,status,account_status,auth_user_id from public.employees where employee_number=$1 and auth_user_id=$2',[reservation,bootstrapAuth]),
+  {id:bootstrap.id,status:'active',account_status:'active',auth_user_id:bootstrapAuth});
 await db.exec('savepoint bootstrap_duplicate');
 await expectError('select public.bootstrap_admin($1,$2,$3,$4)',
   [bootstrapAuth,'Admin Awal','081234567899','Outlet Bootstrap Kedua'],'sudah dibuat');
 await db.exec('rollback to savepoint bootstrap_duplicate');
 await db.exec('rollback');
-console.log('Bootstrap OK: reservednumber preserved, activeadmin, externalapproval');
+console.log('Bootstrap OK: actual service_role, reservednumber preserved, activeadmin, login/link reads, externalapproval');
 const adminAuth='10000000-0000-0000-0000-000000000001';
 const bakerAuth='10000000-0000-0000-0000-000000000002';
 const cashierAuth='10000000-0000-0000-0000-000000000003';

@@ -1,6 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.117.2';
 import { corsHeaders } from 'npm:@supabase/supabase-js@2.117.2/cors';
 import { configureOrigins, guardOriginRequest } from './origins.ts';
+import { classifyLoginEmployeeFailure, classifyPasswordLoginFailure } from './login-errors.ts';
 
 // Service credentials never leave this worker. Public actions have narrow inputs;
 // admin actions additionally use getUser and the database's role checks.
@@ -82,13 +83,15 @@ Deno.serve(async (req: Request) => {
       }
       // GoTrue checks the password; the bridge never stores or hashes passwords.
       const { data, error } = await passwordClient().auth.signInWithPassword({ email: accountEmail(number), password: suppliedPassword });
-      if (error || !data.session) throw new ApiError('Nomor karyawan atau kata sandi tidak sesuai', 401);
-      const { data: employee } = await admin.from('employees').select('id,status,account_status,auth_user_id')
-        .eq('employee_number', number).eq('auth_user_id', data.user.id).maybeSingle();
-      if (!employee || employee.status !== 'active' || employee.account_status !== 'active') {
-        await admin.auth.admin.signOut(data.session.access_token, 'global');
-        throw new ApiError('Nomor karyawan atau kata sandi tidak sesuai', 401);
+      if (error || !data.session || !data.user) {
+        const failure = classifyPasswordLoginFailure(error);
+        throw new ApiError(failure.message, failure.status);
       }
+      const { data: employee, error: employeeError } = await admin.from('employees').select('id,status,account_status,auth_user_id')
+        .eq('employee_number', number).eq('auth_user_id', data.user.id).maybeSingle();
+      const employeeFailure = await classifyLoginEmployeeFailure(employee, employeeError,
+        scope => admin.auth.admin.signOut(data.session!.access_token, scope));
+      if (employeeFailure) throw new ApiError(employeeFailure.message, employeeFailure.status);
       result = { session: data.session, user: data.user };
     } else if (action === 'issue_activation' || action === 'issue_reset') {
       const frontendOrigin = baseOrigin();

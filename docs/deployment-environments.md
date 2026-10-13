@@ -1,33 +1,40 @@
 # Production dan Preview
 
-Production dan Preview memakai build frontend serta proyek Supabase yang terpisah. Selama tahap uji coba, kedua lingkungan hanya diisi akun dan data fiktif. Nama environment **Production** menunjukkan target deployment utama; aplikasi belum layak dipakai untuk operasional sebelum pemeriksaan layanan hosted dan perangkat selesai.
+Production dan Preview memakai build frontend serta proyek Supabase yang terpisah. Selama tahap uji coba, gunakan data fiktif untuk pengujian karyawan dan operasional. Nama environment **Production** menunjukkan target deployment utama; aplikasi belum layak dipakai untuk operasional sebelum pemeriksaan layanan hosted dan perangkat selesai.
 
-## Status penyiapan — 12 Oktober 2026
+## Status terbaru — 13 Oktober 2026
 
-Kedua proyek Supabase berada di organisasi **Rajaklana** (`bvwgekyfibloctfslgdf`) dengan paket **Free**. Seluruh enam migrasi aplikasi telah diterapkan pada kedua proyek; versi dalam riwayat migrasi sesuai berkas repositori. Edge Function `hr-api` aktif pada keduanya, versi 1 dengan hash source yang sama. Ini membuktikan penyiapan backend, bukan kelulusan semua alur aplikasi melalui browser.
+Kedua proyek Supabase berada di organisasi **Rajaklana** (`bvwgekyfibloctfslgdf`) dengan paket **Free**. Tujuh migrasi aplikasi telah diterapkan pada kedua proyek; versi/nama riwayatnya sesuai repositori, termasuk perbaikan grant server `20261012094903_hr_api_service_role_reads.sql` yang diuji pada Preview sebelum Production. Frontend tetap memakai source commit `2f4f96a`. Edge Function `hr-api` saat ini ACTIVE: Production versi 3, Preview versi 2, dengan hash bundle yang sama setelah perbaikan pelaporan kegagalan Auth.
 
-Vercel memakai proyek **hr-rajaklana-jkt** (`prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`) pada tim **hr-rajaklana** (`team_S1Sn08iaksD0GQF4kk49kTkH`). Kedua deployment berstatus **READY** dari commit `2f4f96a`, dengan alias Production dan Preview yang aktif. Preview tetap memakai proteksi akses Vercel. Admin HR pertama masih menunggu kode bootstrap privat dan pengaturan password pribadi melalui `/setup`. Hasil build serta pemeriksaan HTTP/backend dicatat pada [verifikasi hosted](hosted-verification.md).
+Vercel memakai proyek **hr-rajaklana-jkt** (`prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`) pada tim **hr-rajaklana** (`team_S1Sn08iaksD0GQF4kk49kTkH`). Rilis frontend awal 12 Oktober dari commit `2f4f96a` tetap **READY**, dengan alias Production dan Preview aktif. Preview tetap memakai proteksi akses Vercel. Pada verifikasi 13 Oktober, Admin HR Production telah dibuat, aktif, dan terhubung ke Auth; pengguna telah mengonfirmasi login berhasil serta Dashboard terbuka. Admin HR Preview belum dibuat. Hasil build serta pemeriksaan HTTP/backend dicatat pada [verifikasi hosted](hosted-verification.md).
 
-Deployment saat ini dibuat melalui CLI. Git integration Vercel **belum terhubung**; push GitHub menjalankan pemeriksaan CI dan belum menerbitkan frontend otomatis.
+Rilis awal 12 Oktober memuat enam migrasi. Perbaikan grant server menambah migrasi ketujuh; pembacaan hosted dan metadata ketujuhnya telah diverifikasi pada kedua proyek. Perbaikan grant tidak memerlukan rebuild frontend. Perbaikan Auth berikutnya mengaktifkan provider Email/password dan memperbarui Edge Function.
 
-Pengguna telah menyetujui koneksi Git dan deploy otomatis. Penautan yang dijalankan masih ditolak Vercel dengan HTTP 400: akun integrasi memerlukan akses admin/write ke repositori `hr-rajaklana-jkt`. Pemilik perlu membuka pengaturan Git proyek, menghubungkan akun GitHub yang memiliki akses tersebut, dan mengizinkan Vercel GitHub App mengakses repositori. Setelah penautan berhasil, verifikasi Production branch, konfigurasi Preview, dan satu push uji sebelum menyatakan deploy otomatis aktif. [Integrasi resmi Vercel untuk GitHub](https://vercel.com/docs/git/vercel-for-github).
+Rilis awal dibuat melalui CLI. Git integration Vercel kini **CONNECTED** ke repositori `yoga12-rgb/hr-rajaklana-jkt`; API proyek mengonfirmasi provider `github`, owner `yoga12-rgb`, repository `hr-rajaklana-jkt`, dan Production branch `main`. Deployment otomatis dari push belum selesai diverifikasi.
+
+Penautan awal ditolak ketika memakai akun kolaborator. Repositori dimiliki akun personal dan Vercel mensyaratkan **Owner** untuk penautan; Collaborator tidak cukup. Pengguna kemudian menyelesaikan OAuth GitHub Owner Yoga dengan akun Vercel Raja tetap dipakai, dan penautan CLI berhasil. [Ketentuan repo personal Vercel](https://vercel.com/docs/git/vercel-for-github#personal-account-repositories).
+
+[Settings → Git proyek Vercel](https://vercel.com/hr-rajaklana/hr-rajaklana-jkt/settings/git) menampilkan pengaturan integrasi proyek. Pesan “No Git Repositories Found” dan batas request `429` merupakan kendala pada pemeriksaan awal sebelum koneksi berhasil.
+
+Domain Preview `hr-rajaklana-jkt-preview.vercel.app` sudah menjadi domain proyek yang terverifikasi dengan `gitBranch=codex/preview` pada project ID `prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`. Domain Production memakai `gitBranch=null` dan mengikuti Production branch `main`. Deployment dari push baru masih diuji; rilis yang sebelumnya diperiksa berasal dari CLI. Keduanya memakai environment Production/Preview standar, tanpa custom environment berbayar.
 
 ## Pemisahan lingkungan
 
 | Komponen | Production | Preview |
 | --- | --- | --- |
-| Branch yang disarankan saat integrasi Git disiapkan | `main` | `codex/preview` |
+| Branch Git | `main` — Production branch dikonfirmasi pada API proyek | `codex/preview` — domain proyek terverifikasi mengikuti branch ini |
 | Environment Vercel | Production | Preview |
 | `PUBLIC_APP_ENV` | `production` | `preview` |
 | Proyek Supabase | Rajaklana — `iywvnopsooroediwawnd` | hr-rajaklana-preview — `lypsqrwjzrmuyqtdcegr` |
 | URL Supabase | `https://iywvnopsooroediwawnd.supabase.co` | `https://lypsqrwjzrmuyqtdcegr.supabase.co` |
 | Paket Supabase | Free | Free |
 | Database, Auth, foto selfie | Hanya milik Production | Hanya milik Preview |
+| Admin / karyawan pada 13 Oktober | 1 / 1; admin aktif dan terhubung Auth | 0 / 0; setup admin masih diperlukan |
 | Origin frontend | [hr-rajaklana-jkt.vercel.app](https://hr-rajaklana-jkt.vercel.app) — aktif, READY | [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app) — aktif, READY, proteksi Vercel |
 
 Jangan memasang URL atau kunci proyek Production pada environment Preview. Nomor karyawan, password, token aktivasi, saldo cuti, dan foto tidak disalin antar lingkungan. Sebuah Preview deployment boleh dihapus atau diganti tanpa memindahkan data ke Production.
 
-Saat integrasi Git disiapkan, gunakan `codex/preview` sebagai branch uji yang stabil. Setelah perubahan diterima, kode yang sama masuk ke `main`, lalu dibangun ulang dengan konfigurasi Production. Deployment yang tersedia sekarang memakai source commit yang sama melalui CLI. Mempromosikan Preview tidak memindahkan database maupun akun Preview ke Production.
+Gunakan `codex/preview` sebagai branch uji yang stabil; domain Preview telah dikonfigurasi untuk mengikuti branch tersebut. Setelah perubahan diterima, kode yang sama masuk ke `main`, lalu dibangun ulang dengan konfigurasi Production. Deployment yang sebelumnya diperiksa pada laporan ini memakai source commit yang sama melalui CLI; pengujian push berikutnya belum selesai. Mempromosikan Preview tidak memindahkan database maupun akun Preview ke Production.
 
 Vercel membuat URL deployment yang unik dan dapat memberi URL branch yang stabil melalui Git integration. `APP_ORIGIN` adalah origin utama per proyek dan selalu dipakai sebagai tujuan undangan/aktivasi/pemulihan. URL deployment tambahan hanya diizinkan melalui daftar `APP_ALLOWED_ORIGINS` yang eksplisit; tidak ada wildcard untuk seluruh domain Vercel. [Dokumentasi Git Vercel](https://vercel.com/docs/git), [environment variables Vercel](https://vercel.com/docs/environment-variables).
 
@@ -60,15 +67,29 @@ Setiap proyek mempunyai Edge Function `hr-api` serta secret sendiri:
 | `SUPABASE_ANON_KEY` | Bawaan Supabase Edge Functions | Kunci publik proyek terkait |
 | `SUPABASE_SERVICE_ROLE_KEY` | Bawaan Supabase Edge Functions | Kredensial server; tidak boleh dikirim ke frontend |
 
-Matikan public signup. Atur minimum password 10 karakter dan Auth Site URL sesuai origin lingkungan. Aktivasi karyawan tetap memakai token aplikasi yang dikirim manual melalui WhatsApp, sehingga tidak memerlukan akun email karyawan atau SMTP.
+Matikan public signup secara global dan tetap aktifkan provider Email/password untuk login nomor karyawan yang dipetakan ke alias Auth internal. Pada konfigurasi CLI, `[auth].enable_signup=false` dan `[auth.email].enable_signup=true`. Pada kedua layanan hosted, pengaturan telah diperiksa: `disable_signup=true`, `external.email=true`. Provider aktif tidak membuka pendaftaran publik. Minimum password 10 karakter dan Auth Site URL mengikuti origin lingkungan. Aktivasi karyawan tetap memakai token aplikasi yang dikirim manual melalui WhatsApp, sehingga tidak memerlukan akun email karyawan atau SMTP.
 
 Origin utama pada server sudah diset ke domain Production dan alias Preview aktif pada tabel di atas. Jika memakai URL deployment tambahan, tambahkan origin persisnya pada `APP_ALLOWED_ORIGINS` di proyek yang sesuai. Hanya origin HTTPS tanpa path, query, kredensial, fragment, atau wildcard yang diterima; HTTP hanya untuk localhost. Permintaan dari origin yang tidak terdaftar ditolak sebelum body, rate limit, Auth, atau database diproses. Origin tambahan tidak mengubah tujuan tautan akun yang tetap mengikuti `APP_ORIGIN`.
 
-Gunakan `/setup` pada masing-masing frontend untuk membuat Admin HR pertama. Isi enam kolom: nama lengkap, nomor WhatsApp, nama outlet pertama, kode bootstrap, **password pribadi yang dipilih sendiri** minimal 10 karakter, dan konfirmasi password yang sama. Nomor karyawan dihasilkan sistem. Setelah berhasil, hapus `HR_BOOTSTRAP_SECRET` dari proyek terkait dan berkas lokal operator. Outlet pertama belum memiliki koordinat; lengkapi lokasi, radius, jam, dan aturan shift sebelum mencoba absensi.
+Admin HR Production sudah dibuat; lanjutkan ke login dan jangan mengulang `/setup` Production. Untuk Preview yang belum mempunyai admin, gunakan `/setup` dan isi enam kolom: nama lengkap, nomor WhatsApp, nama outlet pertama, kode bootstrap, **password pribadi yang dipilih sendiri** minimal 10 karakter, dan konfirmasi password yang sama. Nomor karyawan dihasilkan sistem. Setelah berhasil, hapus `HR_BOOTSTRAP_SECRET` dari proyek terkait dan berkas lokal operator. Outlet pertama belum memiliki koordinat saat bootstrap; lengkapi lokasi, radius, jam, dan aturan shift sebelum mencoba absensi.
 
-Kode bootstrap kedua lingkungan tersedia untuk operator pada berkas lokal yang diabaikan Git: `.vercel/supabase-production/bootstrap-code.txt` dan `.vercel/supabase-preview/bootstrap-code.txt`. Nilainya tidak disimpan di dokumentasi, Git, frontend, atau artefak deployment. Membuat akun admin dan memilih password tetap langkah pengguna; akun belum dibuat otomatis atas nama pengguna.
+Kode bootstrap Preview masih tersedia untuk operator pada berkas lokal yang diabaikan Git: `.vercel/supabase-preview/bootstrap-code.txt`; admin Preview belum dibuat. `HR_BOOTSTRAP_SECRET` Production telah dihapus dari server dengan hasil perintah sukses, lalu daftar metadata secret memastikan kode tersebut tidak ada dan `APP_ORIGIN` tetap ada. Berkas lokal Production `bootstrap-code.txt` dan `edge-secrets.env` juga telah dihapus dan ketidakberadaannya diverifikasi. Nilai kode tidak disimpan di dokumentasi, Git, frontend, atau artefak deployment. Password admin dipilih sendiri oleh pengguna.
 
 Function menggunakan `verify_jwt=false` karena login, aktivasi, dan bootstrap adalah endpoint publik. Setiap aksi administratif memverifikasi JWT pengguna dan otorisasi database di dalam function. Bucket selfie tetap privat. [Deploy Edge Functions](https://supabase.com/docs/guides/functions/deploy).
+
+### Kendala pengaturan admin pertama
+
+Pesan “Admin awal sudah dibuat atau bootstrap belum siap” pada Production ditemukan ketika jumlah admin/karyawan masih 0. Edge Function memakai `service_role` untuk membaca tabel HR, tetapi grant `SELECT` yang diperlukan pada `employees` dan `employee_roles` belum tersedia. `USAGE` schema dan bypass RLS tidak memberikan hak baca tabel secara otomatis. Preview baru mempunyai default grant yang berbeda, sehingga perbedaan izin pada proyek lama perlu ditangani eksplisit.
+
+Migrasi `20261012094903_hr_api_service_role_reads.sql` telah diterapkan pada Preview, diuji dengan `SET LOCAL ROLE service_role`, lalu diterapkan dan diuji pada Production. Pada pemeriksaan perbaikan sebelum setup, count admin/karyawan berhasil pada keduanya dengan hasil 0/0. Perbaikan hanya menambah **SELECT pada dua tabel tersebut** untuk role server; tidak menambah akses anonim atau izin tulis. Pada 13 Oktober, count Production telah menjadi 1 admin/1 karyawan dan admin aktif terhubung Auth; Preview tetap 0/0. Diagnosis awal bukan kesalahan password atau kode bootstrap pengguna. [Grant dan RLS Supabase](https://supabase.com/docs/guides/api/securing-your-api).
+
+Catalog akhir pada kedua proyek memastikan SELECT `service_role` tersedia untuk kedua tabel, SELECT `anon` tetap tidak tersedia, semua tabel `public` memakai RLS, dan riwayat versi/nama migrasi ketujuh telah sesuai. Perbaikan ini tidak memerlukan rebuild frontend atau redeploy Edge Function.
+
+### Kendala provider login
+
+Lima kejadian Auth awal setelah setup menghasilkan token response `422` dengan kode `email_provider_disabled`. Penyebabnya adalah `[auth.email].enable_signup=false` yang menonaktifkan provider Email/password; kejadian ini bukan bukti password pengguna salah. Konfigurasi sekarang tetap menolak public signup secara global dan mengaktifkan provider Email/password. Diff config yang diterapkan hanya mengubah pengaturan Email tersebut, diuji pada Preview terlebih dahulu lalu Production.
+
+Auth GET settings pada kedua proyek menunjukkan `external.email=true` dan `disable_signup=true`. Login dummy langsung ke Auth Production menghasilkan `400 invalid_credentials` sebagaimana diharapkan, sementara Edge `hr-api` pada keduanya menghasilkan `401` untuk kredensial dummy. Bootstrap Production yang telah ditutup menghasilkan `403`. Pengguna kemudian mengonfirmasi login Production berhasil dan Dashboard terbuka; alur absensi, kamera/GPS, dan lintas akun tetap perlu diuji terpisah.
 
 `supabase/config.toml` secara eksplisit mengatur `[storage.vector] enabled = false`. Aplikasi memakai Storage biasa untuk selfie/dokumen dan tidak memerlukan Vector Storage. Konfigurasi eksplisit ini menghindari penolakan `402` saat mendorong konfigurasi layanan yang tidak tersedia pada paket Free; tidak ada fitur berbayar yang diaktifkan.
 
@@ -93,12 +114,12 @@ npm run build
 
 Dependency Supabase dan PGlite dipin, dengan `package-lock.json` sebagai sumber versi instalasi. Tes database menjalankan migrasi dan fungsi Postgres asli pada PGlite dalam memori; hanya plumbing Auth/Storage milik Supabase yang ditiru. Tes ini tidak menghubungi proyek hosted dan belum membuktikan deployment Auth, Storage, atau Edge Function. [Keamanan instalasi npm Supabase](https://supabase.com/docs/guides/security/npm-security).
 
-`test:database:legacy` menjalankan 13 fixture untuk penggantian schema lama, termasuk penolakan kondisi yang tidak sesuai dan rollback transaksi. Pemeriksaan lokal pada penyiapan ini mencatat 163 unit test lulus, Svelte/TypeScript tanpa error atau warning, dan build berhasil. Kedua build remote juga menjalankan instalasi bersih, check, dan build hingga READY. Hasil ini belum membuktikan akun admin telah dibuat atau seluruh alur digunakan manusia.
+`test:database:legacy` menjalankan 13 fixture untuk penggantian schema lama, termasuk penolakan kondisi yang tidak sesuai dan rollback transaksi. Pemeriksaan lokal terbaru mencatat **190 unit test dalam 11 berkas** lulus serta Svelte/TypeScript tanpa error atau warning. Harness database menjalankan tujuh migrasi dan 13 fixture penggantian schema lama lulus. Kedua build remote pada rilis awal juga menjalankan instalasi bersih, check, dan build hingga READY. Verifikasi SQL 13 Oktober mengonfirmasi admin Production aktif, dan pengguna mengonfirmasi login/Dashboard berhasil; alur operasional lengkap masih perlu diuji.
 
 Actions resmi dipin ke SHA rilis yang diverifikasi: [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) dan [setup-node v6.5.0](https://github.com/actions/setup-node/releases/tag/v6.5.0). Workflow memiliki izin `contents: read`, tidak menyimpan kredensial checkout, serta tidak mengunggah `.env` atau artefak berisi secret. [Panduan keamanan GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use).
 
-CI memeriksa kode; **workflow ini belum menjadi gate deployment Vercel** dan tidak melakukan deployment. Git integration Vercel belum terhubung. Jika integrasi Git diaktifkan nanti, Vercel dapat membangun setiap push secara independen; gate otomatis masih memerlukan konfigurasi Deployment Checks atau alur staging dan promotion tambahan. [Deployment Checks Vercel](https://vercel.com/docs/deployment-checks).
+CI memeriksa kode; **workflow ini belum menjadi gate deployment Vercel** dan tidak melakukan deployment. Git integration Vercel sudah terhubung, sehingga Vercel dapat membangun push secara independen dari pemeriksaan CI, tetapi satu push uji belum diverifikasi. Gate otomatis masih memerlukan konfigurasi Deployment Checks atau alur staging dan promotion tambahan. [Deployment Checks Vercel](https://vercel.com/docs/deployment-checks).
 
-CI commit `2f4f96a` telah berhasil pada [run `main`](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/38228695148) dan [run branch Preview](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/38229327856). Build hosted menggunakan perintah `npm run check && npm run build`. Kedua database masih memiliki **0 karyawan dan 0 Admin HR**, semua tabel `public` memakai RLS, dan tiga bucket aplikasi tetap privat. Lihat [laporan hosted](hosted-verification.md) untuk bukti browser, batas pemeriksaan Preview, serta temuan advisors yang masih dicatat.
+CI commit `2f4f96a` telah berhasil pada [run `main`](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/38228695148) dan [run branch Preview](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/38229327856). Build hosted menggunakan perintah `npm run check && npm run build`. Pada verifikasi 13 Oktober, Production memiliki **1 karyawan dan 1 Admin HR aktif**, Preview masih **0/0**, semua tabel `public` memakai RLS, dan tiga bucket aplikasi tetap privat. Lihat [laporan hosted](hosted-verification.md) untuk bukti browser, batas pemeriksaan Preview, serta temuan advisors yang masih dicatat.
 
 Sebelum digunakan karyawan, uji kedua lingkungan: bootstrap/login, undangan dan aktivasi, batas akses antar akun, cuti/izin dan persetujuan, selfie/GPS pada ponsel, foto privat setelah reload, serta realtime di dua perangkat. Vercel Hobby hanya untuk uji pribadi nonkomersial; penggunaan HR perusahaan memerlukan paket atau hosting yang sesuai sebelum operasional. Tidak ada upgrade berbayar otomatis. [Ketentuan Vercel Hobby](https://vercel.com/docs/plans/hobby).
