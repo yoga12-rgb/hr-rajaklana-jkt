@@ -28,6 +28,7 @@ export interface LeaveRequest {
   approverId: string | null; note: string; externalApproverName: string; createdAt: string;
   adjustment: LeaveAdjustment | null;
   extent?: LeaveExtent; attachmentUrl?: string; attachmentName?: string;
+  attachmentPath?: string;
 }
 export interface AttendanceRecord {
   id: string; employeeId: string; outletId: string; shift: Shift; clockIn: string; clockOut: string | null;
@@ -42,11 +43,16 @@ export interface AttendanceRecord {
 }
 export interface AuditEntry { id: string; actorId: string; action: string; entityId: string; at: string; detail: string }
 export interface LeaveLedgerEntry { id: string; employeeId: string; year: number; days: number; requestId: string }
+export interface AppNotification {
+  id: string; employeeId: string; title: string; body: string; href: string;
+  entityId: string; createdAt: string; readAt: string | null;
+}
 export interface AppState {
   mode: 'demo' | 'live'; initialized: boolean; loading: boolean; user: Employee | null;
   employees: Employee[]; outlets: Outlet[]; departments: Department[]; positions: Position[];
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];
+  notifications?: AppNotification[];
   balanceCache?: Record<string, number>;
   connected: boolean; error: string | null;
 }

@@ -62,15 +62,16 @@
         <li>Buka <a href="/leave">Cuti & izin</a> (menu <strong>Pengajuan</strong> di ponsel), lalu pilih <strong>Buat pengajuan</strong>.</li>
         <li>Pilih cuti tahunan, izin pribadi, atau izin sakit. Isi tanggal, alasan, dan lampiran jika diperlukan. Lampiran dapat berupa PDF atau foto JPG/PNG/WebP, maksimal <strong>5 MB</strong>.</li>
         <li>Untuk izin sebagian hari, gunakan <strong>satu tanggal</strong>: datang terlambat, keluar sementara, atau pulang lebih awal. Isi jam yang diminta; keluar sementara memerlukan jam keluar dan jam kembali.</li>
-        <li>Kirim dan pantau detail pengajuan. Jika status <strong>Perlu dilengkapi</strong>, baca catatan atasan, pilih <strong>Lengkapi pengajuan</strong>, lalu <strong>Kirim ulang</strong>.</li>
+        <li>Kirim dan pantau detail pengajuan. Pada status <strong>Menunggu</strong> atau <strong>Perlu dilengkapi</strong>, Anda dapat memperbaiki tanggal, alasan, jam izin yang berlaku, serta mengganti atau menghapus lampiran. Baca catatan atasan, lalu pilih <strong>Kirim untuk ditinjau</strong>.</li>
       </ol>
       <p class="rule">Status <strong>Menunggu</strong> belum berarti disetujui. Hasil keputusan, catatan atasan, dan potongan saldo terlihat pada detail pengajuan.</p>
+      <p class="hint">Pengajuan yang sama persis diblokir. Tanggal yang bertumpang tindih dengan pengajuan atau kehadiran lain menampilkan peringatan untuk diperiksa; izin beberapa jam tetap dapat berdampingan dengan kehadiran.</p>
     </section>
 
     <section class="panel guide-section" id="kehadiran">
       <div class="section-title"><span>03</span><h2>Kasir: masuk dan pulang</h2></div>
       <ol>
-        <li>Buka <strong>Kehadiran</strong>, pilih shift, izinkan lokasi perangkat, dan ambil <strong>selfie baru langsung dari kamera</strong> setelah lokasi sesuai. Foto memuat nama outlet, koordinat GPS, serta tanggal dan jam pengambilan dalam WIB. Konfirmasi clock in; pastikan pesan berhasil dan catatan masuk muncul.</li>
+        <li>Buka <strong>Kehadiran</strong>, pilih dan konfirmasi shift dengan memeriksa ringkasan jadwal masuk serta target selesai. Izinkan lokasi perangkat dan ambil <strong>selfie baru langsung dari kamera</strong> setelah lokasi sesuai. Foto memuat nama outlet, koordinat GPS, serta tanggal dan jam pengambilan dalam WIB. Konfirmasi clock in; pastikan pesan berhasil dan catatan masuk muncul.</li>
         <li>Saat selesai bekerja, lakukan <strong>clock out</strong> dan periksa hasilnya. Lokasi diperiksa kembali; selfie hanya wajib saat clock in.</li>
       </ol>
       <div class="shift-table">
@@ -85,7 +86,8 @@
         </table>
       </div>
       <p>Jam kerja <strong>8 jam sudah termasuk istirahat</strong>; tidak ada clock istirahat. Jam awal Pagi/Sore, jam operasional, radius GPS, dan toleransi keterlambatan mengikuti pengaturan masing-masing outlet. Middle memerlukan izin HR dan tidak menghitung keterlambatan.</p>
-      <p class="rule">Clock in dan clock out wajib berada dalam radius outlet dengan akurasi GPS yang memadai. Selesaikan sesi terbuka sebelum masuk kembali; satu clock in per hari. Keterlambatan tetap tercatat untuk ditinjau, termasuk saat ada izin datang terlambat.</p>
+      <p class="rule">Clock in dan clock out wajib berada dalam radius outlet dengan akurasi GPS yang memadai. Selesaikan sesi terbuka sebelum masuk kembali; satu clock in per hari. Keterlambatan aktual tetap tercatat, dengan pemisahan menit berizin sesuai izin datang terlambat yang disetujui dan menit tanpa izin, termasuk waktu yang melewati batas izin.</p>
+      <p class="hint">Sesi yang belum ditutup menampilkan pengingat setelah <strong>8 jam dari clock in aktual</strong> dan tanda perlu diperiksa setelah <strong>12 jam</strong>. Aplikasi tidak melakukan clock out otomatis; hubungi HR jika lupa mencatat pulang.</p>
       <p class="hint">Durasi kurang dari 8 jam tetap dicatat untuk ditinjau SPV. Selisih durasi tidak otomatis menjadi lembur atau potongan cuti.</p>
       <p class="hint">Waktu pengambilan foto mengikuti jam perangkat dan dicatat terpisah dari waktu clock in. Jika lokasi diperiksa ulang, ambil selfie ulang agar cap foto sesuai. Dari detail kehadiran, pilih <strong>Lihat foto penuh</strong> untuk membaca cap dengan lebih jelas.</p>
     </section>
@@ -97,6 +99,7 @@
         <li><strong>Koordinasi:</strong> tim Produksi ditinjau Head Baker; Head Baker dan jabatan lain ditinjau SPV Penjualan & SDM, sesuai atasan yang ditetapkan HR.</li>
         <li><strong>Admin HR:</strong> kelola outlet, departemen, dan jabatan melalui <strong>Organisasi</strong>. Tambah karyawan, tetapkan penempatan/atasan, lalu buat tautan undangan melalui <strong>Karyawan</strong>. Salin pesan untuk dikirim manual melalui WhatsApp.</li>
         <li><strong>Rekap:</strong> periksa kehadiran, pengajuan, dan riwayat. Cocokkan GPS serta selfie melalui detail <strong>Kehadiran</strong>. Koreksi atau pencatatan manual membutuhkan alasan serta sumber konfirmasi. Catatan manual ditandai sebagai catatan tanpa verifikasi GPS/selfie.</li>
+        <li><strong>Koreksi cuti oleh HR:</strong> pada <strong>Cuti & izin → Pengajuan karyawan</strong>, HR dapat mengubah tanggal/potongan atau membatalkan pengajuan disetujui milik karyawan lain, termasuk tanggal lampau, selama tidak ada perubahan yang masih menunggu. Alasan wajib; pengajuan eksternal juga memerlukan nama pemberi keputusan. Periksa alokasi saldo per tahun dan tautan riwayat perubahan.</li>
       </ul>
       <p class="rule">Pengajuan SPV Penjualan & SDM diputuskan Bos/Manager Pusat di luar aplikasi, lalu dicatat Admin HR lain dengan nama pemberi keputusan. Pengguna tidak boleh menyetujui pengajuan, membuat catatan manual, atau mengoreksi absensi dirinya sendiri.</p>
     </section>
@@ -107,9 +110,10 @@
         <div><dt>Hak tahunan</dt><dd><strong>12 hari</strong>, mulai setelah bekerja <strong>3 bulan kalender</strong>. Pada tahun hak mulai berlaku, jatah prorata 1 hari per sisa bulan, termasuk bulan hak dimulai. Contoh masuk 15 Juli → berhak 15 Oktober → jatah 3 hari. Tahun berikutnya 12 hari.</dd></div>
         <div><dt>Masa berlaku</dt><dd>Mengikuti tahun kalender. Sisa saldo <strong>hangus setiap 31 Desember</strong> dan tidak dibawa ke tahun berikutnya.</dd></div>
         <div><dt>Potongan</dt><dd>Ditentukan atasan saat persetujuan: <strong>0</strong> berarti tanpa potongan; pecahan seperti <strong>0,5 hari</strong> diperbolehkan. Saldo tidak boleh negatif. Hari libur tetap yang dicatat HR tidak otomatis menentukan potongan.</dd></div>
-        <div><dt>Menunggu atau Perlu dilengkapi</dt><dd>Pengajuan dengan status ini dapat diubah atau dibatalkan langsung. Perubahan tanggal yang sudah lewat diarahkan ke HR.</dd></div>
+        <div><dt>Menunggu atau Perlu dilengkapi</dt><dd>Tanggal, alasan, jam izin yang berlaku, dan lampiran dapat diperbarui lalu dikirim untuk ditinjau kembali. Pengajuan juga dapat dibatalkan langsung.</dd></div>
         <div><dt>Sudah disetujui</dt><dd>Perubahan tanggal atau pembatalan memerlukan <strong>persetujuan ulang</strong>. Tanggal dan potongan lama tetap berlaku selama menunggu atau jika permintaan ditolak. Hasil dan alasan keputusan terakhir tetap terlihat.</dd></div>
         <div><dt>Pengembalian saldo</dt><dd>Perubahan disetujui mengganti potongan lama dengan total baru. Pembatalan disetujui mengembalikan potongan ke <strong>tahun asal</strong>; saldo tahun yang sudah berakhir tidak menjadi jatah tahun baru. Pembatalan cuti disetujui yang sudah dijalani harus melalui HR.</dd></div>
+        <div><dt>Koreksi HR</dt><dd>Koreksi langsung pada pengajuan disetujui milik orang lain menyimpan alasan serta catatan sebelum/sesudah perubahan. Potongan lama dikembalikan ke tahun asal sebelum potongan baru diterapkan; saldo tahun lampau tetap hangus.</dd></div>
       </dl>
     </section>
 
@@ -118,6 +122,7 @@
       <ul>
         <li>Pasang sebagai PWA melalui tombol <strong>Pasang aplikasi</strong> jika tersedia, atau menu pemasangan pada browser yang mendukung.</li>
         <li>Jika muncul <strong>Versi baru sudah tersedia</strong>, selesaikan formulir atau selfie terlebih dahulu, kemudian pilih <strong>Gunakan versi terbaru</strong>.</li>
+        <li>Buka <strong>lonceng notifikasi</strong> untuk pembaruan pengajuan. Status belum dibaca tersimpan pada akun; pilih notifikasi untuk membuka pengajuan terkait. Pengingat sesi 8 jam muncul di dalam aplikasi saat aktif. Notifikasi sistem/perangkat dan push saat aplikasi tertutup belum tersedia.</li>
         <li>Absensi memerlukan koneksi internet. Jika lokasi/kamera ditolak, GPS belum akurat, outlet belum diatur, atau pencatatan gagal, periksa izin perangkat dan koneksi lalu coba kembali.</li>
         <li>Jika kendala berlanjut atau lupa clock out, hubungi <strong>SPV/Admin HR</strong>. Sertakan nomor karyawan, outlet, waktu kejadian, dan pesan kendala agar dapat diperiksa.</li>
       </ul>

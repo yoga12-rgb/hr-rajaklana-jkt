@@ -41,9 +41,13 @@ Durasi kerja **8 jam termasuk istirahat**. Tidak ada clock istirahat. Kasir memi
 
 Middle hanya tersedia bagi karyawan yang diizinkan HR. Jam awal Pagi/Sore, toleransi, dan jam operasional dapat diatur per outlet. Jam operasional tidak otomatis menjadi jam masuk semua kasir.
 
+Sebelum clock in, kasir memeriksa dan mengonfirmasi shift, jadwal masuk, serta target selesai 8 jam. Sesi terbuka menampilkan pengingat setelah 8 jam dari clock in aktual dan tanda perlu diperiksa setelah 12 jam. Tidak ada clock out otomatis.
+
 Clock in wajib lokasi perangkat dalam radius outlet, akurasi GPS memadai, dan selfie baru dari kamera. Clock out memeriksa lokasi lagi tanpa selfie. Catatan waktu menggunakan waktu database pada mode live, WIB untuk tampilan. Satu sesi terbuka per kasir; clock out mendukung sesi yang melewati tengah malam.
 
 SPV/HR dapat melihat shift, waktu aktual, selfie, jarak/akurasi lokasi, durasi, dan keterlambatan. Shift tidak diubah kasir setelah masuk. Koreksi HR memerlukan alasan, tidak untuk catatan sendiri, dan menyimpan jejak catatan asli. HR juga dapat membuat catatan manual untuk kendala lapangan dengan alasan serta sumber konfirmasi; catatan tersebut ditandai manual, bukan diklaim lolos GPS/selfie. Catatan tanpa clock out ditandai belum lengkap. Selisih durasi tidak otomatis menghasilkan lembur atau potongan.
+
+Keterlambatan aktual tetap disimpan. Tampilan memisahkan menit berizin dari izin datang terlambat yang disetujui dan menit tanpa izin; kelebihan dari batas jam izin tetap tanpa izin. Middle tidak menghitung keterlambatan.
 
 Absensi memerlukan koneksi. Penolakan kamera/GPS, lokasi belum disetel, radius tidak sesuai, dan upload gagal harus ditampilkan sebagai kegagalan, tanpa catatan berhasil palsu.
 
@@ -53,17 +57,20 @@ Hak tahunan 12 hari, mulai setelah **3 bulan kalender** bekerja. Tahun pertama p
 
 Jenis awal: cuti tahunan, izin pribadi, dan izin sakit. Izin mendukung sehari penuh, datang terlambat, keluar sementara, dan pulang lebih awal. Karyawan mengisi tanggal/jam, alasan, serta lampiran opsional. Syarat tambahan dapat diminta oleh atasan dengan status Perlu dilengkapi.
 
+Pengajuan aktif yang sama persis diblokir. Tumpang tindih tanggal dengan pengajuan atau kehadiran lain menampilkan peringatan pada pengajuan, tinjauan, perubahan, dan koreksi; izin beberapa jam dapat berdampingan dengan kehadiran dan tidak diblokir hanya karena tanggal sama.
+
 Atasan menyetujui, menolak, atau meminta informasi. Saat menyetujui, atasan menentukan potongan cuti (0 berarti tanpa potongan), dapat memakai pecahan 0,5 hari. Keputusan dan dampak saldo terlihat oleh karyawan. Saldo tidak boleh kurang dari nol; transaksi persetujuan tidak boleh dihitung ganda.
 
 Hari libur mingguan tetap dicatat per karyawan selain kasir. Pada tahap sederhana ini tidak ada prasyarat jadwal mingguan: jumlah potongan final mengikuti keputusan atasan, bukan perhitungan otomatis dari daftar hari off atau jam izin.
 
 ### Perubahan tanggal dan pembatalan
 
-- Pengajuan belum disetujui: karyawan dapat mengubah tanggal atau membatalkan langsung.
+- Pengajuan Menunggu atau Perlu dilengkapi: karyawan dapat mengubah tanggal, alasan, jam izin yang berlaku, serta mengganti atau menghapus lampiran lalu mengirim kembali untuk ditinjau. Lampiran PDF/JPG/PNG/WebP maksimal 5 MB. Pembatalan dapat dilakukan langsung.
 - Pengajuan disetujui: perubahan/pembatalan memerlukan persetujuan ulang. Tanggal dan potongan sebelumnya tetap berlaku selama menunggu.
 - Perubahan disetujui: potongan lama diganti total baru; selisih dikembalikan atau dipotong satu kali.
 - Pembatalan disetujui: potongan dikembalikan ke tahun asal. Pengembalian saldo tahun kedaluwarsa hanya bersifat historis, tidak menjadi saldo tahun berikutnya.
 - Pengajuan lintas tahun membebankan potongan ke tahun tanggal terkait. Alokasi per tahun harus terlihat sebelum keputusan.
+- Admin HR dapat mengoreksi tanggal/total potongan atau membatalkan pengajuan disetujui milik karyawan lain, termasuk tanggal lampau, selama tidak ada perubahan menunggu. Alasan wajib dan keputusan eksternal memerlukan nama pemberi keputusan. Koreksi menyimpan riwayat sebelum/sesudah, mengembalikan potongan lama ke tahun asal, lalu menerapkan potongan baru. Saldo tahun kedaluwarsa tidak menjadi hak tahun baru. Hak HR melihat semua pengajuan tidak mengubah kewenangan persetujuan atasan.
 
 ## Pengalaman aplikasi
 
@@ -71,10 +78,12 @@ SvelteKit + TypeScript, navigasi SPA, Supabase Auth/Postgres/Storage/Realtime. U
 
 Pembaruan data dilakukan tanpa refresh halaman dan data disinkronkan ketika aplikasi aktif kembali. Pembaruan kode diunduh di latar belakang; pengguna memilih menerapkan versi setelah menyelesaikan formulir/selfie. Penerapan versi memuat ulang aplikasi secara internal. Offline tidak berarti boleh mencatat kehadiran tanpa server.
 
+Lonceng notifikasi menampilkan pembaruan pengajuan dengan status belum dibaca yang tersimpan pada akun dan tautan ke pengajuan terkait sesuai hak akses. Pengingat sesi terbuka 8 jam tersedia di dalam aplikasi saat aktif. Notifikasi OS dan push latar belakang saat aplikasi tertutup belum tersedia.
+
 Selfie/lampiran berada di bucket privat dengan akses terbatas dan URL sementara. Service worker tidak menyimpan API, data pribadi, atau foto privat ke cache. GPS browser dan selfie adalah bukti untuk pemeriksaan SPV; keduanya bukan pengenalan wajah atau jaminan anti pemalsuan lokasi.
 
 ## Status implementasi dan batas uji
 
-Repositori memiliki frontend, mode demo lokal, migrasi database, dan Edge Function `hr-api`. Mode demo menggunakan data fiktif browser dan bukan penyimpanan operasional. Koneksi, deployment, dan uji menyeluruh pada proyek Supabase hosted masih perlu dilakukan sebelum pemakaian produksi.
+Repositori memiliki frontend, mode demo lokal, migrasi database, dan Edge Function `hr-api`. Mode demo menggunakan data fiktif browser dan bukan penyimpanan operasional. Production dan Preview telah READY; setup admin serta login/Dashboard keduanya telah dikonfirmasi. Rincian dan batas bukti hosted mengikuti [laporan verifikasi hosted](hosted-verification.md). Fitur yang ditambahkan setelah snapshot laporan tersebut tetap memerlukan migrasi/deployment serta pengujian hosted tersendiri.
 
-Hal yang perlu diselesaikan sebelum peluncuran: data outlet/karyawan asli, admin awal, koordinat/radius outlet, kebijakan penyimpanan selfie, pemantauan kapasitas Supabase, pengujian kamera/GPS pada ponsel outlet, dan hosting sesuai penggunaan bisnis. Pembuatan dokumen kontrak, impor Excel massal, perubahan data kerja terjadwal, dan pemrosesan transaksi lintas cabang belum menjadi fitur lengkap versi ini.
+Hal yang perlu diselesaikan sebelum peluncuran: data outlet/karyawan asli, koordinat/radius outlet, kebijakan penyimpanan selfie, pemantauan kapasitas Supabase, pengujian kamera/GPS pada ponsel outlet, alur lintas akun, dan hosting sesuai penggunaan bisnis. Pembuatan dokumen kontrak, impor Excel massal, perubahan data kerja terjadwal, dan pemrosesan transaksi lintas cabang belum menjadi fitur lengkap versi ini.

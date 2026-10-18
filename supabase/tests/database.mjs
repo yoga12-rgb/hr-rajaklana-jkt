@@ -360,8 +360,8 @@ console.log('External approval OK: noown,HRonly,deciderrequired,separate recorde
 
 // Insufficient balance must roll back both decision and financial ledger.
 await asUser(cashierAuth);
-const costly=(await scalar(`select to_jsonb(public.leave_submit('personal',$1,$1,'Izin dengan potongan')) as row`,[future])).row;
-const overdraft=(await scalar(`select to_jsonb(public.leave_submit('personal',$1,$1,'Pengujian saldo tidak cukup')) as row`,[future])).row;
+const costly=(await scalar(`select to_jsonb(public.leave_submit('personal',$1,$1,'Izin dengan potongan')) as row`,[`${clock.year}-12-28`])).row;
+const overdraft=(await scalar(`select to_jsonb(public.leave_submit('personal',$1,$1,'Pengujian saldo tidak cukup')) as row`,[`${clock.year}-12-29`])).row;
 await asUser(bakerAuth);
 await db.query(`select public.leave_decide($1,'approved',$2)`,[costly.id,JSON.stringify({[clock.year]:10})]);
 await expectError(`select public.leave_decide($1,'approved',$2)`,[overdraft.id,JSON.stringify({[clock.year]:3})],'tidak cukup');
@@ -382,7 +382,7 @@ assert.equal((await db.query("delete from storage.objects where bucket_id='atten
   'referenced selfie cannot be removed');
 const usedAttachment=`${cashierAuth}/leave-proof.pdf`;
 await db.query("insert into storage.objects(bucket_id,name) values('leave-attachments',$1)",[usedAttachment]);
-await db.query(`select public.leave_submit('personal',$1,$1,'Izin dengan bukti','full_day',null,null,$2)`,[future,usedAttachment]);
+await db.query(`select public.leave_submit('personal',$1,$1,'Izin dengan bukti','full_day',null,null,$2)`,[`${clock.year}-12-27`,usedAttachment]);
 assert.equal((await db.query("delete from storage.objects where bucket_id='leave-attachments' and name=$1 returning id",[usedAttachment])).rows.length,0,
   'referenced leave evidence cannot be removed');
 const profilePhoto=`${cashierAuth}/profile.jpg`;
@@ -401,6 +401,225 @@ assert.equal((await db.query('select * from public.employees where id=$1',[baker
 assert.equal((await db.query("delete from storage.objects where bucket_id='profile-photos' and name=$1 returning id",[hiddenReference])).rows.length,0,
   'hidden profile reference still prevents cleanup');
 console.log('Storage RLS OK: unusedowner cleanup,immutableevidence,hiddenreferences,profileallowlist');
+
+// New leave workflows run as real authenticated employees and HR. Keep the
+// fixtures transactional so the original scenarios retain independent balances.
+await db.exec('begin');
+await db.exec('reset role');
+const editSignature='public.leave_edit(uuid,date,date,text,time,time,text,boolean)';
+const correctSignature='public.leave_correct(uuid,date,date,jsonb,text,boolean,text)';
+for (const signature of [editSignature,correctSignature]) {
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',signature,'EXECUTE'])).allowed,true);
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',signature,'EXECUTE'])).allowed,false);
+  assert.ok((await scalar('select proconfig from pg_proc where oid=$1::regprocedure',[signature])).proconfig.includes('search_path=""'));
+}
+assert.equal((await scalar("select has_function_privilege('authenticated','private.check_leave_duplicate()','EXECUTE') as allowed")).allowed,false);
+// Errors abort an explicit transaction; use a savepoint for each negative test.
+const workflowError=async(sql,params,fragment)=>{
+  await db.exec('savepoint workflow_failure');
+  await expectError(sql,params,fragment);
+  await db.exec('rollback to savepoint workflow_failure');
+};
+await asUser(cashierAuth);
+const editProof=`${cashierAuth}/edit-proof.pdf`,replacementProof=`${cashierAuth}/replacement-proof.pdf`,foreignProof=`${adminAuth}/foreign-proof.pdf`;
+for(const path of [editProof,replacementProof]) await db.query("insert into storage.objects(bucket_id,name) values('leave-attachments',$1)",[path]);
+await db.exec('reset role');
+await db.query("insert into storage.objects(bucket_id,name) values('leave-attachments',$1)",[foreignProof]);
+await asUser(cashierAuth);
+const editable=(await scalar("select to_jsonb(public.leave_submit('sick',$1,$1,'Sakit dengan surat','full_day',null,null,$2)) as row",[future,editProof])).row;
+await asUser(bakerAuth);
+await db.query("select public.leave_decide($1,'needs_info','{}','Mohon bukti yang lebih jelas')",[editable.id]);
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[editable.id,future,'Mengubah milik orang lain'],'pemilik');
+await asUser(cashierAuth);
+const edited=(await scalar('select to_jsonb(public.leave_edit($1,$2,$2,$3)) as row',[editable.id,`${clock.year+1}-01-04`,'Surat dokter telah diperjelas'])).row;
+assert.equal(edited.status,'pending');
+assert.equal(edited.kind,'sick'); assert.equal(edited.extent,'full_day');
+assert.equal(edited.attachment_path,editProof,'omitted attachment keeps existing private evidence');
+for(const key of ['decision_by','external_decider','decided_at','decision_note']) assert.equal(edited[key],null,'editing clears old decision metadata');
+assert.deepEqual(edited.deductions,{});
+await workflowError('select public.leave_edit($1,$2,$2,$3,null,null,$4,true)',[editable.id,future,'Bukti tidak dimiliki',foreignProof],'bukan milik');
+await workflowError('select public.leave_edit($1,$2,$2,$3,null,null,$4,true)',[editable.id,future,'Bukti belum diunggah',`${cashierAuth}/missing.pdf`],'tidak ditemukan');
+const replaced=(await scalar('select to_jsonb(public.leave_edit($1,$2,$2,$3,null,null,$4,true)) as row',[editable.id,future,'Bukti diganti oleh pemilik',replacementProof])).row;
+assert.equal(replaced.attachment_path,replacementProof);
+const removed=(await scalar('select to_jsonb(public.leave_edit($1,$2,$2,$3,null,null,null,true)) as row',[editable.id,future,'Lampiran lama dihapus'])).row;
+assert.equal(removed.attachment_path,null);
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[editable.id,yesterday,'Pengubahan tanggal lampau'],'dikoreksi HR');
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[editable.id,future,'xx'],'Alasan');
+await workflowError('select public.leave_edit($1,null,null,$2)',[editable.id,'Tanggal tidak lengkap'],'Tanggal');
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[lateRequest.id,future,'Mengubah langsung izin disetujui'],'diedit langsung');
+await asUser(adminAuth);
+const editAudit=await scalar("select before_data,after_data from public.audit_events where entity_id=$1 and action='edited' order by id limit 1",[editable.id]);
+assert.equal(editAudit.before_data.status,'needs_info'); assert.equal(editAudit.after_data.status,'pending');
+assert.equal((await scalar('select count(*)::int as count from public.leave_ledger where leave_request_id=$1',[editable.id])).count,0);
+await db.exec('reset role');
+const historicPending=await scalar("insert into public.leave_requests(employee_id,kind,starts_on,ends_on,reason) values($1,'sick',$2,$2,'Pengajuan lampau belum diproses') returning id",[cashierId,yesterday]);
+await db.query("update public.employees set account_status='disabled' where id=$1",[cashierId]);
+await asUser(cashierAuth);
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[editable.id,future,'Akun yang dinonaktifkan'],'tidak aktif');
+await db.exec('reset role');
+await db.query("update public.employees set account_status='active' where id=$1",[cashierId]);
+await asUser(cashierAuth);
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[historicPending.id,future,'Memindahkan pengajuan asli lampau'],'dikoreksi HR');
+console.log('Leave edit OK: owneronly,needsinfo reset,privateattachment preserve/replace/remove,audit,noledger');
+
+await asUser(cashierAuth);
+await workflowError("select public.leave_submit('personal',$1,$1,'Alasan lain tetap duplikat')",[future],'sama');
+await workflowError('select public.leave_edit($1,$2,$2,$3)',[overdraft.id,future,'Edit ke pengajuan yang sama'],'sama');
+await workflowError('select public.leave_request_change($1,$2,$2,$3)',[overdraft.id,future,'Klien lama tetap dicegah'],'sama');
+const timed=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Jam izin bertumpang tindih','temporary_exit','12:30','13:30')) as row",[future])).row;
+assert.equal(timed.starts_at,'12:30:00','overlap with another interval is permitted');
+const attendanceIzin=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Izin di hari dengan absensi sah','temporary_exit','12:00','13:00')) as row",[clock.today])).row;
+assert.equal(attendanceIzin.starts_on,attendance.work_date,'hourly izin can coexist with a valid attendance record');
+await workflowError("select public.leave_submit('personal',$1,$1,'Alasan lain jam sama','temporary_exit','12:30','13:30')",[future],'sama');
+await asUser(bakerAuth);
+await db.query("select public.leave_decide($1,'needs_info','{}','Memerlukan konfirmasi lebih lanjut')",[timed.id]);
+await asUser(cashierAuth);
+await workflowError("select public.leave_submit('personal',$1,$1,'Duplikat masih perlu info','temporary_exit','12:30','13:30')",[future],'sama');
+await asUser(bakerAuth);
+await db.query("select public.leave_decide($1,'rejected','{}','Usulan ditolak setelah klarifikasi')",[timed.id]);
+await asUser(cashierAuth);
+const retry=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Boleh mengajukan ulang setelah ditolak','temporary_exit','12:30','13:30')) as row",[future])).row;
+await db.query('select public.leave_request_cancel($1,$2)',[retry.id,'Pemilik membatalkan sebelum keputusan']);
+const retryCancelled=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Boleh mengajukan ulang setelah dibatalkan','temporary_exit','12:30','13:30')) as row",[future])).row;
+await workflowError('select public.leave_edit($1,$2,$2,$3,$4,$5)',[retryCancelled.id,future,'Jam interval tidak lengkap','12:00',null],'jam keluar dan kembali');
+const timeEdit=(await scalar('select to_jsonb(public.leave_edit($1,$2,$2,$3,$4,$5)) as row',[retryCancelled.id,future,'Perbaikan jam izin','12:45','13:45'])).row;
+assert.equal(timeEdit.starts_at,'12:45:00');
+const duplicateAdjustment=(await scalar("select public.leave_request_change($1,$2,$2,'Usulan yang sama dengan izin lain','12:00','13:00') as change",[lateRequest.id,future])).change;
+// The original extent is preserved: use another late-arrival request as the
+// exact destination so approval, rather than the proposal, is the mutation.
+const lateDestination=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Tujuan duplikat perubahan','late_arrival','12:00','13:00')) as row",[future])).row;
+await asUser(bakerAuth);
+await workflowError("select public.leave_decide_adjustment($1,true,'{}')",[duplicateAdjustment.adjustment.id],'sama');
+assert.equal((await scalar('select status from public.leave_adjustments where id=$1',[duplicateAdjustment.adjustment.id])).status,'pending');
+assert.equal((await scalar('select starts_at::text from public.leave_requests where id=$1',[lateRequest.id])).starts_at,'11:00:00');
+await db.query("select public.leave_decide_adjustment($1,false,'{}','Perubahan ditolak karena duplikat')",[duplicateAdjustment.adjustment.id]);
+// The index independently enforces uniqueness even if a privileged write skips
+// the friendly trigger. This is also the PostgreSQL concurrent-write arbiter.
+await db.exec('reset role');
+await db.exec('savepoint unique_index_guard');
+await db.exec('alter table public.leave_requests disable trigger leave_no_exact_duplicate');
+await expectError("insert into public.leave_requests(employee_id,kind,starts_on,ends_on,reason) values($1,'personal',$2,$2,'Penjaga indeks tanpa trigger')",[cashierId,future],'leave_active_exact_unique');
+await db.exec('rollback to savepoint unique_index_guard');
+console.log('Duplicates OK: pending/needsinfo/approved,reasonignored,legacyedit,adjustmentrollback,rejected/cancelledretry,overlapallowed');
+
+await asUser(cashierAuth);
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Koreksi oleh karyawan')",[costly.id,future],'Akses Admin HR');
+await asUser(bakerAuth);
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Pemberi persetujuan bukan HR')",[costly.id,future],'Akses Admin HR');
+await asUser(adminAuth);
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Koreksi milik sendiri',false,'Manager Jogja')",[externalRequest.id,future],'sendiri');
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Koreksi belum disetujui')",[editable.id,future],'disetujui');
+await workflowError("select public.leave_correct($1,$2,$2,'{}','xx')",[costly.id,future],'Alasan koreksi');
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Tujuan sama dengan izin aktif')",[costly.id,future],'sama');
+assert.equal((await scalar('select deductions from public.leave_requests where id=$1',[costly.id])).deductions[clock.year],10,'failed duplicate correction rolls back ledger allocation');
+const ledgerBefore=(await scalar('select count(*)::int as count from public.leave_ledger where leave_request_id=$1',[costly.id])).count;
+const hrCorrected=(await scalar('select to_jsonb(public.leave_correct($1,$2,$2,$3,$4)) as row',[costly.id,yesterday,JSON.stringify({[clock.year]:8}),'Koreksi tanggal setelah konfirmasi HR'])).row;
+assert.equal(hrCorrected.starts_on,yesterday); assert.equal(hrCorrected.status,'approved');
+assert.equal(hrCorrected.deductions[clock.year],8); assert.equal(hrCorrected.decision_by,adminId);
+assert.equal(hrCorrected.decision_note,'Koreksi tanggal setelah konfirmasi HR');
+assert.equal((await scalar('select sum(amount)::text as amount from public.leave_ledger where leave_request_id=$1',[costly.id])).amount,'-8.00');
+await db.query('select public.leave_correct($1,$2,$2,$3,$4)',[costly.id,yesterday,JSON.stringify({[clock.year]:8}),'Pengulangan koreksi tanpa perubahan saldo']);
+assert.equal((await scalar('select count(*)::int as count from public.leave_ledger where leave_request_id=$1',[costly.id])).count,ledgerBefore+1,'same correction cannot refund twice');
+await db.query('select public.leave_correct($1,$2,$2,$3,$4)',[costly.id,yesterday,JSON.stringify({[clock.year]:9}),'Koreksi tambahan potongan satu hari']);
+assert.equal((await scalar('select sum(amount)::text as amount from public.leave_ledger where leave_request_id=$1',[costly.id])).amount,'-9.00');
+const correctionAudit=await scalar("select before_data,after_data from public.audit_events where entity_id=$1 and action='corrected' order by created_at,id limit 1",[costly.id]);
+assert.equal(correctionAudit.before_data.deductions[clock.year],10);
+assert.equal(correctionAudit.after_data.deductions[clock.year],8);
+await asUser(cashierAuth);
+const blockedCorrection=(await scalar('select public.leave_request_change($1,$2,$2,$3) as change',[teamRequest.id,`${clock.year+1}-01-05`,'Perubahan menunggu pemeriksaan'])).change;
+await asUser(adminAuth);
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Koreksi saat perubahan menunggu')",[teamRequest.id,future],'masih menunggu');
+await asUser(bakerAuth);
+await db.query("select public.leave_decide_adjustment($1,false,'{}','Perubahan tidak diteruskan')",[blockedCorrection.adjustment.id]);
+// HR corrections preserve the extent and require one date for partial-day izin.
+await asUser(adminAuth);
+await workflowError("select public.leave_correct($1,$2,$3,'{}','Rentang hari untuk izin jam')",[lateRequest.id,yesterday,future],'satu tanggal');
+// Give this approved interval an external decision source and verify that every
+// subsequent HR correction names the external human who made the decision.
+await db.exec('reset role');
+await db.query("update public.employees set approval_mode='external' where id=$1",[cashierId]);
+await asUser(adminAuth);
+// intervalRequest is pending; approve it through the existing external flow.
+await db.query("select public.leave_decide($1,'approved','{}','Keputusan izin','Manager Pusat')",[intervalRequest.id]);
+await workflowError("select public.leave_correct($1,$2,$2,'{}','Koreksi keputusan eksternal')",[intervalRequest.id,yesterday],'Nama pemberi keputusan');
+const externalCorrected=(await scalar("select to_jsonb(public.leave_correct($1,$2,$2,'{}','Koreksi dikonfirmasi atasan',false,'Manager Pusat Baru')) as row",[intervalRequest.id,yesterday])).row;
+assert.equal(externalCorrected.external_decider,'Manager Pusat Baru');
+assert.equal(externalCorrected.extent,'temporary_exit'); assert.equal(externalCorrected.starts_at,'12:00:00');
+await db.exec('reset role');
+await db.query("update public.employees set approval_mode='internal' where id=$1",[cashierId]);
+await asUser(adminAuth);
+// A historic charged request reproduces the year-boundary refund scenario.
+// Service-owned data setup is the only way to seed a prior-year charge now.
+await db.exec('reset role');
+const historic=(await scalar("insert into public.leave_requests(employee_id,kind,starts_on,ends_on,reason,status,deductions) values($1,'annual',$2,$2,'Cuti tahun lampau','approved',$3) returning *",[cashierId,`${clock.year-1}-12-20`,JSON.stringify({[clock.year-1]:2})]));
+await db.query("insert into public.leave_ledger(employee_id,year,leave_request_id,event_key,amount,actor_employee_id) values($1,$2,$3,$4,-2,$5)",[cashierId,clock.year-1,historic.id,`historical:${historic.id}`,adminId]);
+await asUser(adminAuth);
+await workflowError('select public.leave_correct($1,$2,$2,$3,$4)',[historic.id,historic.starts_on,JSON.stringify({[clock.year-1]:3}),'Penambahan potongan tahun hangus'],'sudah hangus');
+const nextYearBalanceBefore=(await scalar('select public.leave_balance($1,$2) as balance',[cashierId,clock.year+1])).balance.remaining;
+const historicCancelled=(await scalar('select to_jsonb(public.leave_correct($1,$2,$2,$3,$4,true)) as row',[historic.id,`${clock.year+1}-01-09`,JSON.stringify({[clock.year+1]:12}),'Pembatalan cuti lampau oleh HR'])).row;
+assert.equal(historicCancelled.status,'cancelled');
+assert.equal(historicCancelled.starts_on,`${clock.year-1}-12-20`,'cancel ignores proposed new dates');
+assert.deepEqual(historicCancelled.deductions,{});
+assert.equal((await scalar('select sum(amount)::text as amount from public.leave_ledger where leave_request_id=$1 and year=$2',[historic.id,clock.year-1])).amount,'0.00');
+assert.equal((await scalar('select public.leave_balance($1,$2) as balance',[cashierId,clock.year-1])).balance.expired,true);
+assert.equal((await scalar('select public.leave_balance($1,$2) as balance',[cashierId,clock.year+1])).balance.remaining,nextYearBalanceBefore,'historic refund does not add future entitlement');
+await workflowError("select public.leave_correct($1,null,null,'{}','Pembatalan ulang',true)",[historic.id],'disetujui');
+assert.equal((await scalar('select count(*)::int as count from public.leave_ledger where leave_request_id=$1',[historic.id])).count,2,'cancel refunds exactly once and preserves charge history');
+console.log('HR leave correction OK: HRonly,noown,approvedonly,pendingadjustmentguard,datedelta,pastyearrefund,expiredchargeguard,no repeatedrefund,externalsource,audit');
+await db.exec('rollback');
+
+await db.exec('begin');
+await asUser(cashierAuth);
+const notificationDate=`${clock.year+3}-02-01`;
+const notifiedRequest=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Pemeriksaan kotak masuk persisten')) as row",[notificationDate])).row;
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,0,'applicant does not receive their own submission event');
+await workflowError("insert into public.notifications(employee_id,entity_id,title,body,href) values($1,$2,'Palsu','Palsu',$3)",[cashierId,notifiedRequest.id,`/leave?request=${notifiedRequest.id}`],'permission denied');
+await workflowError("update public.notifications set read_at=now()",[],'permission denied');
+await asUser('', 'anon');
+await workflowError('select * from public.notifications',[],'permission denied');
+await workflowError('select public.notifications_mark_read()',[],'permission denied');
+await asUser(bakerAuth);
+const reviewerNotification=(await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows;
+assert.equal(reviewerNotification.length,1);
+assert.equal(reviewerNotification[0].employee_id,bakerId);
+assert.equal(reviewerNotification[0].read_at,null);
+assert.equal(reviewerNotification[0].href,`/leave?request=${notifiedRequest.id}`);
+await db.query("select public.leave_decide($1,'approved','{}')",[notifiedRequest.id]);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,1,'recording a decision does not notify its own actor');
+await asUser(cashierAuth);
+const applicantNotification=(await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows;
+assert.equal(applicantNotification.length,1);
+assert.equal(applicantNotification[0].employee_id,cashierId);
+assert.equal(applicantNotification[0].read_at,null);
+assert.equal((await scalar('select read_at from public.notifications where id=$1',[applicantNotification[0].id])).read_at,null,'a separate read preserves persisted unread state');
+assert.equal((await db.query('select * from public.notifications where id=$1',[reviewerNotification[0].id])).rows.length,0,'recipient cannot read another recipient inbox row');
+assert.equal((await scalar('select public.notifications_mark_read($1) as count',[reviewerNotification[0].id])).count,0,'recipient cannot mark another recipient row');
+assert.equal((await scalar('select public.notifications_mark_read($1) as count',[applicantNotification[0].id])).count,1);
+assert.equal((await scalar('select public.notifications_mark_read($1) as count',[applicantNotification[0].id])).count,0,'mark-one is idempotent');
+const unreadCount=(await scalar('select count(*)::int as count from public.notifications where read_at is null')).count;
+assert.equal((await scalar('select public.notifications_mark_read() as count')).count,unreadCount);
+assert.equal((await scalar('select count(*)::int as count from public.notifications where read_at is null')).count,0);
+const notificationAdjustment=(await scalar('select public.leave_request_change($1,$2,$2,$3) as change',[notifiedRequest.id,`${clock.year+3}-02-02`,'Perubahan untuk pemberitahuan keputusan'])).change;
+await asUser(bakerAuth);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,2,'adjustment submission notifies reviewer once');
+assert.equal((await scalar('select read_at from public.notifications where id=$1',[reviewerNotification[0].id])).read_at,null,'mark-all never affects another employee');
+await db.query("select public.leave_decide_adjustment($1,true,'{}')",[notificationAdjustment.adjustment.id]);
+await asUser(cashierAuth);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,2,'adjustment approval creates exactly one applicant notification');
+assert.equal((await scalar('select count(*)::int as count from public.notifications where entity_id=$1 and read_at is null',[notifiedRequest.id])).count,1);
+await asUser(adminAuth);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,0,'HR has no general access to other employee inboxes');
+await db.exec('reset role');
+await db.query('update public.employees set approver_employee_id=$1 where id=$2',[adminId,cashierId]);
+await asUser(cashierAuth);
+const reAssignedRequest=(await scalar("select to_jsonb(public.leave_submit('personal',$1,$1,'Pengajuan dengan pemeriksa baru')) as row",[`${clock.year+3}-02-03`])).row;
+await asUser(adminAuth);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[reAssignedRequest.id])).rows.length,1,'new event resolves current reviewer');
+await asUser(bakerAuth);
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[reAssignedRequest.id])).rows.length,0,'previous reviewer receives no new event');
+assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,2,'reassignment preserves durable historic inbox rows');
+await db.exec('rollback');
+console.log('Notifications OK: durableunread,ownRLS,anonymousdenied,noforgery,decision/adjustmentonce,currentreviewer,markone/allownership,idempotency');
 
 // Tokens are server-managed, replaceable, 24h, single-use and claim protected.
 await db.exec('reset role');

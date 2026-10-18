@@ -4,6 +4,10 @@ import { attendanceTiming, dateRange, deductionByYear, haversineMeters, jakartaD
 import { initialDemo } from './demo';
 import { hasApproverAccess } from '../access';
 import { configured, supabase } from './client';
+import { classifyAttendanceLateness, approvedArrivalForAttendance } from '../attendance-status';
+import { duplicateLeave, findLeaveConflicts } from '../leave-validation';
+import { demoNotifications } from '../notifications';
+import { leaveAuditDetail } from '../leave-audit';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
@@ -22,7 +26,8 @@ function readDemoToken(token: string) {
   if (!employee || employee.status !== 'active') throw new Error('Akun karyawan tidak aktif. Hubungi HR.');
   return { links, link, employee };
 }
-const user = () => { const u = get(app).user; if (!u || u.status !== 'active') throw new Error('Silakan masuk dengan akun aktif.'); return u; };
+const activeAccount = (employee: Employee | null | undefined) => employee?.status === 'active' && employee.accountStatus === 'active';
+const user = () => { const u = get(app).user; if (!u || !activeAccount(u)) throw new Error('Silakan masuk dengan akun aktif.'); return u; };
 export const isAdmin = (employee: Employee | undefined | null = get(app).user) => employee?.roles.includes('admin_hr') ?? false;
 export const isApprover = (employee: Employee | undefined | null = get(app).user) => hasApproverAccess(employee, get(app).employees);
 export const isCashier = (employee: Employee | undefined | null = get(app).user) => !!employee && get(app).positions.some(p => p.id === employee.positionId && p.isCashier);
@@ -57,15 +62,16 @@ function attendanceOverlaps(records: AttendanceRecord[], employeeId: string, clo
   });
 }
 export function attendancePermission(record: AttendanceRecord): string {
-  const permission = get(app).leaveRequests.find(r=>r.employeeId===record.employeeId&&r.status==='approved'&&r.extent==='late_arrival'&&r.startDate===jakartaDate(record.clockIn));
+  const permission = approvedArrivalForAttendance(record, get(app).leaveRequests);
   if (!permission) return '';
-  if (!permission.startTime) return 'Izin datang terlambat disetujui';
-  const actual = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Jakarta',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(record.clockIn));
-  return `Izin datang sampai ${permission.startTime} WIB${actual > permission.startTime ? ' · masuk melewati waktu izin' : ' disetujui'}`;
+  return `Izin datang sampai ${permission.time} WIB${classifyAttendanceLateness(record, get(app).leaveRequests).kind === 'permit_exceeded' ? ' · masuk melewati waktu izin' : ' disetujui'}`;
 }
+export const attendanceLateStatus = (record: AttendanceRecord) => classifyAttendanceLateness(record, get(app).leaveRequests);
+export const leaveConflicts = (employeeId: string, startDate: string, endDate: string, excludedId?: string) => findLeaveConflicts(get(app), employeeId, startDate, endDate, excludedId);
+export const isDuplicateLeave = (input: LeaveInput, excludedId?: string, employeeId = user().id) => duplicateLeave(get(app), employeeId, input, excludedId);
 export function canDecideLeave(request: LeaveRequest): boolean {
   const s = get(app), u = s.user, employee = s.employees.find(e => e.id === request.employeeId);
-  if (!u || u.status !== 'active' || !employee || u.id === employee.id) return false;
+  if (!u || !activeAccount(u) || !employee || u.id === employee.id) return false;
   return employee.approvalMode === 'external' ? isAdmin(u) : employee.managerId === u.id;
 }
 export function leaveBalance(employeeId: string, year = Number(jakartaDate().slice(0, 4))): number {
@@ -78,7 +84,8 @@ function persist(state: AppState) {
   if (typeof localStorage !== 'undefined' && state.mode === 'demo') localStorage.setItem(KEY, JSON.stringify({ ...state, user: state.user ? { ...state.user, photoUrl: undefined } : null, employees: state.employees.map(({ photoUrl, ...employee }) => employee), attendanceRecords: state.attendanceRecords.map(({ selfieUrl, ...record }) => record), leaveRequests: state.leaveRequests.map(({ attachmentUrl, ...request }) => request) }));
 }
 function commit(change: (state: AppState) => void, action?: string, entityId = '', detail = '') {
-  const state = structuredClone(get(app)); change(state);
+  const before = get(app), state = structuredClone(before); change(state);
+  state.notifications = [...demoNotifications(before, state), ...(state.notifications ?? [])];
   if (action) state.auditEntries.unshift({ id: id(), actorId: state.user?.id ?? '', action, entityId, at: new Date().toISOString(), detail });
   if (state.user) state.user = state.employees.find(e => e.id === state.user?.id) ?? null;
   persist(state); app.set(state);
@@ -87,7 +94,17 @@ function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini ha
 function fail(error: unknown): never { throw new Error(error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error ? String(error.message) : 'Permintaan belum berhasil. Coba kembali.'); }
 async function rpc(name: string, args: Record<string, unknown>) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
-  const { data, error } = await supabase.rpc(name, args); if (error) fail(error); return data;
+  const { data, error } = await supabase.rpc(name, args);
+  if (error) throw Object.assign(new Error(error.message), { code: error.code });
+  return data;
+}
+async function cleanupRejectedLeaveUpload(path: string | null, error: unknown) {
+  // A SQLSTATE response confirms that PostgreSQL rolled the RPC back. Network
+  // failures can arrive while it is still committing; keep that evidence rather
+  // than racing its attachment link. Storage RLS also protects linked objects.
+  const code = typeof error === 'object' && error && 'code' in error ? error.code : null;
+  if (!path || typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)) return;
+  try { await supabase!.storage.from('leave-attachments').remove([path]); } catch { /* Retain the original RPC failure. */ }
 }
 async function edge(action: string, body: Record<string, unknown> = {}) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
@@ -132,8 +149,8 @@ async function refreshNow() {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { if (revision === authRevision) clearLiveState(); return; }
-    const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger'];
-    const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows] = await Promise.all(tables.map(name => readAll(name)));
+    const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications'];
+    const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows] = await Promise.all(tables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
     if (!current || current.status !== 'active') { if (revision === authRevision) { clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.'); await supabase.auth.signOut(); } return; }
@@ -145,8 +162,8 @@ async function refreshNow() {
     }));
     let auditEntries: AppState['auditEntries'] = [];
     if (isAdmin(current)) {
-      const data = await readAll('audit_events', 'id,actor_employee_id,entity_id,action,reason,created_at');
-      auditEntries = data.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at, detail: r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
+      const data = await readAll('audit_events', 'id,entity,actor_employee_id,entity_id,action,reason,before_data,after_data,created_at');
+      auditEntries = data.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at, detail: r.entity === 'leave' ? leaveAuditDetail(r.reason,r.before_data,r.after_data) : r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
       for (const record of attendanceRecords) record.correctionReason = auditEntries.find(entry => entry.entityId === record.id && entry.detail)?.detail ?? '';
     }
     const balanceCache: Record<string, number> = {};
@@ -160,14 +177,15 @@ async function refreshNow() {
       const history = adjustmentRows.filter(a => a.leave_request_id === r.id).sort((a,b) => b.created_at.localeCompare(a.created_at));
       const adjustment = history.find(a => a.status === 'pending') ?? history[0];
       const attachment = r.attachment_path ? await supabase!.storage.from('leave-attachments').createSignedUrl(r.attachment_path,300) : null;
-      return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
+      return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
     }));
+    const notifications = notificationRows.map(r => ({ id: r.id, employeeId: r.employee_id, title: r.title, body: r.body, href: r.href, entityId: r.entity_id, createdAt: r.created_at, readAt: r.read_at }));
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     if (!channel) {
       channel = supabase.channel(`hr-${session.user.id}`);
-      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
+      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
       channel.subscribe(status => app.update(s => ({ ...s, connected: status === 'SUBSCRIBED' && navigator.onLine })));
     }
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
@@ -190,15 +208,20 @@ function validateLeavePeriod(input: Pick<LeaveInput, 'startDate' | 'endDate' | '
   if (input.startTime && input.endTime && input.endTime <= input.startTime) throw new Error('Jam selesai harus setelah jam mulai.');
   return extent;
 }
-function updateCharge(state: AppState, request: LeaveRequest, start: string, end: string, days: number) {
-  const allocation = deductionByYear(start, end, days), currentYear = Number(jakartaDate().slice(0,4));
-  state.leaveLedger = state.leaveLedger.filter(e => e.requestId !== request.id);
+function applyLeaveAllocation(state: AppState, request: LeaveRequest, allocation: Record<number, number>) {
+  const currentYear = Number(jakartaDate().slice(0,4)), old: Record<number, number> = {};
+  for (const entry of state.leaveLedger.filter(e => e.requestId === request.id)) old[entry.year] = (old[entry.year] ?? 0) + entry.days;
   const employee = state.employees.find(e => e.id === request.employeeId)!;
-  for (const [yearText, amount] of Object.entries(allocation)) {
-    const year = Number(yearText), used = state.leaveLedger.filter(e => e.employeeId === employee.id && e.year === year).reduce((a,b) => a + b.days, 0);
-    if (amount > 0 && (year < currentYear || amount > leaveEntitlement(employee.joinDate, year) - used)) throw new Error(`Saldo cuti tahun ${year} tidak cukup atau sudah kedaluwarsa.`);
-    if (amount) state.leaveLedger.push({ id: id(), employeeId: employee.id, requestId: request.id, year, days: amount });
+  for (const year of new Set([...Object.keys(old), ...Object.keys(allocation)].map(Number))) {
+    const amount = allocation[year] ?? 0, delta = Math.round((amount - (old[year] ?? 0)) * 100) / 100;
+    const used = state.leaveLedger.filter(e => e.employeeId === employee.id && e.year === year).reduce((sum,e) => sum + e.days, 0);
+    if (amount < 0 || amount > 12 || !Number.isFinite(amount)) throw new Error('Potongan cuti tidak valid.');
+    if (delta > 0 && (year < currentYear || delta > Math.round((leaveEntitlement(employee.joinDate, year) - used) * 100) / 100)) throw new Error(`Saldo cuti tahun ${year} tidak cukup atau sudah kedaluwarsa.`);
+    if (delta) state.leaveLedger.push({ id: id(), employeeId: employee.id, requestId: request.id, year, days: delta });
   }
+}
+function updateCharge(state: AppState, request: LeaveRequest, start: string, end: string, days: number) {
+  applyLeaveAllocation(state, request, deductionByYear(start, end, days));
 }
 export const actions = {
   async init() {
@@ -211,13 +234,18 @@ export const actions = {
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void refresh(); });
   },
   refresh,
+  async readNotification(notificationId?: string) {
+    const actor = user();
+    if (configured) { await rpc('notifications_mark_read', { p_id: notificationId ?? null }); await refresh(); return; }
+    commit(s => { for (const n of s.notifications ?? []) if (n.employeeId === actor.id && (!notificationId || n.id === notificationId) && !n.readAt) n.readAt = new Date().toISOString(); });
+  },
   async login(employeeNumber: string, password: string) {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
   async logout() { if (supabase) { const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
-  async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && e.status === 'active'); if (!employee) throw new Error('Akun contoh tidak ditemukan.'); commit(s => { s.user = employee; }); },
+  async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
     requireAdmin(); const s = get(app), before = s.employees.find(e => e.id === input.id);
     if (!input.fullName?.trim() || !input.phone?.trim() || !input.joinDate || !input.departmentId || !input.positionId || !input.outletId) throw new Error('Lengkapi nama, WhatsApp, tanggal masuk, departemen, jabatan, dan outlet.');
@@ -306,6 +334,7 @@ export const actions = {
   },
   async submitLeave(input: LeaveInput) {
     const u = user(), extent = validateLeavePeriod(input); if (input.reason.trim().length < 3) throw new Error('Alasan pengajuan minimal 3 karakter.');
+    if (isDuplicateLeave({ ...input, extent })) throw new Error('Pengajuan yang sama sudah ada. Buka pengajuan tersebut untuk memperbaruinya.');
     if (input.startDate < jakartaDate()) throw new Error('Tanggal pengajuan tidak boleh sebelum hari ini. Untuk koreksi, hubungi HR.');
     if (input.type === 'annual' && !leaveEntitlement(u.joinDate, Number(input.startDate.slice(0,4)))) throw new Error('Hak cuti tahunan belum tersedia setelah masa kerja 3 bulan.');
     if (!u.managerId && u.approvalMode !== 'external') throw new Error('Atasan belum ditetapkan. Hubungi HR.');
@@ -313,7 +342,7 @@ export const actions = {
       let path: string | null = null;
       if (input.attachment) { if (input.attachment.size > 5 * 1024 * 1024 || !['image/jpeg','image/png','image/webp','application/pdf'].includes(input.attachment.type)) throw new Error('Lampiran harus foto/PDF maksimal 5 MB.'); const { data: { session } } = await supabase!.auth.getSession(); path = `${session!.user.id}/${id()}.${input.attachment.type === 'application/pdf' ? 'pdf' : 'jpg'}`; const result = await supabase!.storage.from('leave-attachments').upload(path, input.attachment); if (result.error) fail(result.error); }
       try { await rpc('leave_submit', { p_kind: input.type, p_starts_on: input.startDate, p_ends_on: input.endDate, p_reason: input.reason, p_extent: extent, p_starts_at: input.startTime || null, p_ends_at: input.endTime || null, p_attachment_path: path }); }
-      catch(e) { if(path) await supabase!.storage.from('leave-attachments').remove([path]); throw e; } await refresh(); return;
+      catch(e) { await cleanupRejectedLeaveUpload(path,e); throw e; } await refresh(); return;
     }
     const requestId = id(); commit(s => { s.leaveRequests.unshift({ id: requestId, employeeId: u.id, type: input.type, extent, attachmentUrl: input.attachment ? URL.createObjectURL(input.attachment) : undefined, attachmentName: input.attachment?.name, startDate: input.startDate, endDate: input.endDate, startTime: input.startTime ?? '', endTime: input.endTime ?? '', reason: input.reason, status: 'pending', deductionDays: 0, approverId: u.managerId, note: '', externalApproverName: '', createdAt: new Date().toISOString(), adjustment: null }); }, 'leave_submitted', requestId);
   },
@@ -326,11 +355,61 @@ export const actions = {
     if (configured) { await rpc('leave_decide', { p_id: requestId, p_decision: ({ approve: 'approved', reject: 'rejected', needs_info: 'needs_info' })[decision.decision], p_deductions: decision.decision === 'approve' ? deductionByYear(request.startDate, request.endDate, decision.deductionDays) : {}, p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh(); return; }
     commit(s => { const r = s.leaveRequests.find(x => x.id === requestId)!; if (decision.decision === 'approve') updateCharge(s, r, r.startDate, r.endDate, decision.deductionDays); r.status = ({ approve: 'approved', reject: 'rejected', needs_info: 'needs_info' } as const)[decision.decision]; r.deductionDays = decision.decision === 'approve' ? decision.deductionDays : 0; r.note = decision.note ?? ''; r.externalApproverName = decision.externalApproverName ?? ''; }, 'leave_decided', requestId, decision.note);
   },
-  async changeLeave(requestId: string, input: { startDate: string; endDate: string; reason: string }) {
+  async changeLeave(requestId: string, input: { startDate: string; endDate: string; reason: string; startTime?: string; endTime?: string; attachment?: File; removeAttachment?: boolean }) {
     const r = get(app).leaveRequests.find(x => x.id === requestId); if (!r || r.employeeId !== user().id) throw new Error('Pengajuan hanya dapat diubah pemiliknya.');
-    validateLeavePeriod({ ...input, startTime: r.startTime, endTime: r.endTime, extent: r.extent }); if(input.reason.trim().length < 3 || input.startDate < jakartaDate() || r.startDate < jakartaDate()) throw new Error('Perubahan tanggal yang sudah dijalani harus melalui HR. Alasan minimal 3 karakter.');
-    if (configured) { await rpc('leave_request_change', { p_id: requestId, p_starts_on: input.startDate, p_ends_on: input.endDate, p_reason: input.reason, p_starts_at: r.startTime || null, p_ends_at: r.endTime || null }); await refresh(); return; }
-    commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!; if (request.adjustment?.status === 'pending') throw new Error('Masih ada perubahan yang menunggu keputusan.'); if (['pending','needs_info'].includes(request.status)) Object.assign(request, input, { status: 'pending' }); else if(request.status === 'approved') request.adjustment = { ...input, id: id(), type: 'change', status: 'pending', requestedAt: new Date().toISOString() }; else throw new Error('Pengajuan ini tidak dapat diubah.'); }, 'leave_change_requested', requestId, input.reason);
+    if (!['pending','needs_info','approved'].includes(r.status)) throw new Error('Pengajuan ini tidak dapat diubah.');
+    if (r.adjustment?.status === 'pending') throw new Error('Masih ada perubahan yang menunggu keputusan.');
+    const startTime = input.startTime ?? r.startTime, endTime = input.endTime ?? r.endTime;
+    const extent = validateLeavePeriod({ ...input, startTime, endTime, extent: r.extent });
+    if(input.reason.trim().length < 3 || input.startDate < jakartaDate() || r.startDate < jakartaDate()) throw new Error('Perubahan tanggal yang sudah dijalani harus melalui HR. Alasan minimal 3 karakter.');
+    if (isDuplicateLeave({ ...input, type: r.type, extent, startTime, endTime }, requestId)) throw new Error('Pengajuan yang sama sudah ada.');
+    if (input.attachment && input.removeAttachment) throw new Error('Pilih mengganti atau menghapus lampiran.');
+    if (r.status === 'approved' && (startTime !== r.startTime || endTime !== r.endTime || input.attachment || input.removeAttachment)) throw new Error('Pengajuan disetujui hanya dapat meminta perubahan tanggal atau pembatalan.');
+    if (input.attachment && (!input.attachment.size || input.attachment.size > 5 * 1024 * 1024 || !['image/jpeg','image/png','image/webp','application/pdf'].includes(input.attachment.type))) throw new Error('Lampiran harus foto/PDF maksimal 5 MB.');
+    if (configured) {
+      let path: string | null = null;
+      if (input.attachment) {
+        const { data: { session } } = await supabase!.auth.getSession();
+        if (!session) throw new Error('Sesi berakhir. Silakan login kembali.');
+        path = `${session.user.id}/${id()}.${input.attachment.type === 'application/pdf' ? 'pdf' : 'jpg'}`;
+        const upload = await supabase!.storage.from('leave-attachments').upload(path, input.attachment);
+        if (upload.error) fail(upload.error);
+      }
+      try {
+        const args = { p_id: requestId, p_starts_on: input.startDate, p_ends_on: input.endDate, p_reason: input.reason, p_starts_at: startTime || null, p_ends_at: endTime || null };
+        if (r.status === 'approved') await rpc('leave_request_change', args);
+        else await rpc('leave_edit', { ...args, p_attachment_path: path, p_replace_attachment: !!input.attachment || !!input.removeAttachment });
+      } catch (error) { await cleanupRejectedLeaveUpload(path,error); throw error; }
+      await refresh(); return;
+    }
+    commit(s => {
+      const request = s.leaveRequests.find(x => x.id === requestId)!;
+      if (r.status === 'approved') request.adjustment = { id: id(), type: 'change', status: 'pending', requestedAt: new Date().toISOString(), startDate: input.startDate, endDate: input.endDate, reason: input.reason };
+      else {
+        Object.assign(request, { startDate: input.startDate, endDate: input.endDate, startTime, endTime, reason: input.reason, status: 'pending', approverId: user().managerId, note: '', externalApproverName: '' });
+        if (input.attachment) { request.attachmentUrl = URL.createObjectURL(input.attachment); request.attachmentName = input.attachment.name; }
+        else if (input.removeAttachment) { request.attachmentUrl = undefined; request.attachmentName = undefined; request.attachmentPath = undefined; }
+      }
+    }, 'leave_change_requested', requestId, input.reason);
+  },
+  async correctLeave(requestId: string, input: { startDate: string; endDate: string; deductionDays: number; reason: string; cancel: boolean; externalApproverName?: string }) {
+    requireAdmin();
+    const state = get(app), actor = user(), request = state.leaveRequests.find(r => r.id === requestId);
+    if (!request || request.employeeId === actor.id) throw new Error('Koreksi cuti sendiri harus dilakukan Admin HR lain.');
+    if (request.status !== 'approved' || request.adjustment?.status === 'pending') throw new Error('Koreksi hanya untuk cuti disetujui tanpa perubahan yang menunggu.');
+    if (input.reason.trim().length < 3) throw new Error('Alasan koreksi minimal 3 karakter.');
+    const employee = state.employees.find(e => e.id === request.employeeId)!;
+    if (employee.approvalMode === 'external' && (input.externalApproverName?.trim().length ?? 0) < 3) throw new Error('Nama pemberi keputusan eksternal wajib diisi.');
+    const startDate = input.cancel ? request.startDate : input.startDate, endDate = input.cancel ? request.endDate : input.endDate;
+    validateLeavePeriod({ ...request, startDate, endDate });
+    const allocation: Record<number, number> = input.cancel ? {} : deductionByYear(startDate, endDate, input.deductionDays);
+    if (!input.cancel && duplicateLeave(state, request.employeeId, { ...request, startDate, endDate }, requestId)) throw new Error('Pengajuan yang sama sudah ada.');
+    if (configured) { await rpc('leave_correct', { p_id: requestId, p_starts_on: startDate, p_ends_on: endDate, p_deductions: allocation, p_reason: input.reason, p_cancel: input.cancel, p_external_decider: input.externalApproverName || null }); await refresh(); return; }
+    commit(s => {
+      const r = s.leaveRequests.find(x => x.id === requestId)!;
+      applyLeaveAllocation(s,r,allocation);
+      Object.assign(r, { startDate, endDate, status: input.cancel ? 'cancelled' : 'approved', deductionDays: input.cancel ? 0 : input.deductionDays, note: input.reason, approverId: actor.id, externalApproverName: input.externalApproverName ?? '' });
+    }, input.cancel ? 'leave_corrected_cancelled' : 'leave_corrected', requestId, `${input.reason.trim()} · Sebelum: ${request.startDate}–${request.endDate}, ${request.deductionDays} hari. Sesudah: ${startDate}–${endDate}, ${input.cancel ? 0 : input.deductionDays} hari${input.externalApproverName ? ` · Keputusan ${input.externalApproverName}` : ''}`);
   },
   async cancelLeave(requestId: string, reason: string) {
     const r = get(app).leaveRequests.find(x => x.id === requestId); if (!r || r.employeeId !== user().id) throw new Error('Pengajuan hanya dapat dibatalkan pemiliknya.'); if (reason.trim().length < 3) throw new Error('Alasan pembatalan minimal 3 karakter.');
@@ -343,8 +422,10 @@ export const actions = {
     if (r.status !== 'approved' || r.adjustment.status !== 'pending') throw new Error('Perubahan sudah diproses.');
     const employee = get(app).employees.find(e => e.id === r.employeeId)!; if(employee.approvalMode === 'external' && (decision.externalApproverName?.trim().length ?? 0) < 3) throw new Error('Nama pemberi keputusan eksternal minimal 3 karakter.');
     if (decision.decision === 'reject' && (decision.note?.trim().length ?? 0) < 3) throw new Error('Alasan penolakan minimal 3 karakter.');
+    if (!configured && decision.decision === 'approve' && r.adjustment.type === 'change'
+      && duplicateLeave(get(app),r.employeeId,{ ...r,startDate:r.adjustment.startDate!,endDate:r.adjustment.endDate! },r.id)) throw new Error('Pengajuan yang sama sudah ada.');
     if(configured) { await rpc('leave_decide_adjustment', { p_id: r.adjustment.id, p_approved: decision.decision === 'approve', p_deductions: r.adjustment.type === 'cancel' ? {} : deductionByYear(r.adjustment.startDate!,r.adjustment.endDate!,decision.deductionDays), p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh(); return; }
-    commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!, a = request.adjustment!; if(decision.decision === 'approve') { if(a.type === 'cancel') { s.leaveLedger = s.leaveLedger.filter(e => e.requestId !== request.id); request.status = 'cancelled'; request.deductionDays = 0; } else { updateCharge(s,request,a.startDate!,a.endDate!,decision.deductionDays); request.startDate = a.startDate!; request.endDate = a.endDate!; request.deductionDays = decision.deductionDays; } } a.status = decision.decision === 'approve' ? 'approved' : 'rejected'; a.note = decision.note?.trim() ?? ''; a.decidedAt = new Date().toISOString(); a.deciderName = decision.externalApproverName?.trim() || user().fullName; }, 'leave_adjustment_decided', requestId, `${r.adjustment.type === 'cancel' ? 'Pembatalan' : 'Perubahan tanggal'} ${decision.decision === 'approve' ? 'disetujui' : 'ditolak'}${decision.externalApproverName ? ` oleh ${decision.externalApproverName.trim()}` : ''}${decision.note ? `: ${decision.note.trim()}` : ''}`);
+    commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!, a = request.adjustment!; if(decision.decision === 'approve') { if(a.type === 'cancel') { applyLeaveAllocation(s,request,{}); request.status = 'cancelled'; request.deductionDays = 0; } else { updateCharge(s,request,a.startDate!,a.endDate!,decision.deductionDays); request.startDate = a.startDate!; request.endDate = a.endDate!; request.deductionDays = decision.deductionDays; } } a.status = decision.decision === 'approve' ? 'approved' : 'rejected'; a.note = decision.note?.trim() ?? ''; a.decidedAt = new Date().toISOString(); a.deciderName = decision.externalApproverName?.trim() || user().fullName; }, 'leave_adjustment_decided', requestId, `${r.adjustment.type === 'cancel' ? 'Pembatalan' : 'Perubahan tanggal'} ${decision.decision === 'approve' ? 'disetujui' : 'ditolak'}${decision.externalApproverName ? ` oleh ${decision.externalApproverName.trim()}` : ''}${decision.note ? `: ${decision.note.trim()}` : ''}`);
   },
   async clockIn(input: ClockInInput) {
     const u = user(), s = get(app), outlet = s.outlets.find(o => o.id === u.outletId); if(!isCashier(u) || !outlet || input.outletId !== outlet.id) throw new Error('Absensi hanya untuk kasir pada outlet penempatannya.');

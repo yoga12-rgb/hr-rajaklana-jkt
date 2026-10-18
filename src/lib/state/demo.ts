@@ -3,7 +3,7 @@ import { jakartaDate } from '../domain';
 export function initialDemo(): AppState {
   const defaults: Employee = { id: '', employeeNumber: '', fullName: '', phone: '081234567890', departmentId: 'dept-sales', positionId: '', outletId: 'outlet-a', managerId: 'employee-1', joinDate: '2025-01-01', status: 'active', employmentType: 'permanent', accountStatus: 'active', roles: ['employee'], canMiddleShift: false, weeklyOffDays: [0], approvalMode: 'internal', address: '', birthDate: '', gender: '', emergencyName: '', emergencyPhone: '' };
   return {
-    mode: 'demo', initialized: false, loading: false, user: null, connected: true, error: null,
+    mode: 'demo', initialized: false, loading: false, user: null, connected: true, error: null, notifications: [],
     departments: [
       { id: 'dept-production', code: 'PRD', name: 'Produksi', active: true },
       { id: 'dept-admin', code: 'ADM', name: 'Administrasi', active: true },
