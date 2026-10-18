@@ -43,6 +43,10 @@ Do not substitute a Vercel URL or another environment's project. The RPC restric
 
 The configuration is in a private, unexposed table with no client or direct service-role grants. The webhook uses a dedicated wake-only secret. `pg_net` queues HTTP headers, so a service-role or VAPID private key must never be placed in those headers. Possession of the wake credential alone can only request dispatch of legitimate queued notifications; it cannot read HR data or create a message.
 
+Hosted `pg_net` transport tables retain Supabase's platform grants. They belong to `supabase_admin`; a `REVOKE` run as `postgres` can finish with a warning and leave access unchanged. No application migration claims to restrict those grants. Keep `net` outside the Data API's exposed schemas, give direct database login only to trusted operators/services, and treat queued request headers as readable by any database login. See [Supabase's pg_net privilege constraints](https://supabase.com/docs/guides/troubleshooting/revoking-access-to-pg_net-objects-has-no-effect-0bbc16).
+
+Do not drop/recreate or attempt to relocate the nonrelocatable extension to address an advisor warning: recreation restores the platform grants and removes unsent requests and stored responses. The application boundary is the unexposed `net` schema and the limited wake credential; privileged database access remains trusted.
+
 ## Delivery behavior
 
 Employees opt in using the button in the notification inbox. No permission prompt appears automatically. Supported browsers use their HTTPS push services for Chrome/Firefox/Apple/Windows; endpoint host allowlists reject arbitrary/private targets, userinfo, custom ports and fragments. The subscription belongs to the current active employee. A shared browser switching accounts clears the old recipient queue before rebinding the endpoint. Logout attempts server unsubscribe and always unsubscribes the browser device even if the server is unavailable.

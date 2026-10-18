@@ -1,56 +1,44 @@
-# Catatan validasi perubahan kasir — 18 Oktober 2026
+# Validasi rilis kasir — 18 Oktober 2026
 
-Status dokumen: pemeriksaan lokal integrasi lulus; verifikasi hosted dan perangkat belum seluruhnya selesai. Kode yang tersedia dibedakan dari perilaku yang sudah diuji. Snapshot hosted dan jumlah tes versi lama tidak membuktikan seluruh perubahan terbaru.
+**Production dan Preview READY** untuk kode `0a79085d0ee5d1d5c4e6c735a37590cbc895363b`. Sebelas migrasi yang sama telah diterapkan pada kedua database melalui profil CLI dan direktori kerja yang terpisah. Bukti berikut mencatat hasil rilis ini; pengujian perangkat nyata tetap memiliki batas tersendiri.
 
-## Bukti lokal yang sudah tersedia
+## Rilis dan pemeriksaan lokal
 
-| Area | Bukti | Batas bukti |
+| Lingkungan | Deployment dari Git | CI |
 | --- | --- | --- |
-| GPS dan status/durasi absensi | 15 pengujian fokus `attendance-geo.test.ts` dan `attendance-status.test.ts` lulus pada tahap implementasi UI | Fungsi murni; bukan GPS/kamera perangkat atau RPC hosted |
-| Suite lokal, tipe, dan build | Penanggung jawab integrasi mengonfirmasi 285 test, check 0 error/0 warning, build, dan database 11 migrasi lulus | Bukti lokal; bukan kelulusan seluruh layanan/perangkat hosted |
-| Penugasan, koreksi absensi, izin lampau, dan koreksi jam izin | Fixture rollback lokal menerapkan seluruh 11 migrasi aktual dan lulus 8 kelompok pemeriksaan alur/hak aktor | PGlite lokal; eksekusi Preview dan interaksi browser belum dibuktikan oleh fixture ini |
-| API wajah dan push | 38 pengujian handler aktual `api-handlers.test.ts` lulus dengan autentikasi, ekstraksi wajah, dan klien RPC tiruan | Memeriksa validasi, pembatasan identitas, kegagalan, dan kontrak RPC; bukan inferensi wajah, Supabase hosted, atau pengiriman push nyata |
-| Browser alur penugasan dan koreksi | Penanggung jawab integrasi mengonfirmasi penugasan outlet sementara → permintaan kasir → notifikasi HR → persetujuan HR lulus | Tidak mencakup clock in biometrik dengan kamera/GPS perangkat fisik |
-| Browser izin lampau dan koreksi jam | Penanggung jawab integrasi mengonfirmasi pencatatan izin pribadi pulang awal dan perubahan jam HR 14:00 → 14:30 lulus | Bukan pengujian semua jenis/periode izin atau seluruh kegagalan lintas akun |
-| Wajah dan push pada perangkat | Komponen/API/kontrak tersedia untuk verifikasi integrasi akhir | Belum membuktikan kualitas pencocokan, anti foto, dukungan ponsel, pengiriman push, atau kesiapan hosted |
+| Preview — `codex/preview` | [READY](https://hr-rajaklana-2ycm1j445-hr-rajaklana.vercel.app), `dpl_7gwV7V6RQkkMid8BHX4j3CsTC1MU` | [39139972799 — success](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/39139972799) |
+| Production — `main` | [READY](https://hr-rajaklana-4m0nnx9rk-hr-rajaklana.vercel.app), `dpl_8fQ6QMoZK6g79ERcB3vdt7L3bHcH` | [39140732223 — success](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/39140732223) |
 
-Pemeriksaan tipe selama integrasi pernah menemukan error pada modul server baru; pemeriksaan integrasi lokal berikutnya dikonfirmasi lulus seperti tabel di atas. Pengujian layanan hosted dan perangkat dicatat terpisah.
+Pemeriksaan lokal lulus: **285 unit test**, check **0 error/0 warning**, build, suite SQL inti dan identitas/push dengan 11 migrasi aktual, serta seluruh fixture migrasi legacy. Pengujian mencakup pembatasan aktor, kepemilikan, transaksi, biometrik/receipt, dan antrean push; pengujian lokal tidak mengirim notifikasi perangkat.
 
-Perubahan meliputi penugasan harian wajib, GPS segar maksimal 60 detik yang terikat pada selfie, status selesai tanpa clock in kedua, penanda sesi panjang setelah ditutup, penjelasan durasi dengan izin, permintaan koreksi kasir dan keputusan HR, pencatatan izin lampau, serta koreksi jam izin. Navigasi menautkan Penugasan harian dan Verifikasi wajah; penugasan tidak menambah item navigasi bawah.
+## Bukti hosted
 
-## Fixture rollback yang siap ditinjau
-
-Fixture diabaikan Git pada `.vercel/cashier-preview-smoke.sql`; pelaksana lokalnya `.vercel/cashier-preview-smoke-local.mjs`. Perintah `node .vercel/cashier-preview-smoke-local.mjs` lulus setelah menerapkan 11 migrasi aktual. Delapan kelompok pemeriksaan mencakup penugasan harian/lampau dan outlet sementara; RLS kasir/manajer serta absensi manual lama; kepemilikan/pembatalan permintaan koreksi; persetujuan HR beserta absensi manual dan audit; penolakan snapshot usang/persetujuan berulang; izin sakit lampau dengan koreksi jam dan pengembalian potongan yang idempoten; tautan kotak masuk dan mark-read penerima; serta penghitung bisnis dan rollback.
-
-Fixture memakai tiga akun/karyawan sintetis dengan ID dan nomor eksplisit, memeriksa benturan sebelum menulis, dan berjalan dalam satu transaksi `BEGIN` sampai `ROLLBACK`. Uji lokal memastikan jumlah baris Auth, bisnis, audit, notifikasi, dan outbox kembali persis ke kondisi awal; sequence nomor karyawan/kode outlet tidak berubah. Sequence teknis audit/ledger/pg_net dapat meninggalkan celah walau transaksi dibatalkan. Notifikasi sementara dapat ditujukan ke HR yang dikonfigurasi, tetapi harus tetap tidak committed. Menurut [dokumentasi pg_net](https://supabase.com/docs/guides/database/extensions/pg_net), permintaan HTTP dimulai setelah transaksi committed; perilaku pengirim hosted belum dieksekusi oleh pemeriksaan lokal ini.
-
-Belum ada eksekusi hosted oleh pembuat fixture. Jalankan seluruh SQL pada satu koneksi Preview saja setelah ditinjau; jangan mengeksekusi sebagian lalu melakukan commit. Fixture ini sengaja tidak melakukan clock in dengan bukti biometrik nyata dan bukan bukti kualitas kamera/GPS, pencocokan wajah, push perangkat, atau scheduler.
-
-Smoke script API yang diabaikan Git disiapkan pada `.vercel/preview-api-smoke.mjs`, dengan target tetap proyek Preview dan transport proteksi deployment yang diberikan operator. Script menggunakan Auth/karyawan sintetis yang harus dihapus dan diverifikasi tidak ada di blok `finally`; tidak mengirim push atau wajah nyata. Sintaks/ekspor script dan penolakan `face_count` untuk JPEG abu-abu 640×640 telah diperiksa lokal memakai inferensi WASM aktual. Script belum dijalankan pada hosted oleh pembuatnya. Pengujian hosted tersebut memerlukan hak baca/tulis/hapus fixture yang tersedia; tidak ada penambahan grant oleh script. Log audit Auth dan bucket pembatasan percobaan sintetis dapat tertinggal sebagai jejak teknis.
-
-## Pemeriksaan yang masih menunggu bukti
-
-| Pemeriksaan | Status saat dokumen dibuat |
+| Pemeriksaan | Hasil |
 | --- | --- |
-| Suite lokal keseluruhan dan build setelah integrasi | Lulus: 285 test, check 0 error/0 warning, build, dan database 11 migrasi; ulang bila kode berubah |
-| Browser E2E penugasan → masuk → pulang → koreksi → keputusan | Penugasan/permintaan/notifikasi/keputusan lulus; masuk/pulang dengan kamera/GPS nyata masih menunggu |
-| Migrasi dan endpoint terbaru pada Preview terisolasi | Menunggu verifikasi oleh penanggung jawab deployment |
-| RLS, hak aktor, audit, dan saldo pada layanan hosted | Menunggu verifikasi hosted; tes lokal bukan pengganti |
-| Kamera/GPS nyata pada ponsel outlet, termasuk modal terbuka >60 detik | Belum diverifikasi pada perangkat fisik |
-| Pendaftaran wajah dengan persetujuan dan tinjauan HR lain; pencocokan privat 1:1 | Menunggu pengujian layanan dan perangkat |
-| Batas kualitas/mismatch serta jalur manual HR | Menunggu pengujian layanan dan operasional |
-| Push opt-in/ditolak/tidak didukung; unsubscribe saat logout | Menunggu pengujian browser/perangkat |
-| Scheduler/pengirim server pengingat 8 jam saat aplikasi tertutup | Menunggu konfigurasi dan bukti pengiriman hosted |
+| Preview: alur transaksi/RLS | Delapan kelompok assertion rollback lulus: penugasan harian/lampau dan outlet sementara; akses kasir/manajer dan absensi legacy; kepemilikan/pembatalan koreksi; persetujuan HR dengan absensi manual/audit; snapshot usang/persetujuan berulang; izin lampau/koreksi jam/refund idempoten; tautan dan mark-read penerima; penghitung bisnis/rollback. Sisa data sintetis: **0**. |
+| Preview: API biometrik yang terdeploy | Sesi sintetis mendapat status **200**. Enrollment JPEG abu-abu 640×640 mendapat **400 `face_count`**, membuktikan decoding, model dan WASM aktual berjalan. Tidak ada wajah nyata, enrollment berhasil, atau upload gambar. Auth, karyawan, dan sesi sintetis dibersihkan. |
+| Kedua worker push | Tanpa autentikasi **401**; wake yang sah **200**, `claimed=0`, `completed=0`. Ini menguji akses dan antrean kosong, bukan pengiriman ke perangkat. |
+| Scheduler kedua lingkungan | `pg_net` dan `pg_cron` terpasang; `hr-push-minute` aktif dan eksekusi terbaru berhasil. |
+| Catalog kedua database | RLS tabel aplikasi aktif, bucket privat, clock in legacy dicabut, clock in terverifikasi tersedia, dan grant langsung tabel privat ditolak. |
+| Data API kedua lingkungan | Akses anonim ke tabel baru/RPC privat ditolak **401**. `Accept-Profile: net` ditolak **400 `PGRST106`** karena schema tidak diekspos. |
+| HTTP Production | Domain utama, login, manifest, dan service worker **200**; service worker memakai `no-store`. API biometrik dan push tanpa sesi mengembalikan JSON **401 `unauthorized`**. |
+| Browser Production | Form login pada domain utama tampil lengkap. Tombol pembaruan PWA **Gunakan versi terbaru** memuat login versi baru dan menghilangkan prompt. Tidak ada kredensial yang dimasukkan. |
+| Konfigurasi server | Secret runtime disimpan privat/terenkripsi. Kunci VAPID dan wake secret Production/Preview terpisah. Berkas provisioning lokal berisi JSON privat, kunci mentah, dan environment Edge sementara telah dihapus; secret hosted dipertahankan. |
 
-## Skenario penerimaan
+Fixture rollback memakai identitas sintetis dan nomor karyawan eksplisit; sequence nomor karyawan/kode outlet tidak dialokasikan. Celah sequence teknis audit/ledger/pg_net serta log audit Auth/pembatasan percobaan sintetis dapat tetap ada. Tidak ada pengujian atau mutasi data HR asli di Production.
 
-1. Tanpa penugasan atau saat libur, kasir tidak dapat clock in. Outlet tugas sementara tidak mengganti penempatan utama. HR tidak menetapkan dirinya sendiri. Penugasan lampau memerlukan alasan minimal 5 karakter, tanggal tidak sebelum mulai bekerja, dan belum ada absensi.
-2. Modal lama tidak dapat mengonfirmasi GPS kedaluwarsa. GPS diperbarui dan selfie lama dibatalkan; foto baru wajib. Clock out memakai GPS segar dan lokasi historis sesi.
-3. Sesi terbuka mencapai pengingat 8 jam dan tanda perlu diperiksa 12 jam. Sesi panjang yang ditutup tetap ditandai; waktu aktual tidak dipotong atau ditutup otomatis.
-4. Usulan koreksi dapat dibatalkan saat menunggu dan tidak mengubah absensi sebelum keputusan. HR lain memberi keputusan beralasan; persetujuan tidak meninggalkan perubahan sebagian.
-5. Durasi aktual dan pembanding 480 menit tetap terlihat. Bagian berizin dan perlu penjelasan dipisahkan. Izin keluar sementara bukan pelacakan jam kembali aktual. Tidak ada keputusan payroll otomatis.
-6. Izin sakit/pribadi lampau serta koreksi jam izin menyimpan sumber keputusan, pemberi keputusan eksternal bila berlaku, dan audit. Potongan tahun hangus tidak ditambah/dipindah ke tahun baru.
-7. Referensi wajah memerlukan persetujuan serta tinjauan HR lain. Pencocokan server hanya 1:1 dan terikat konteks absensi. Kegagalan memakai proses HR, tanpa klaim liveness kuat atau jaminan anti foto.
-8. Push hanya atas pilihan pengguna pada platform yang mendukung; penolakan tetap menyediakan lonceng/in-app. Logout melepas langganan. Bukti pengiriman server dan perangkat dicatat terpisah.
+Advisors kedua proyek tidak melaporkan **ERROR**. Peringatan [RPC `SECURITY DEFINER`](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable) yang disengaja dan informasi [RLS tanpa policy klien](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) tetap dicatat sesuai pembatasan akses. Metadata ekstensi `pg_net` berada di `public`, tanpa fungsi ekstensi pada schema tersebut; ekstensi tidak dapat direlokasi dan grant transport platform tetap berlaku. Batas serta penanganannya dijelaskan pada [operasional biometrik/push](biometric-push-operations.md). Peringatan [MFA](https://supabase.com/docs/guides/auth/auth-mfa) dan [perlindungan password bocor](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection) yang sudah ada belum berubah.
 
-Gunakan [panduan uji operasional](operational-pilot.md) untuk pelaksanaan. Isi hasil nyata dan waktu verifikasi sebelum memakai perubahan sebagai acuan operasional Production. Jangan memasukkan foto, token, kata sandi, atau data karyawan asli ke laporan.
+## Bukti browser demo
+
+- Penugasan outlet sementara → permintaan koreksi kasir → notifikasi HR → persetujuan HR → catatan kerja **8 jam**: **PASS**.
+- Pencatatan izin pribadi pulang awal lampau dan koreksi jam oleh HR **14:00 → 14:30**: **PASS**.
+- Tampilan ponsel **430 px** dan desktop **1280 px**: tidak ada overflow horizontal pada alur yang diperiksa.
+
+Alur tersebut dijalankan pada demo browser; hasilnya tidak membuktikan kamera/GPS atau layanan push pada ponsel outlet.
+
+## Batas yang belum diuji pada perangkat nyata
+
+Kamera/GPS fisik, enrollment wajah dengan persetujuan dan peninjauan HR lain, kecocokan wajah 1:1, serta penerimaan push ketika aplikasi ditutup belum dibuktikan pada perangkat nyata. Inferensi gambar abu-abu tidak menguji kecocokan wajah atau liveness. Sistem tidak menjamin anti foto dan tetap menyediakan jalur pencatatan/koreksi manual HR.
+
+Worker dan scheduler yang aktif belum membuktikan pengiriman end-to-end ke perangkat. Uji opt-in/penolakan izin, dukungan platform, logout/unsubscribe, GPS kedaluwarsa, dan pengingat delapan jam pada perangkat outlet melalui [panduan uji operasional](operational-pilot.md) sebelum pemakaian operasional.
