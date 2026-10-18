@@ -35,6 +35,64 @@ for (const name of migrationNames) {
   catch (error) { console.error(`Migration FAILED: ${name}`, error.message); throw error; }
 }
 const scalar = async (sql, params=[]) => (await db.query(sql,params)).rows[0];
+// Employee mutexes must serialize competing writes while remaining compatible
+// with FK KEY SHARE checks for a different employee's audit/notification. Using
+// FOR UPDATE here permits reciprocal HR applicants to deadlock each other.
+const employeeMutexFunctions = [
+  'private.check_leave_duplicate', 'private.set_deductions',
+  'public.hr_save_employee', 'public.hr_set_roles', 'public.issue_account_token',
+  'public.claim_account_token', 'public.attendance_clock_in',
+  'public.attendance_clock_out', 'public.attendance_correct',
+  'public.attendance_record_manual', 'public.cashier_assignment_save',
+  'public.attendance_correction_submit', 'public.attendance_correction_cancel',
+  'public.attendance_correction_decide', 'public.leave_record_retrospective',
+  'public.biometric_enroll_server', 'public.biometric_review',
+  'public.biometric_withdraw', 'public.biometric_issue_receipt',
+  'public.attendance_clock_in_verified', 'private.protect_verified_selfie_delete',
+  'private.dispatch_push_tick'
+];
+for (const qualifiedName of employeeMutexFunctions) {
+  const [schema,name] = qualifiedName.split('.');
+  const functions = (await db.query(`select prosrc from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname=$1 and p.proname=$2`,[schema,name])).rows;
+  const mutexes = functions.flatMap(row => row.prosrc.match(/from public\.employees[^;]*for (?:no key )?update;/g) ?? []);
+  assert.ok(mutexes.length, `${qualifiedName} retains its employee mutex`);
+  assert.ok(mutexes.every(sql => sql.endsWith('for no key update;')),
+    `${qualifiedName} employee mutex must allow cross-recipient FK KEY SHARE`);
+}
+const employeeUpdateLocks = (await db.query(`select n.nspname||'.'||p.proname as name from pg_proc p
+  join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','private')
+  and p.prosrc ~ 'from public\\.employees[^;]*for update;' order by 1`)).rows.map(row => row.name);
+assert.deepEqual(employeeUpdateLocks,['public.finish_account_token'],
+  'only the account finalizer that changes the unique Auth key retains FOR UPDATE on employees');
+for (const [signature,entity] of [
+  ['public.attendance_clock_out(double precision,double precision,double precision)','attendance'],
+  ['public.attendance_correct(uuid,timestamptz,timestamptz,text,text)','attendance'],
+  ['public.attendance_correction_decide(uuid,boolean,text)','attendance_correction_requests'],
+  ['public.leave_correct_hours(uuid,date,date,jsonb,text,boolean,text,time,time)','leave_requests'],
+  ['public.leave_decide_adjustment(uuid,boolean,jsonb,text,text)','leave_requests']
+]) {
+  const {prosrc} = await scalar('select prosrc from pg_proc where oid=$1::regprocedure',[signature]);
+  assert.match(prosrc,new RegExp(`from public\\.${entity}[^;]*for update;`),
+    `${signature} retains its protected entity/parent row lock`);
+}
+console.log('Lock contracts OK: employee mutexes use NO KEY UPDATE; FK-compatible audit/notification writes; entity locks and Auth key finalization preserved');
+// New biometric gates intentionally revoke direct access to legacy capture RPCs.
+// Preserve regression coverage of their internal GPS/capture/ownership contracts
+// through harness-only wrappers; production migrations never create this schema.
+// The separate biometric suite exercises the real verified public endpoints.
+await db.exec(`
+  create schema core_contract_tests;
+  grant usage on schema core_contract_tests to authenticated;
+  create function core_contract_tests.clock_in(text,double precision,double precision,double precision,text)
+    returns public.attendance language sql security definer set search_path='' as $$ select public.attendance_clock_in($1,$2,$3,$4,$5); $$;
+  create function core_contract_tests.clock_in(text,double precision,double precision,double precision,text,timestamptz,text)
+    returns public.attendance language sql security definer set search_path='' as $$ select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7); $$;
+  create function core_contract_tests.clock_out(double precision,double precision,double precision)
+    returns public.attendance language sql security definer set search_path='' as $$ select public.attendance_clock_out($1,$2,$3); $$;
+  revoke all on all functions in schema core_contract_tests from public,anon,authenticated;
+  grant execute on all functions in schema core_contract_tests to authenticated;
+`);
 const expectError = async (sql,params,fragment) => {
   try { await db.query(sql,params); assert.fail(`Expected error: ${fragment}`); }
   catch (error) { assert.ok(error.message.includes(fragment), error.message); }
@@ -79,7 +137,11 @@ await db.exec('rollback to savepoint anonymous_roles');
 await db.exec('rollback');
 console.log('Service reads OK: legacy missing-grant failure reproduced; bootstrap/login SELECTs repaired without client or write access');
 const captureSignature='public.attendance_clock_in(text,double precision,double precision,double precision,text,timestamptz,text)';
-assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',captureSignature,'EXECUTE'])).allowed,true);
+const verifiedCaptureExists=(await scalar("select exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='attendance_clock_in_verified') as present")).present;
+assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',captureSignature,'EXECUTE'])).allowed,!verifiedCaptureExists);
+if(verifiedCaptureExists) for(const signature of ['public.attendance_clock_in(text,double precision,double precision,double precision,text)','public.attendance_clock_out(double precision,double precision,double precision)']) {
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',signature,'EXECUTE'])).allowed,false,'verified endpoint cannot be bypassed through legacy RPC grants');
+}
 assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',captureSignature,'EXECUTE'])).allowed,false);
 const captureFunction=await scalar(`select pronargdefaults as defaults,prosecdef as secured,proconfig as config from pg_proc where oid=$1::regprocedure`,[captureSignature]);
 assert.equal(captureFunction.defaults,0,
@@ -129,6 +191,10 @@ for (const [id,auth,name,approver] of [[adminId,adminAuth,'Admin',null],[bakerId
     values($1,$2,$3,'081234567890',$4,$5,$6,$7,'active',$8,true)`,[id,auth,name,position.department_id,position.id,outlet.id,`${clock.year-1}-01-01`,approver]);
 }
 await db.query(`insert into public.employee_roles values($1,'employee'),($1,'admin_hr'),($2,'employee'),($2,'head_baker'),($3,'employee')`,[adminId,bakerId,cashierId]);
+// Existing capture/metadata scenarios now begin with explicit daily rosters.
+for (const [employeeId,creatorId] of [[cashierId,adminId],[adminId,bakerId]]) {
+  await db.query("insert into public.cashier_assignments(employee_id,work_date,outlet_id,shift,reason,created_by) values($1,$2,$3,'morning','Penugasan fixture absensi',$4)",[employeeId,clock.today,outlet.id,creatorId]);
+}
 const asUser=async(id,role='authenticated')=>{
   await db.exec('reset role');
   await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role',$2,false)`,[id,role]);
@@ -149,39 +215,39 @@ assert.equal(bal.balance.allowance,12);
 // Grant ownership of an uploaded image exactly as Supabase Storage does.
 const selfie=`${cashierAuth}/new-selfie.jpg`;
 await db.query(`insert into storage.objects(bucket_id,name) values('attendance-selfies',$1)`,[selfie]);
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['middle',-6.2,106.8,10,selfie],'belum diizinkan');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-7,106.8,10,selfie],'di luar radius');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,500,selfie],'belum cukup akurat');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,`${adminAuth}/fake.jpg`],'Selfie wajib');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5)',['middle',-6.2,106.8,10,selfie],'belum diizinkan');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5)',['morning',-7,106.8,10,selfie],'di luar radius');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,500,selfie],'belum cukup akurat');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,`${adminAuth}/fake.jpg`],'Selfie wajib');
 const capturedAt=(await scalar(`select (clock_timestamp()-interval '35 seconds')::text as captured`)).captured;
 const captureArgs=['morning',-6.2,106.8,10,selfie,capturedAt,'  Nama Outlet Saat Foto  '];
 for(const metadata of [[null,'Outlet Foto'],[capturedAt,null],[capturedAt,'  '],[null,null]]) {
-  await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),...metadata],'harus lengkap');
+  await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),...metadata],'harus lengkap');
 }
 for(const invalid of ['infinity','-infinity']) {
-  await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),invalid,'Outlet Foto'],'tidak valid');
+  await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)',[...captureArgs.slice(0,5),invalid,'Outlet Foto'],'tidak valid');
 }
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)',
   ['middle',-6.2,106.8,10,selfie,capturedAt,'Outlet Foto'],'belum diizinkan');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)',
   ['morning',-7,106.8,10,selfie,capturedAt,'Outlet Foto'],'di luar radius');
 assert.equal((await scalar('select count(*)::int as count from public.attendance')).count,0,
   'rejected metadata and GPS leave no attendance row');
-const attendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)) as row',captureArgs)).row;
+const attendance=(await scalar('select to_jsonb(core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)) as row',captureArgs)).row;
 assert.equal(attendance.required_minutes,480);
 assert.equal(attendance.work_date,clock.today);
 assert.equal(+new Date(attendance.selfie_captured_at),+new Date(capturedAt));
 assert.ok(+new Date(attendance.selfie_captured_at)<+new Date(attendance.clock_in),'device capture instant stays separate from server clock in');
 assert.equal(attendance.selfie_outlet_name,'Nama Outlet Saat Foto');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5,$6,$7)',captureArgs,'selfie baru');
-await expectError('select public.attendance_clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,selfie],'selfie baru');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5,$6,$7)',captureArgs,'selfie baru');
+await expectError('select core_contract_tests.clock_in($1,$2,$3,$4,$5)',['morning',-6.2,106.8,10,selfie],'selfie baru');
 await asUser(adminAuth);
 await db.query(`update public.outlets set active=false,latitude=-6.3,longitude=106.9,radius_m=20 where id=$1`,[outlet.id]);
 await asUser(cashierAuth);
-await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.3,106.9,10],'di luar radius');
-await expectError('select public.attendance_clock_out($1,$2,$3)',[-7,106.8,10],'di luar radius');
-await db.query('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10]);
-await expectError('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10],'Tidak ada clock in');
+await expectError('select core_contract_tests.clock_out($1,$2,$3)',[-6.3,106.9,10],'di luar radius');
+await expectError('select core_contract_tests.clock_out($1,$2,$3)',[-7,106.8,10],'di luar radius');
+await db.query('select core_contract_tests.clock_out($1,$2,$3)',[-6.2,106.8,10]);
+await expectError('select core_contract_tests.clock_out($1,$2,$3)',[-6.2,106.8,10],'Tidak ada clock in');
 console.log('Attendance OK: GPS,accuracy,selfie,capturemetadata,permissions,duplicate,out');
 await asUser(adminAuth);
 await db.query(`update public.outlets set active=true,morning_starts_at='09:00',late_tolerance_minutes=60,latitude=-6.2,longitude=106.8,radius_m=100 where id=$1`,[outlet.id]);
@@ -197,11 +263,11 @@ assert.equal(corrected.selfie_outlet_name,attendance.selfie_outlet_name,'correct
 await db.query(`update public.outlets set late_tolerance_minutes=0 where id=$1`,[outlet.id]);
 const adminSelfie=`${adminAuth}/own-selfie.jpg`;
 await db.query(`insert into storage.objects(bucket_id,name) values('attendance-selfies',$1)`,[adminSelfie]);
-const ownAttendance=(await scalar('select to_jsonb(public.attendance_clock_in($1,$2,$3,$4,$5)) as row',['morning',-6.2,106.8,10,adminSelfie])).row;
+const ownAttendance=(await scalar('select to_jsonb(core_contract_tests.clock_in($1,$2,$3,$4,$5)) as row',['morning',-6.2,106.8,10,adminSelfie])).row;
 assert.equal(ownAttendance.selfie_captured_at,null,'legacy five-argument call remains usable without inventing capture evidence');
 assert.equal(ownAttendance.selfie_outlet_name,null);
 await expectError('select public.attendance_correct($1,$2,$3,$4)',[ownAttendance.id,ownAttendance.clock_in,null,'Mengoreksi absensi sendiri'],'sendiri');
-await db.query('select public.attendance_clock_out($1,$2,$3)',[-6.2,106.8,10]);
+await db.query('select core_contract_tests.clock_out($1,$2,$3)',[-6.2,106.8,10]);
 console.log('Correction OK: reason/audit,historicalsnapshot,noowncorrection');
 
 // Camera/GPS failure may require a new manual row, not a fake verified selfie.
@@ -620,6 +686,128 @@ assert.equal((await db.query('select * from public.notifications where entity_id
 assert.equal((await db.query('select * from public.notifications where entity_id=$1',[notifiedRequest.id])).rows.length,2,'reassignment preserves durable historic inbox rows');
 await db.exec('rollback');
 console.log('Notifications OK: durableunread,ownRLS,anonymousdenied,noforgery,decision/adjustmentonce,currentreviewer,markone/allownership,idempotency');
+
+// Operational workflows use isolated fictional employees and rollback all data.
+await db.exec('begin');
+await db.exec('reset role');
+const operationalAuth='10000000-0000-0000-0000-000000000088',operationalId='20000000-0000-0000-0000-000000000088';
+for(const signature of [
+  'public.cashier_assignment_save(uuid,date,uuid,text,text,uuid,boolean)',
+  'public.attendance_correction_submit(uuid,date,timestamptz,timestamptz,text,text)',
+  'public.attendance_correction_decide(uuid,boolean,text)','public.attendance_correction_cancel(uuid)',
+  'public.leave_record_retrospective(uuid,text,date,date,text,text,time,time,jsonb,text,text)',
+  'public.leave_correct_hours(uuid,date,date,jsonb,text,boolean,text,time,time)'
+]) {
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',signature,'EXECUTE'])).allowed,true);
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',signature,'EXECUTE'])).allowed,false);
+  assert.ok((await scalar('select proconfig from pg_proc where oid=$1::regprocedure',[signature])).proconfig.includes('search_path=""'));
+}
+await db.query("insert into auth.users(id,email) values($1,'rk000088@login.rajaklana.internal')",[operationalAuth]);
+await db.query(`insert into public.employees(id,auth_user_id,full_name,whatsapp,department_id,position_id,outlet_id,starts_on,account_status,approver_employee_id,can_clock)
+  values($1,$2,'Kasir Operasional Fiktif','081234567888',$3,$4,$5,$6,'active',$7,true)`,[operationalId,operationalAuth,position.department_id,position.id,outlet.id,`${clock.year-1}-01-01`,adminId]);
+await db.query("insert into public.employee_roles values($1,'employee')",[operationalId]);
+const alternateOutlet=await scalar("insert into public.outlets(name,latitude,longitude,radius_m) values('Outlet Penugasan Fiktif',-6.25,106.85,100) returning id");
+await asUser(operationalAuth);
+const rosterSelfie=`${operationalAuth}/roster-selfie.jpg`;
+await workflowError("select public.leave_record_retrospective($1,'sick',$2,$2,'Permintaan tidak berhak','full_day',null,null,'{}','Konfirmasi tidak berhak')",[cashierId,yesterday],'Admin HR');
+await db.query("insert into storage.objects(bucket_id,name) values('attendance-selfies',$1)",[rosterSelfie]);
+await workflowError("select core_contract_tests.clock_in('morning',-6.2,106.8,10,$1)",[rosterSelfie],'Penugasan hari ini');
+await workflowError("select public.cashier_assignment_save($1,$2,$3,'morning','Akun kasir tidak berhak')",[operationalId,clock.today,outlet.id],'Admin HR');
+await asUser(adminAuth);
+await workflowError("select public.cashier_assignment_save($1,$2,$3,'morning','Mengatur penugasan sendiri')",[adminId,clock.today,outlet.id],'sendiri');
+const offAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'off','Libur sesuai konfirmasi HR')) as row",[operationalId,clock.today,outlet.id])).row;
+await workflowError("select public.cashier_assignment_save($1,$2,$3,'middle','Middle belum diizinkan')",[operationalId,clock.today,outlet.id],'Middle');
+await asUser(operationalAuth);
+await workflowError("select core_contract_tests.clock_in('morning',-6.2,106.8,10,$1)",[rosterSelfie],'dijadwalkan libur');
+assert.equal((await db.query('select * from public.cashier_assignments where id=$1',[offAssignment.id])).rows.length,1);
+await workflowError("update public.cashier_assignments set shift='morning'",[],'permission denied');
+await asUser(bakerAuth);
+assert.equal((await db.query('select * from public.cashier_assignments where id=$1',[offAssignment.id])).rows.length,0,'ordinary assigned approver has no HR roster access');
+await asUser(adminAuth);
+const roster=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Bantuan outlet untuk hari ini',$4)) as row",[operationalId,clock.today,alternateOutlet.id,offAssignment.id])).row;
+assert.equal(roster.id,offAssignment.id,'one employee/date row is updated rather than duplicated');
+await asUser(operationalAuth);
+await workflowError("select core_contract_tests.clock_in('afternoon',-6.25,106.85,10,$1)",[rosterSelfie],'Shift tidak sesuai');
+await workflowError("select core_contract_tests.clock_in('morning',-6.2,106.8,10,$1)",[rosterSelfie],'di luar radius');
+const rosterAttendance=(await scalar("select to_jsonb(core_contract_tests.clock_in('morning',-6.25,106.85,10,$1)) as row",[rosterSelfie])).row;
+assert.equal(rosterAttendance.outlet_id,alternateOutlet.id,'assigned outlet overrides employee home');
+assert.equal(rosterAttendance.assignment_id,roster.id,'clock-in preserves the exact roster reference');
+await asUser(adminAuth);
+await workflowError("select public.cashier_assignment_save($1,$2,$3,'afternoon','Perubahan setelah clock in',$4)",[operationalId,clock.today,outlet.id,roster.id],'setelah absensi');
+await db.exec('reset role');
+await db.query("update public.cashier_assignments set status='cancelled' where id=$1",[roster.id]);
+await asUser(operationalAuth);
+await db.query('select core_contract_tests.clock_out($1,$2,10)',[-6.25,106.85]);
+assert.ok((await scalar('select clock_out from public.attendance where id=$1',[rosterAttendance.id])).clock_out,'legacy open attendance can close without active roster');
+
+// Missing attendance: own request, duplicate prevention, HR approval atomically
+// creates a manual entry at the originally resolved dated assignment outlet.
+const priorDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-4)::text as day")).day;
+const priorDay2=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-5)::text as day")).day;
+await asUser(adminAuth);
+await db.query("select public.cashier_assignment_save($1,$2,$3,'morning','Penugasan historis untuk verifikasi')",[operationalId,priorDay,alternateOutlet.id]);
+await asUser(operationalAuth);
+const correction=(await scalar('select to_jsonb(public.attendance_correction_submit(null,$1,$2,$3,$4,$5)) as row',[priorDay,`${priorDay}T07:10:00+07:00`,`${priorDay}T15:10:00+07:00`,'morning','Kamera gagal, waktu dikonfirmasi SPV'])).row;
+assert.equal(correction.outlet_id,alternateOutlet.id);
+assert.equal(correction.original_snapshot,null);
+await workflowError('select public.attendance_correction_submit(null,$1,$2,$3,$4,$5)',[priorDay,`${priorDay}T07:10:00+07:00`,`${priorDay}T15:10:00+07:00`,'morning','Pengajuan ulang saat masih menunggu'],'masih ada'.replace('masih','Masih'));
+await workflowError("select public.attendance_correction_decide($1,true,'Pemohon mencoba memutuskan')",[correction.id],'Admin HR');
+await asUser(bakerAuth);
+assert.equal((await db.query('select * from public.attendance_correction_requests where id=$1',[correction.id])).rows.length,0);
+await asUser(adminAuth);
+const applied=(await scalar("select to_jsonb(public.attendance_correction_decide($1,true,'Dikonfirmasi HR melalui SPV outlet')) as row",[correction.id])).row;
+assert.equal(applied.status,'approved');
+const appliedAttendance=await scalar('select outlet_id,source,corrected from public.attendance where id=$1',[applied.attendance_id]);
+assert.deepEqual(appliedAttendance,{outlet_id:alternateOutlet.id,source:'manual',corrected:true});
+assert.equal((await scalar('select a.assignment_id=s.id as linked from public.attendance a join public.cashier_assignments s on s.employee_id=a.employee_id and s.work_date=a.work_date where a.id=$1',[applied.attendance_id])).linked,true,'manual correction links its historical roster');
+await workflowError("select public.attendance_correction_decide($1,true,'Keputusan yang sama diulang')",[correction.id],'sudah diproses');
+await asUser(operationalAuth);
+const updatedRequest=(await scalar('select to_jsonb(public.attendance_correction_submit($1,$2,$3,$4,$5,$6)) as row',[applied.attendance_id,priorDay,`${priorDay}T07:15:00+07:00`,`${priorDay}T15:15:00+07:00`,'morning','Usulan pembaruan jam hasil konfirmasi'])).row;
+assert.equal(updatedRequest.original_snapshot.outlet_id,alternateOutlet.id);
+await asUser(adminAuth);
+await db.query('select public.attendance_correct($1,$2,$3,$4)',[applied.attendance_id,`${priorDay}T07:20:00+07:00`,`${priorDay}T15:20:00+07:00`,'Koreksi HR lain sesudah permintaan']);
+await workflowError("select public.attendance_correction_decide($1,true,'Usulan sudah tertinggal perubahan baru')",[updatedRequest.id],'berubah sejak');
+assert.equal((await scalar('select status from public.attendance_correction_requests where id=$1',[updatedRequest.id])).status,'pending');
+await db.query("select public.attendance_correction_decide($1,false,'Ditolak karena catatan sudah diperbarui')",[updatedRequest.id]);
+await asUser(operationalAuth);
+const moved=(await scalar('select to_jsonb(public.attendance_correction_submit(null,$1,$2,$3,$4,$5)) as row',[priorDay2,`${priorDay2}T07:10:00+07:00`,`${priorDay2}T15:10:00+07:00`,'morning','Catatan hilang sebelum outlet berubah'])).row;
+await asUser(adminAuth);
+await db.query("select public.cashier_assignment_save($1,$2,$3,'morning','Penugasan berubah sesudah permintaan')",[operationalId,priorDay2,alternateOutlet.id]);
+await workflowError("select public.attendance_correction_decide($1,true,'Tidak boleh diam-diam berpindah outlet')",[moved.id],'Outlet penugasan berubah');
+await asUser(operationalAuth);
+await db.query('select public.attendance_correction_cancel($1)',[moved.id]);
+await workflowError('select public.attendance_correction_cancel($1)',[moved.id],'sudah diproses');
+
+await asUser(adminAuth);
+await db.query("select public.cashier_assignment_save($1,$2,$3,'off','HR mengonfirmasi hari libur historis')",[operationalId,priorDay2,alternateOutlet.id]);
+const manualOff=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',[operationalId,'morning',`${priorDay2}T07:10:00+07:00`,`${priorDay2}T15:10:00+07:00`,'HR mengonfirmasi kerja pengecualian hari off'])).row;
+assert.equal(manualOff.outlet_id,alternateOutlet.id);
+assert.ok(manualOff.assignment_id,'manual exception retains the off assignment as historical context');
+const retrospective=(await scalar("select to_jsonb(public.leave_record_retrospective($1,'sick',$2,$2,$3,'late_arrival','09:00',null,$4,$5)) as row",[operationalId,priorDay2,'Sakit kemarin baru dapat dilaporkan',JSON.stringify({[clock.year]:1}),'Dikonfirmasi HR melalui atasan outlet'])).row;
+assert.equal(retrospective.status,'approved');
+assert.equal(retrospective.deductions[clock.year],1);
+await workflowError("select public.leave_record_retrospective($1,'sick',$2,$2,'Duplikat alasan lain','late_arrival','09:00',null,'{}','Konfirmasi duplikat HR')",[operationalId,priorDay2],'sama');
+await workflowError("select public.leave_record_retrospective($1,'annual',$2,$2,'Cuti tahunan susulan','full_day',null,null,'{}','Konfirmasi jenis tidak diizinkan')",[operationalId,priorDay2],'pribadi atau sakit');
+await workflowError("select public.leave_record_retrospective($1,'sick',$2,$2,'Tanggal belum lampau','full_day',null,null,'{}','Konfirmasi tanggal belum lampau')",[operationalId,future],'tanggal lampau');
+const hourCorrection=(await scalar("select to_jsonb(public.leave_correct_hours($1,$2,$2,$3,'HR membetulkan batas izin jam',false,null,'09:30',null)) as row",[retrospective.id,priorDay2,JSON.stringify({[clock.year]:0.5})])).row;
+assert.equal(hourCorrection.starts_at,'09:30:00');
+assert.equal(hourCorrection.extent,'late_arrival');
+assert.equal((await scalar('select sum(amount)::text as amount from public.leave_ledger where leave_request_id=$1',[retrospective.id])).amount,'-0.50');
+await db.query("select public.leave_correct_hours($1,null,null,'{}','Pembatalan mempertahankan jam lama',true,null,'23:00','01:00')",[retrospective.id]);
+const cancelledHours=await scalar('select starts_at::text,status from public.leave_requests where id=$1',[retrospective.id]);
+assert.deepEqual(cancelledHours,{starts_at:'09:30:00',status:'cancelled'});
+assert.equal((await scalar('select sum(amount)::text as amount from public.leave_ledger where leave_request_id=$1',[retrospective.id])).amount,'0.00');
+await workflowError("select public.leave_correct_hours($1,null,null,'{}','Tidak boleh refund kedua kali',true)",[retrospective.id],'disetujui');
+await asUser(operationalAuth);
+const operationalInbox=(await db.query("select entity_type,href,body from public.notifications where entity_type<>'leave'")).rows;
+assert.ok(operationalInbox.some(n=>n.entity_type==='assignment' && n.href===`/assignments?date=${clock.today}`));
+assert.ok(operationalInbox.some(n=>n.entity_type==='attendance_correction' && n.href===`/attendance?request=${correction.id}`));
+assert.ok(operationalInbox.every(n=>!n.body.includes('Kamera gagal')),'notifications do not expose sensitive exception reasons');
+await asUser('', 'anon');
+await workflowError('select * from public.cashier_assignments',[],'permission denied');
+await workflowError('select * from public.attendance_correction_requests',[],'permission denied');
+await db.exec('rollback');
+console.log('Operational workflows OK: mandatoryroster/off/shift/tempoutlet,historicalclockout,HRassignmentguard,ownrequests,RLS,atomicmanual,stalesnapshot/outletguard,retroactiveleave,hourcorrection,yearrefund,workflowinbox');
 
 // Tokens are server-managed, replaceable, 24h, single-use and claim protected.
 await db.exec('reset role');

@@ -9,6 +9,7 @@
     "#lib/domain": "./src/lib/domain.ts",
     "#lib/selfie": "./src/lib/selfie.ts",
     "#lib/attendance-status": "./src/lib/attendance-status.ts",
+    "#lib/attendance-geo": "./src/lib/attendance-geo.ts",
     "#lib/notifications": "./src/lib/notifications.ts",
     "#lib/components/format": "./src/lib/components/format.ts",
     "#lib/components/*": "./src/lib/components/*"
@@ -20,14 +21,19 @@
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "test:database": "node supabase/tests/database.mjs",
+    "test:database": "node supabase/tests/database.mjs && node supabase/tests/biometric-push.mjs",
     "test:database:legacy": "node supabase/deployment/reset-known-legacy.test.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",
     "@sveltejs/kit": "3.0.0",
-    "svelte": "5.57.1"
+    "@tensorflow/tfjs": "4.22.0",
+    "@tensorflow/tfjs-backend-wasm": "4.22.0",
+    "@vladmandic/face-api": "1.7.15",
+    "sharp": "0.35.5",
+    "svelte": "5.57.1",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
@@ -35,6 +41,7 @@
     "@sveltejs/adapter-static": "4.0.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/node": "^26.6.4",
+    "@types/web-push": "3.6.4",
     "svelte-check": "^4.0.0",
     "typescript": "^6.0.0",
     "vite": "8.3.2",

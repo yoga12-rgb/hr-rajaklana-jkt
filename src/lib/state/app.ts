@@ -1,5 +1,5 @@
 import { get, writable } from 'svelte/store';
-import type { AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest, Outlet, Position, Role, Shift } from '../types';
+import type { AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest, Outlet, Position, Role, Shift, CashierAssignmentInput, AttendanceCorrectionInput, RetrospectiveLeaveInput } from '../types';
 import { attendanceTiming, dateRange, deductionByYear, haversineMeters, jakartaDate, leaveEntitlement } from '../domain';
 import { initialDemo } from './demo';
 import { hasApproverAccess } from '../access';
@@ -8,6 +8,8 @@ import { classifyAttendanceLateness, approvedArrivalForAttendance } from '../att
 import { duplicateLeave, findLeaveConflicts } from '../leave-validation';
 import { demoNotifications } from '../notifications';
 import { leaveAuditDetail } from '../leave-audit';
+import { assignmentFor, assertCashierAssignment, saveAssignmentInState, assertCorrectionInput, submitCorrectionInState, decideCorrectionInState } from '../cashier-workflows';
+import { disableDevicePush } from '../device-push';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
@@ -36,6 +38,21 @@ export const shiftLabel = (shift: Shift) => ({ morning: 'Pagi', afternoon: 'Sore
 function attendanceSnapshot(outlet: Outlet): NonNullable<AttendanceRecord['outletSnapshot']> {
   const { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters } = outlet;
   return { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters };
+}
+export const cashierAssignment = (employeeId = user().id, day = jakartaDate()) => assignmentFor(get(app),employeeId,day);
+function assertFreshGps(capturedAt: string | undefined) {
+  const age = Date.now() - Date.parse(capturedAt ?? '');
+  if (!Number.isFinite(age) || age < -5000 || age > 60_000) throw new Error('Lokasi sudah kedaluwarsa. Periksa ulang lokasi sebelum konfirmasi.');
+}
+async function verifyBiometricSelfie(input: ClockInInput, selfiePath: string): Promise<string> {
+  const { data: { session } } = await supabase!.auth.getSession();
+  if (!session) throw new Error('Silakan masuk kembali.');
+  const response = await fetch('/api/biometric', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+    body: JSON.stringify({ action: 'verify', selfiePath, shift: input.shift, latitude: input.latitude, longitude: input.longitude, accuracy: input.accuracy,
+      geoCapturedAt: input.geoCapturedAt, selfieCapturedAt: input.selfieCapturedAt, selfieOutletName: input.selfieOutletName }) });
+  const result = await response.json();
+  if (!response.ok || !result.verificationToken) throw Object.assign(new Error(result.error || 'Wajah belum berhasil diverifikasi. Periksa pendaftaran wajah atau hubungi HR.'), { uploadRejected: true });
+  return result.verificationToken;
 }
 function selfieMetadata(input: ClockInInput): Pick<AttendanceRecord, 'selfieCapturedAt' | 'selfieOutletName'> {
   if (input.selfieCapturedAt === undefined && input.selfieOutletName === undefined) return {};
@@ -99,12 +116,16 @@ async function rpc(name: string, args: Record<string, unknown>) {
   return data;
 }
 async function cleanupRejectedLeaveUpload(path: string | null, error: unknown) {
+  await cleanupRejectedUpload('leave-attachments',path,error);
+}
+async function cleanupRejectedUpload(bucket: 'leave-attachments' | 'attendance-selfies', path: string | null, error: unknown) {
   // A SQLSTATE response confirms that PostgreSQL rolled the RPC back. Network
   // failures can arrive while it is still committing; keep that evidence rather
   // than racing its attachment link. Storage RLS also protects linked objects.
   const code = typeof error === 'object' && error && 'code' in error ? error.code : null;
-  if (!path || typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)) return;
-  try { await supabase!.storage.from('leave-attachments').remove([path]); } catch { /* Retain the original RPC failure. */ }
+  const rejected = typeof error === 'object' && error && 'uploadRejected' in error && error.uploadRejected === true;
+  if (!path || (!rejected && (typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)))) return;
+  try { await supabase!.storage.from(bucket).remove([path]); } catch { /* Retain the original RPC failure. */ }
 }
 async function edge(action: string, body: Record<string, unknown> = {}) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
@@ -127,7 +148,7 @@ async function refresh() {
   try { await refreshPromise; } finally { refreshPromise = null; }
 }
 function clearLiveState(error: string | null = null) {
-  app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], balanceCache: {}, connected: navigator.onLine, error });
+  app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
   if (channel && supabase) void supabase.removeChannel(channel);
   channel = null;
 }
@@ -149,8 +170,8 @@ async function refreshNow() {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { if (revision === authRevision) clearLiveState(); return; }
-    const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications'];
-    const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows] = await Promise.all(tables.map(name => readAll(name)));
+    const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
+    const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
     if (!current || current.status !== 'active') { if (revision === authRevision) { clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.'); await supabase.auth.signOut(); } return; }
@@ -158,7 +179,7 @@ async function refreshNow() {
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
     const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
       const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
+      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', assignmentId: r.assignment_id ?? null, outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
     }));
     let auditEntries: AppState['auditEntries'] = [];
     if (isAdmin(current)) {
@@ -179,14 +200,21 @@ async function refreshNow() {
       const attachment = r.attachment_path ? await supabase!.storage.from('leave-attachments').createSignedUrl(r.attachment_path,300) : null;
       return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
     }));
-    const notifications = notificationRows.map(r => ({ id: r.id, employeeId: r.employee_id, title: r.title, body: r.body, href: r.href, entityId: r.entity_id, createdAt: r.created_at, readAt: r.read_at }));
+    const cashierAssignments = assignmentRows.map(r => ({ id: r.id, employeeId: r.employee_id, workDate: r.work_date, outletId: r.outlet_id, shift: r.shift,
+      status: r.status, reason: r.reason, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at }));
+    const attendanceCorrectionRequests = correctionRows.map(r => ({ id: r.id, employeeId: r.employee_id, attendanceId: r.attendance_id, workDate: r.work_date,
+      outletId: r.outlet_id, shift: r.shift, proposedClockIn: r.proposed_clock_in, proposedClockOut: r.proposed_clock_out, reason: r.reason,
+      status: r.status, decisionNote: r.decision_note ?? '', decisionBy: r.decision_by, createdAt: r.created_at, decidedAt: r.decided_at,
+      originalSnapshot: r.original_snapshot ? { clockIn: r.original_snapshot.clock_in, clockOut: r.original_snapshot.clock_out,
+        shift: r.original_snapshot.shift, outletId: r.original_snapshot.outlet_id } : null }));
+    const notifications = notificationRows.map(r => ({ id: r.id, employeeId: r.employee_id, title: r.title, body: r.body, href: r.href, entityId: r.entity_id, entityType: r.entity_type ?? 'leave', createdAt: r.created_at, readAt: r.read_at }));
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     if (!channel) {
       channel = supabase.channel(`hr-${session.user.id}`);
-      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
-      channel.subscribe(status => app.update(s => ({ ...s, connected: status === 'SUBSCRIBED' && navigator.onLine })));
+      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
+      channel.subscribe(() => app.update(s => ({ ...s, connected: navigator.onLine })));
     }
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
@@ -194,7 +222,7 @@ async function refreshNow() {
 function validateGeo(input: ClockOutInput, outlet: Outlet): number {
   if (!navigator.onLine) throw new Error('Absensi membutuhkan koneksi internet.');
   if (outlet.latitude === null || outlet.longitude === null) throw new Error('Lokasi outlet belum diatur. Hubungi Admin HR.');
-  if (!Number.isFinite(input.latitude) || input.latitude < -90 || input.latitude > 90 || !Number.isFinite(input.longitude) || input.longitude < -180 || input.longitude > 180 || !Number.isFinite(input.accuracy) || input.accuracy <= 0 || input.accuracy > 100) throw new Error('Akurasi lokasi belum cukup. Aktifkan lokasi presisi dan coba kembali.');
+  if (!Number.isFinite(input.latitude) || input.latitude < -90 || input.latitude > 90 || !Number.isFinite(input.longitude) || input.longitude < -180 || input.longitude > 180 || !Number.isFinite(input.accuracy) || input.accuracy <= 0 || input.accuracy > (outlet.maxAccuracyMeters ?? 100)) throw new Error('Akurasi lokasi belum cukup. Aktifkan lokasi presisi dan coba kembali.');
   const distance = haversineMeters(input.latitude, input.longitude, outlet.latitude, outlet.longitude);
   if (distance > outlet.radiusMeters) throw new Error(`Anda berjarak ${Math.round(distance)} m dari outlet. Radius yang diizinkan ${outlet.radiusMeters} m.`);
   return distance;
@@ -226,7 +254,7 @@ function updateCharge(state: AppState, request: LeaveRequest, start: string, end
 export const actions = {
   async init() {
     if (get(app).initialized) return;
-    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) void refresh(); }, 60000); }
+    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) void refresh(); }, 60000); }
     else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
     window.addEventListener('online', () => { app.update(s => ({ ...s, connected: true })); void refresh(); });
     window.addEventListener('offline', () => app.update(s => ({ ...s, connected: false })));
@@ -243,7 +271,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
@@ -392,7 +420,7 @@ export const actions = {
       }
     }, 'leave_change_requested', requestId, input.reason);
   },
-  async correctLeave(requestId: string, input: { startDate: string; endDate: string; deductionDays: number; reason: string; cancel: boolean; externalApproverName?: string }) {
+  async correctLeave(requestId: string, input: { startDate: string; endDate: string; deductionDays: number; reason: string; cancel: boolean; externalApproverName?: string; startTime?: string; endTime?: string }) {
     requireAdmin();
     const state = get(app), actor = user(), request = state.leaveRequests.find(r => r.id === requestId);
     if (!request || request.employeeId === actor.id) throw new Error('Koreksi cuti sendiri harus dilakukan Admin HR lain.');
@@ -401,15 +429,62 @@ export const actions = {
     const employee = state.employees.find(e => e.id === request.employeeId)!;
     if (employee.approvalMode === 'external' && (input.externalApproverName?.trim().length ?? 0) < 3) throw new Error('Nama pemberi keputusan eksternal wajib diisi.');
     const startDate = input.cancel ? request.startDate : input.startDate, endDate = input.cancel ? request.endDate : input.endDate;
-    validateLeavePeriod({ ...request, startDate, endDate });
+    const startTime = input.cancel ? request.startTime : input.startTime ?? request.startTime, endTime = input.cancel ? request.endTime : input.endTime ?? request.endTime;
+    validateLeavePeriod({ ...request, startDate, endDate, startTime, endTime });
     const allocation: Record<number, number> = input.cancel ? {} : deductionByYear(startDate, endDate, input.deductionDays);
-    if (!input.cancel && duplicateLeave(state, request.employeeId, { ...request, startDate, endDate }, requestId)) throw new Error('Pengajuan yang sama sudah ada.');
-    if (configured) { await rpc('leave_correct', { p_id: requestId, p_starts_on: startDate, p_ends_on: endDate, p_deductions: allocation, p_reason: input.reason, p_cancel: input.cancel, p_external_decider: input.externalApproverName || null }); await refresh(); return; }
+    if (!input.cancel && duplicateLeave(state, request.employeeId, { ...request, startDate, endDate, startTime, endTime }, requestId)) throw new Error('Pengajuan yang sama sudah ada.');
+    if (configured) { await rpc('leave_correct_hours', { p_id: requestId, p_starts_on: startDate, p_ends_on: endDate, p_deductions: allocation, p_reason: input.reason, p_cancel: input.cancel, p_external_decider: input.externalApproverName || null, p_starts_at: startTime || null, p_ends_at: endTime || null }); await refresh(); return; }
     commit(s => {
       const r = s.leaveRequests.find(x => x.id === requestId)!;
       applyLeaveAllocation(s,r,allocation);
-      Object.assign(r, { startDate, endDate, status: input.cancel ? 'cancelled' : 'approved', deductionDays: input.cancel ? 0 : input.deductionDays, note: input.reason, approverId: actor.id, externalApproverName: input.externalApproverName ?? '' });
-    }, input.cancel ? 'leave_corrected_cancelled' : 'leave_corrected', requestId, `${input.reason.trim()} · Sebelum: ${request.startDate}–${request.endDate}, ${request.deductionDays} hari. Sesudah: ${startDate}–${endDate}, ${input.cancel ? 0 : input.deductionDays} hari${input.externalApproverName ? ` · Keputusan ${input.externalApproverName}` : ''}`);
+      Object.assign(r, { startDate, endDate, startTime, endTime, status: input.cancel ? 'cancelled' : 'approved', deductionDays: input.cancel ? 0 : input.deductionDays, note: input.reason, approverId: actor.id, externalApproverName: input.externalApproverName ?? '' });
+    }, input.cancel ? 'leave_corrected_cancelled' : 'leave_corrected', requestId, `${input.reason.trim()} · Sebelum: ${request.startDate}–${request.endDate} ${request.startTime}–${request.endTime}, ${request.deductionDays} hari. Sesudah: ${startDate}–${endDate} ${startTime}–${endTime}, ${input.cancel ? 0 : input.deductionDays} hari${input.externalApproverName ? ` · Keputusan ${input.externalApproverName}` : ''}`);
+  },
+  async recordRetrospectiveLeave(input: RetrospectiveLeaveInput) {
+    requireAdmin(); const actor = user(), state = get(app), employee = state.employees.find(e => e.id === input.employeeId);
+    if (!employee || employee.status !== 'active' || employee.id === actor.id) throw new Error('Pilih karyawan aktif selain diri sendiri.');
+    if (!['personal','sick'].includes(input.type)) throw new Error('Pencatatan susulan hanya untuk izin pribadi atau sakit.');
+    if (input.startDate >= jakartaDate() || input.endDate > jakartaDate() || input.startDate < employee.joinDate) throw new Error('Pencatatan susulan harus dimulai pada tanggal lampau setelah mulai bekerja.');
+    if (input.reason.trim().length < 3 || input.note.trim().length < 5) throw new Error('Alasan dan sumber konfirmasi HR wajib diisi.');
+    const extent = validateLeavePeriod(input), startTime = input.startTime || '', endTime = input.endTime || '';
+    const allocation = deductionByYear(input.startDate,input.endDate,input.deductionDays);
+    if (employee.approvalMode === 'external' && (input.externalApproverName?.trim().length ?? 0) < 3) throw new Error('Nama pemberi keputusan eksternal wajib diisi.');
+    if (duplicateLeave(state,employee.id,{ ...input,extent,startTime,endTime })) throw new Error('Pengajuan yang sama sudah ada dan masih aktif.');
+    if (configured) { const row = await rpc('leave_record_retrospective', { p_employee_id: employee.id, p_kind: input.type, p_starts_on: input.startDate,
+      p_ends_on: input.endDate, p_reason: input.reason, p_extent: extent, p_starts_at: startTime || null, p_ends_at: endTime || null,
+      p_deductions: allocation, p_note: input.note, p_external_decider: input.externalApproverName || null }); await refresh(); return row.id; }
+    const requestId = id();
+    commit(s => { const request: LeaveRequest = { id: requestId, employeeId: employee.id, type: input.type, extent, startDate: input.startDate,
+      endDate: input.endDate, startTime, endTime, reason: input.reason.trim(), status: 'approved', deductionDays: input.deductionDays,
+      approverId: actor.id, note: input.note.trim(), externalApproverName: input.externalApproverName?.trim() ?? '', createdAt: new Date().toISOString(), adjustment: null };
+      applyLeaveAllocation(s,request,allocation); s.leaveRequests.push(request);
+    }, 'leave_recorded_retrospective', requestId, `${input.reason.trim()} · Sumber konfirmasi: ${input.note.trim()} · ${input.startDate}–${input.endDate}`);
+    return requestId;
+  },
+  async saveCashierAssignment(input: CashierAssignmentInput) {
+    requireAdmin(); assertCashierAssignment(get(app),input);
+    if (configured) { const row = await rpc('cashier_assignment_save',{ p_employee_id: input.employeeId, p_work_date: input.workDate,
+      p_outlet_id: input.outletId, p_shift: input.shift, p_reason: input.reason, p_id: input.id ?? null, p_cancel: input.cancel ?? false }); await refresh(); return row.id; }
+    let result = ''; commit(s => { result = saveAssignmentInState(s,input).id; },input.cancel ? 'assignment_cancelled' : 'assignment_saved', input.id ?? '', input.reason); return result;
+  },
+  async submitAttendanceCorrection(input: AttendanceCorrectionInput) {
+    const actor = user(); assertCorrectionInput(get(app),actor.id,input);
+    if (configured) { const row = await rpc('attendance_correction_submit',{ p_attendance_id: input.attendanceId, p_work_date: input.workDate,
+      p_clock_in: input.clockIn, p_clock_out: input.clockOut, p_shift: input.shift, p_reason: input.reason }); await refresh(); return row.id; }
+    let result = ''; commit(s => { result = submitCorrectionInState(s,input).id; },'attendance_correction_requested',input.attendanceId ?? '',input.reason); return result;
+  },
+  async decideAttendanceCorrection(requestId: string, approved: boolean, note: string) {
+    requireAdmin(); const request = (get(app).attendanceCorrectionRequests ?? []).find(r => r.id === requestId);
+    if (!request || request.status !== 'pending' || request.employeeId === user().id) throw new Error('Permintaan tidak tersedia atau tidak boleh diproses sendiri.');
+    if (note.trim().length < 5) throw new Error('Catatan keputusan minimal 5 karakter.');
+    if (configured) { await rpc('attendance_correction_decide',{ p_id: requestId, p_approved: approved, p_note: note }); await refresh(); return; }
+    commit(s => { decideCorrectionInState(s,requestId,approved,note); },'attendance_correction_decided',requestId,note);
+  },
+  async cancelAttendanceCorrection(requestId: string) {
+    const actor = user(), request = (get(app).attendanceCorrectionRequests ?? []).find(r => r.id === requestId);
+    if (!request || request.employeeId !== actor.id || request.status !== 'pending') throw new Error('Hanya permintaan sendiri yang masih menunggu dapat dibatalkan.');
+    if (configured) { await rpc('attendance_correction_cancel',{ p_id: requestId }); await refresh(); return; }
+    commit(s => { (s.attendanceCorrectionRequests ?? []).find(r => r.id === requestId)!.status = 'cancelled'; },'attendance_correction_cancelled',requestId,'Dibatalkan pemohon sebelum keputusan HR');
   },
   async cancelLeave(requestId: string, reason: string) {
     const r = get(app).leaveRequests.find(x => x.id === requestId); if (!r || r.employeeId !== user().id) throw new Error('Pengajuan hanya dapat dibatalkan pemiliknya.'); if (reason.trim().length < 3) throw new Error('Alasan pembatalan minimal 3 karakter.');
@@ -428,7 +503,10 @@ export const actions = {
     commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!, a = request.adjustment!; if(decision.decision === 'approve') { if(a.type === 'cancel') { applyLeaveAllocation(s,request,{}); request.status = 'cancelled'; request.deductionDays = 0; } else { updateCharge(s,request,a.startDate!,a.endDate!,decision.deductionDays); request.startDate = a.startDate!; request.endDate = a.endDate!; request.deductionDays = decision.deductionDays; } } a.status = decision.decision === 'approve' ? 'approved' : 'rejected'; a.note = decision.note?.trim() ?? ''; a.decidedAt = new Date().toISOString(); a.deciderName = decision.externalApproverName?.trim() || user().fullName; }, 'leave_adjustment_decided', requestId, `${r.adjustment.type === 'cancel' ? 'Pembatalan' : 'Perubahan tanggal'} ${decision.decision === 'approve' ? 'disetujui' : 'ditolak'}${decision.externalApproverName ? ` oleh ${decision.externalApproverName.trim()}` : ''}${decision.note ? `: ${decision.note.trim()}` : ''}`);
   },
   async clockIn(input: ClockInInput) {
-    const u = user(), s = get(app), outlet = s.outlets.find(o => o.id === u.outletId); if(!isCashier(u) || !outlet || input.outletId !== outlet.id) throw new Error('Absensi hanya untuk kasir pada outlet penempatannya.');
+    const u = user(), s = get(app), assignment = assignmentFor(s,u.id), outlet = s.outlets.find(o => o.id === assignment?.outletId);
+    if (!isCashier(u)) throw new Error('Absensi hanya untuk kasir.');
+    if (!assignment || assignment.shift === 'off') throw new Error('Belum ada penugasan kerja hari ini atau Anda dijadwalkan libur. Hubungi HR.');
+    if (!outlet || input.outletId !== outlet.id || input.shift !== assignment.shift) throw new Error('Outlet dan shift harus sesuai penugasan harian HR.');
     if (!outlet.active) throw new Error('Outlet tidak aktif. Hubungi Admin HR.');
     if (!['morning', 'afternoon', 'middle'].includes(input.shift)) throw new Error('Shift tidak valid.');
     const distance = validateGeo(input,outlet); if(input.shift === 'middle' && !u.canMiddleShift) throw new Error('Shift Middle memerlukan izin SPV.');
@@ -436,12 +514,24 @@ export const actions = {
     const metadata = selfieMetadata(input);
     if(s.attendanceRecords.some(r => r.employeeId === u.id && !r.clockOut)) throw new Error('Masih ada sesi kerja yang belum clock out.');
     if(s.attendanceRecords.some(r => r.employeeId === u.id && jakartaDate(r.clockIn) === jakartaDate())) throw new Error('Clock in hari ini sudah tercatat. Untuk koreksi, hubungi SPV.');
-    if(configured) { const { data: { session } } = await supabase!.auth.getSession(); const path = `${session!.user.id}/${id()}.jpg`; const upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'}); if(upload.error) fail(upload.error); try { await rpc('attendance_clock_in',{p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,...(metadata.selfieCapturedAt ? { p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName } : {})}); } catch(e) { await supabase!.storage.from('attendance-selfies').remove([path]); throw e; } await refresh(); return; }
-    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
+    assertFreshGps(input.geoCapturedAt);
+    if(configured) {
+      if (!metadata.selfieCapturedAt || !metadata.selfieOutletName) throw new Error('Ambil selfie baru dengan informasi pengambilan yang lengkap.');
+      const { data: { session } } = await supabase!.auth.getSession(); if (!session) throw new Error('Silakan masuk kembali.');
+      const path = `${session.user.id}/${id()}.jpg`, upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'});
+      if(upload.error) fail(upload.error);
+      try { const verificationToken = await verifyBiometricSelfie(input,path);
+        await rpc('attendance_clock_in_verified',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
+          p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName,p_geo_captured_at:input.geoCapturedAt,p_verification_token:verificationToken });
+      } catch(e) { await cleanupRejectedUpload('attendance-selfies',path,e); throw e; }
+      await refresh(); return;
+    }
+    const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',assignmentId:assignment.id,selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
   },
   async clockOut(input: ClockOutInput) {
     const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = attendanceOutlet(record,get(app).outlets.find(o => o.id === record.outletId)!); const distance = validateGeo(input,outlet);
-    if(configured) { await rpc('attendance_clock_out',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy}); await refresh(); return; }
+    assertFreshGps(input.geoCapturedAt);
+    if(configured) { await rpc('attendance_clock_out_fresh',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_geo_captured_at:input.geoCapturedAt}); await refresh(); return; }
     const now = new Date().toISOString(); commit(s => { const r = s.attendanceRecords.find(x => x.id === record.id)!; r.clockOut = now; r.durationMinutes = Math.floor((+new Date(now)-+new Date(r.clockIn))/60000); r.outLatitude = input.latitude; r.outLongitude = input.longitude; r.outDistance = distance; r.outAccuracy = input.accuracy; },'clock_out',record.id);
   },
   async correctAttendance(recordId: string, input: { clockIn: string; clockOut: string | null; shift?: Shift; reason: string }) {
@@ -463,7 +553,7 @@ export const actions = {
     if(input.shift==='middle'&&!employee.canMiddleShift)throw new Error('Kasir ini belum diizinkan menggunakan Middle.');
     if(!Number.isFinite(+new Date(input.clockIn)) || +new Date(input.clockIn)>Date.now() || (input.clockOut && (!Number.isFinite(+new Date(input.clockOut)) || input.clockOut<input.clockIn || +new Date(input.clockOut)>Date.now())))throw new Error('Waktu absensi tidak valid atau belum terjadi.');
     if(configured){await rpc('attendance_record_manual',{p_employee_id:input.employeeId,p_shift:input.shift,p_clock_in:input.clockIn,p_clock_out:input.clockOut,p_reason:input.reason});await refresh();return;}
-    const outlet=get(app).outlets.find(o=>o.id===employee.outletId)!;
-    const recordId=id();commit(s=>{if(s.attendanceRecords.some(r=>r.employeeId===employee.id&&(!r.clockOut||jakartaDate(r.clockIn)===jakartaDate(input.clockIn))))throw new Error('Catatan pada tanggal ini sudah ada atau sesi sebelumnya belum selesai. Gunakan koreksi.');if(attendanceOverlaps(s.attendanceRecords,employee.id,input.clockIn,input.clockOut))throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');s.attendanceRecords.unshift({id:recordId,employeeId:employee.id,outletId:outlet.id,shift:input.shift,clockIn:input.clockIn,clockOut:input.clockOut,...attendanceTiming(input.clockIn,input.shift,outlet),durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,inLatitude:null,inLongitude:null,inAccuracy:null,inDistance:null,selfiePath:'',corrected:true,correctionReason:input.reason,source:'manual',outletSnapshot:attendanceSnapshot(outlet)});},'attendance_manual',recordId,input.reason);
+    const assignment=assignmentFor(get(app),employee.id,jakartaDate(input.clockIn)), outlet=get(app).outlets.find(o=>o.id===(assignment?.outletId ?? employee.outletId))!;
+    const recordId=id();commit(s=>{if(s.attendanceRecords.some(r=>r.employeeId===employee.id&&(!r.clockOut||jakartaDate(r.clockIn)===jakartaDate(input.clockIn))))throw new Error('Catatan pada tanggal ini sudah ada atau sesi sebelumnya belum selesai. Gunakan koreksi.');if(attendanceOverlaps(s.attendanceRecords,employee.id,input.clockIn,input.clockOut))throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');s.attendanceRecords.unshift({id:recordId,employeeId:employee.id,outletId:outlet.id,assignmentId:assignment?.id ?? null,shift:input.shift,clockIn:input.clockIn,clockOut:input.clockOut,...attendanceTiming(input.clockIn,input.shift,outlet),durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,inLatitude:null,inLongitude:null,inAccuracy:null,inDistance:null,selfiePath:'',corrected:true,correctionReason:input.reason,source:'manual',outletSnapshot:attendanceSnapshot(outlet)});},'attendance_manual',recordId,input.reason);
   }
 };

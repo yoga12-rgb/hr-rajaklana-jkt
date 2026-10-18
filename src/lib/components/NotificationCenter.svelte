@@ -8,17 +8,20 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import Feedback from './Feedback.svelte';
+  import { devicePushStatus, enableDevicePush, disableDevicePush } from '../device-push';
   let open = false, saving = false, message = '', now = Date.now();
+  let pushState='loading',pushBusy=false;
   $: inbox = ($app.notifications ?? []).filter(n => n.employeeId === $app.user?.id).slice().sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   $: unread = inbox.filter(n => !n.readAt).length;
   $: overdue = $app.attendanceRecords.find(r => r.employeeId === $app.user?.id && ['due','stale'].includes(attendanceSessionStatus(r,now)));
-  onMount(() => { const interval = window.setInterval(() => now = Date.now(), 30000); return () => window.clearInterval(interval); });
+  onMount(() => { void devicePushStatus().then(state=>pushState=state).catch(()=>pushState='disabled'); const interval = window.setInterval(() => now = Date.now(), 30000); return () => window.clearInterval(interval); });
+  async function setPush(enable:boolean){pushBusy=true;message='';try{if(enable)await enableDevicePush();else await disableDevicePush();pushState=await devicePushStatus();}catch(error){message=error instanceof Error?error.message:'Pengaturan notifikasi perangkat belum tersimpan.';}finally{pushBusy=false;}}
   async function read(notification?: AppNotification) {
     if (saving) return;
     saving = true; message = '';
     try {
       await actions.readNotification(notification?.id);
-      if (notification) { open = false; await goto(`/leave?request=${encodeURIComponent(notification.entityId)}`); }
+      if (notification) { open = false; await goto(/^\/(leave|attendance|reports|assignments)\?/.test(notification.href)?notification.href:'/dashboard'); }
     } catch (error) { message = error instanceof Error ? error.message : 'Notifikasi belum berhasil diperbarui.'; }
     finally { saving = false; }
   }
@@ -45,7 +48,8 @@
       {/each}
     </div>
   {:else}<p class="empty">Belum ada notifikasi. Pengajuan dan keputusan berikutnya akan tercatat di sini.</p>{/if}
-  <p class="hint">Notifikasi diperbarui saat aplikasi terhubung. Pengingat clock out bekerja ketika aplikasi dibuka; pemberitahuan di luar aplikasi belum diaktifkan.</p>
+  <div class="device-push"><strong>Notifikasi di perangkat ini</strong><p>{pushState==='enabled'?'Aktif. Pemberitahuan umum dapat tampil saat aplikasi ditutup.':pushState==='denied'?'Izin diblokir browser. Ubah izin melalui pengaturan situs bila ingin mengaktifkannya.':pushState==='unsupported'?'Browser ini belum mendukung notifikasi perangkat. Di iPhone/iPad, pasang aplikasi ke Layar Utama terlebih dahulu.':'Aktifkan untuk menerima pemberitahuan ketika aplikasi ditutup.'}</p>{#if pushState==='enabled'}<button class="btn btn-secondary" disabled={pushBusy} on:click={()=>setPush(false)}>Nonaktifkan di perangkat ini</button>{:else if !['unsupported','denied'].includes(pushState)}<button class="btn btn-secondary" disabled={pushBusy||pushState==='loading'||$app.mode!=='live'} on:click={()=>setPush(true)}>{pushBusy?'Mengaktifkan…':'Aktifkan notifikasi perangkat'}</button>{/if}</div>
+  <p class="hint">Isi pemberitahuan perangkat dibuat umum untuk menjaga privasi. Buka aplikasi untuk melihat rincian. Pengiriman memerlukan koneksi dan dukungan browser; jadwal pengingat dapat terlambat jika perangkat menunda pemberitahuan.</p>
 </Modal>
 
 <style>
@@ -68,4 +72,6 @@
   .reminder small { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .empty { padding: 22px 8px; text-align: center; font-size: 12px; line-height: 1.8; color: var(--muted); }
   .hint { margin: 18px 0 0; font-size: 10px; line-height: 1.7; color: var(--muted); }
+  .device-push { margin-top:18px;padding:14px;border:1px solid var(--control-border);border-radius:14px;background:var(--surface-cream); }
+  .device-push strong { font-size:12px; }.device-push p {font-size:11px;line-height:1.7;color:var(--muted)}.device-push .btn{font-size:11px;min-height:42px}
 </style>

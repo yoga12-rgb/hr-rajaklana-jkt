@@ -36,3 +36,8 @@ enabled = false
 
 [functions.hr-api]
 verify_jwt = false
+
+# This worker validates its dedicated wake-only header. It never accepts
+# arbitrary recipients/messages, and all user-facing APIs retain Auth checks.
+[functions.push-dispatch]
+verify_jwt = false

@@ -13,13 +13,13 @@
   $: cashier = isCashier($app.user);
   $: nav = [
     { href:'/dashboard',label:'Beranda',icon:'home' },
-    ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }] : []),
+    ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }, { href:'/assignments',label:'Penugasan harian',icon:'calendar' }] : []),
     { href:'/leave',label:'Cuti & izin',icon:'calendar' },
     ...(admin ? [{ href:'/employees',label:'Karyawan',icon:'users' },{ href:'/organization',label:'Organisasi',icon:'building' },{ href:'/reports',label:'Rekap & riwayat',icon:'chart' }] : []),
     { href:'/profile',label:'Profil saya',icon:'user' },
     { href:'/guide',label:'Panduan',icon:'file' }
   ];
-  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide'].includes(n.href));
+  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments'].includes(n.href));
   $: if ($app.initialized && !$app.user) void goto('/login', { replaceState:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };

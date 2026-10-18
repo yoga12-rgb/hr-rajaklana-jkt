@@ -31,7 +31,11 @@ Karyawan dapat memperbarui informasi pribadi yang diizinkan, seperti alamat dan 
 
 ## Clock in/out kasir
 
-Durasi kerja **8 jam termasuk istirahat**. Tidak ada clock istirahat. Kasir memilih shift saat masuk:
+Durasi kerja **8 jam termasuk istirahat**. Tidak ada clock istirahat. Admin HR menetapkan penugasan harian kasir selain dirinya sendiri: tanggal, outlet, shift Pagi/Sore/Middle atau libur, serta alasan. Kasir melihat penugasannya dan hanya dapat clock in pada penugasan aktif hari itu. Outlet dan shift terkunci sesuai penugasan; outlet tugas sementara tidak mengubah penempatan utama. Ini penugasan per tanggal, bukan pengajuan jadwal mingguan.
+
+HR dapat melengkapi penugasan tanggal lampau dengan alasan minimal 5 karakter jika tanggal tidak sebelum mulai bekerja dan belum ada absensi pada tanggal tersebut. Absensi yang sudah ada diperbaiki melalui koreksi, bukan diubah lewat penugasan. Halaman penugasan menampilkan cakupan per outlet/shift, libur, belum ditugaskan, dan belum clock in; belum menghitung kebutuhan minimum staf.
+
+Patokan shift:
 
 | Shift | Jam awal default | Target akhir | Keterlambatan |
 | --- | --- | --- | --- |
@@ -41,13 +45,17 @@ Durasi kerja **8 jam termasuk istirahat**. Tidak ada clock istirahat. Kasir memi
 
 Middle hanya tersedia bagi karyawan yang diizinkan HR. Jam awal Pagi/Sore, toleransi, dan jam operasional dapat diatur per outlet. Jam operasional tidak otomatis menjadi jam masuk semua kasir.
 
-Sebelum clock in, kasir memeriksa dan mengonfirmasi shift, jadwal masuk, serta target selesai 8 jam. Sesi terbuka menampilkan pengingat setelah 8 jam dari clock in aktual dan tanda perlu diperiksa setelah 12 jam. Tidak ada clock out otomatis.
+Sebelum clock in, kasir memeriksa outlet dan shift yang ditetapkan, jadwal masuk, serta target selesai 8 jam. Setelah sesi hari itu selesai, halaman menampilkan Sudah pulang dan tidak menawarkan clock in kedua. Sesi terbuka menampilkan pengingat setelah 8 jam dari clock in aktual dan tanda perlu diperiksa setelah 12 jam. Sesi yang sudah ditutup dengan durasi setidaknya 12 jam tetap diberi tanda perlu diperiksa. Tidak ada clock out otomatis atau perubahan waktu aktual untuk menghilangkan anomali.
 
-Clock in wajib lokasi perangkat dalam radius outlet, akurasi GPS memadai, dan selfie baru dari kamera. Clock out memeriksa lokasi lagi tanpa selfie. Catatan waktu menggunakan waktu database pada mode live, WIB untuk tampilan. Satu sesi terbuka per kasir; clock out mendukung sesi yang melewati tengah malam.
+Clock in wajib lokasi perangkat dalam radius outlet penugasan, akurasi GPS sesuai kebijakan outlet, dan selfie baru dari kamera. Hasil GPS mencantumkan waktu pengambilan dan berlaku paling lama 60 detik. Sebelum mengambil foto/konfirmasi, aplikasi memeriksa kesegarannya; GPS kedaluwarsa diperbarui, selfie lama dibatalkan, dan kasir mengambil foto baru sebelum konfirmasi. Clock out juga memerlukan hasil GPS segar tanpa selfie. Catatan waktu menggunakan waktu database pada mode live, WIB untuk tampilan. Satu sesi terbuka per kasir; clock out mendukung sesi yang melewati tengah malam.
 
-SPV/HR dapat melihat shift, waktu aktual, selfie, jarak/akurasi lokasi, durasi, dan keterlambatan. Shift tidak diubah kasir setelah masuk. Koreksi HR memerlukan alasan, tidak untuk catatan sendiri, dan menyimpan jejak catatan asli. HR juga dapat membuat catatan manual untuk kendala lapangan dengan alasan serta sumber konfirmasi; catatan tersebut ditandai manual, bukan diklaim lolos GPS/selfie. Catatan tanpa clock out ditandai belum lengkap. Selisih durasi tidak otomatis menghasilkan lembur atau potongan.
+SPV/HR dapat melihat shift, waktu aktual, selfie, jarak/akurasi lokasi, durasi, dan keterlambatan. Shift tidak diubah kasir setelah masuk. Koreksi HR memerlukan alasan, tidak untuk catatan sendiri, dan menyimpan jejak catatan asli. HR juga dapat membuat catatan manual untuk kendala lapangan dengan alasan serta sumber konfirmasi; catatan tersebut ditandai manual, bukan diklaim lolos GPS/selfie. Kasir dapat mengajukan koreksi untuk lupa/gagal masuk, lupa pulang, salah shift, atau salah jam dengan tanggal kerja, usulan waktu aktual, alasan, serta sumber konfirmasi. Pengajuan menunggu dapat dibatalkan. HR lain memberi keputusan beralasan; persetujuan menerapkan perubahan absensi dan audit secara atomik, penolakan mempertahankan catatan asli. Bukti GPS/selfie yang tidak ada tidak dianggap terverifikasi.
+
+Catatan tanpa clock out ditandai belum lengkap. Durasi aktual serta pembanding 480 menit tetap disimpan; bagian selisih yang dijelaskan izin datang terlambat/pulang lebih awal disetujui dibedakan dari bagian yang perlu penjelasan. Izin keluar sementara ditampilkan sebagai konteks, bukan bukti bahwa jam kembali aktual sudah dilacak. Selisih durasi tidak otomatis menghasilkan lembur, payroll, atau potongan.
 
 Keterlambatan aktual tetap disimpan. Tampilan memisahkan menit berizin dari izin datang terlambat yang disetujui dan menit tanpa izin; kelebihan dari batas jam izin tetap tanpa izin. Middle tidak menghitung keterlambatan.
+
+Pendaftaran wajah memerlukan persetujuan karyawan serta tinjauan referensi oleh Admin HR lain. Referensi disimpan privat; server mencocokkan selfie hanya dengan referensi pribadi yang disetujui (1:1), bukan mencari identitas di seluruh karyawan. Hasil pencocokan terikat pada konteks permintaan absensi. Pemeriksaan ini bukan liveness yang kuat atau jaminan anti foto; kesalahan pencocokan/kendala perangkat tetap memerlukan jalur manual HR dengan alasan dan sumber konfirmasi. Kesiapan layanan, ambang pencocokan, dan perilaku perangkat harus diverifikasi sebelum digunakan operasional.
 
 Absensi memerlukan koneksi. Penolakan kamera/GPS, lokasi belum disetel, radius tidak sesuai, dan upload gagal harus ditampilkan sebagai kegagalan, tanpa catatan berhasil palsu.
 
@@ -56,6 +64,8 @@ Absensi memerlukan koneksi. Penolakan kamera/GPS, lokasi belum disetel, radius t
 Hak tahunan 12 hari, mulai setelah **3 bulan kalender** bekerja. Tahun pertama prorata **1 hari per sisa bulan**, termasuk bulan hak mulai berlaku meskipun tanggalnya di tengah bulan. Contoh masuk 15 Juli → berhak 15 Oktober → jatah 3 hari. Tahun berikutnya 12 hari; sisa hangus 31 Desember dan tidak dibawa ke tahun berikutnya.
 
 Jenis awal: cuti tahunan, izin pribadi, dan izin sakit. Izin mendukung sehari penuh, datang terlambat, keluar sementara, dan pulang lebih awal. Karyawan mengisi tanggal/jam, alasan, serta lampiran opsional. Syarat tambahan dapat diminta oleh atasan dengan status Perlu dilengkapi.
+
+Sakit atau izin pribadi yang baru dikonfirmasi setelah kejadian dapat dicatat Admin HR untuk karyawan lain melalui pencatatan izin lampau. Tanggal/jam, alasan kejadian, keputusan dan sumber konfirmasi, potongan, serta nama pemberi keputusan eksternal bila berlaku wajib sesuai ketentuan. Catatan ditandai sebagai pencatatan HR dan diaudit; waktu absensi tidak diubah oleh pencatatan izin. Potongan tambahan tahun yang sudah hangus tidak diperbolehkan.
 
 Pengajuan aktif yang sama persis diblokir. Tumpang tindih tanggal dengan pengajuan atau kehadiran lain menampilkan peringatan pada pengajuan, tinjauan, perubahan, dan koreksi; izin beberapa jam dapat berdampingan dengan kehadiran dan tidak diblokir hanya karena tanggal sama.
 
@@ -70,7 +80,7 @@ Hari libur mingguan tetap dicatat per karyawan selain kasir. Pada tahap sederhan
 - Perubahan disetujui: potongan lama diganti total baru; selisih dikembalikan atau dipotong satu kali.
 - Pembatalan disetujui: potongan dikembalikan ke tahun asal. Pengembalian saldo tahun kedaluwarsa hanya bersifat historis, tidak menjadi saldo tahun berikutnya.
 - Pengajuan lintas tahun membebankan potongan ke tahun tanggal terkait. Alokasi per tahun harus terlihat sebelum keputusan.
-- Admin HR dapat mengoreksi tanggal/total potongan atau membatalkan pengajuan disetujui milik karyawan lain, termasuk tanggal lampau, selama tidak ada perubahan menunggu. Alasan wajib dan keputusan eksternal memerlukan nama pemberi keputusan. Koreksi menyimpan riwayat sebelum/sesudah, mengembalikan potongan lama ke tahun asal, lalu menerapkan potongan baru. Saldo tahun kedaluwarsa tidak menjadi hak tahun baru. Hak HR melihat semua pengajuan tidak mengubah kewenangan persetujuan atasan.
+- Admin HR dapat mengoreksi tanggal, jam izin yang berlaku, dan total potongan atau membatalkan pengajuan disetujui milik karyawan lain, termasuk tanggal lampau, selama tidak ada perubahan menunggu. Alasan wajib dan keputusan eksternal memerlukan nama pemberi keputusan. Koreksi menyimpan riwayat sebelum/sesudah, mengembalikan potongan lama ke tahun asal, lalu menerapkan potongan baru. Saldo tahun kedaluwarsa tidak menjadi hak tahun baru. Hak HR melihat semua pengajuan tidak mengubah kewenangan persetujuan atasan.
 
 ## Pengalaman aplikasi
 
@@ -78,12 +88,12 @@ SvelteKit + TypeScript, navigasi SPA, Supabase Auth/Postgres/Storage/Realtime. U
 
 Pembaruan data dilakukan tanpa refresh halaman dan data disinkronkan ketika aplikasi aktif kembali. Pembaruan kode diunduh di latar belakang; pengguna memilih menerapkan versi setelah menyelesaikan formulir/selfie. Penerapan versi memuat ulang aplikasi secara internal. Offline tidak berarti boleh mencatat kehadiran tanpa server.
 
-Lonceng notifikasi menampilkan pembaruan pengajuan dengan status belum dibaca yang tersimpan pada akun dan tautan ke pengajuan terkait sesuai hak akses. Pengingat sesi terbuka 8 jam tersedia di dalam aplikasi saat aktif. Notifikasi OS dan push latar belakang saat aplikasi tertutup belum tersedia.
+Lonceng notifikasi menampilkan pembaruan pengajuan dengan status belum dibaca yang tersimpan pada akun dan tautan ke pengajuan terkait sesuai hak akses. Pengingat sesi terbuka 8 jam tersedia di dalam aplikasi saat aktif. Push di luar aplikasi bersifat opt-in pada browser/perangkat yang mendukung; izin yang ditolak atau platform yang tidak mendukung tetap memakai lonceng/pengingat di dalam aplikasi. Langganan perangkat dilepas saat logout. Pengingat 8 jam dari server memerlukan penjadwalan, konfigurasi pengiriman, dan pengujian hosted; adanya kode bukan bukti pengiriman perangkat telah berhasil.
 
-Selfie/lampiran berada di bucket privat dengan akses terbatas dan URL sementara. Service worker tidak menyimpan API, data pribadi, atau foto privat ke cache. GPS browser dan selfie adalah bukti untuk pemeriksaan SPV; keduanya bukan pengenalan wajah atau jaminan anti pemalsuan lokasi.
+Selfie/lampiran berada di bucket privat dengan akses terbatas dan URL sementara. Service worker tidak menyimpan API, data pribadi, atau foto privat ke cache. GPS browser dan selfie tetap merupakan bukti untuk pemeriksaan SPV. Pencocokan wajah privat 1:1 menambah pemeriksaan identitas, tanpa menjamin anti pemalsuan lokasi, liveness, atau pencegahan foto. Cache offline tidak menjadi tempat penyimpanan bukti privat.
 
 ## Status implementasi dan batas uji
 
-Repositori memiliki frontend, mode demo lokal, migrasi database, dan Edge Function `hr-api`. Mode demo menggunakan data fiktif browser dan bukan penyimpanan operasional. Production dan Preview telah READY; setup admin serta login/Dashboard keduanya telah dikonfirmasi. Rincian dan batas bukti hosted mengikuti [laporan verifikasi hosted](hosted-verification.md). Fitur yang ditambahkan setelah snapshot laporan tersebut tetap memerlukan migrasi/deployment serta pengujian hosted tersendiri.
+Repositori memiliki frontend, mode demo lokal, migrasi database, dan Edge Function `hr-api`. Mode demo menggunakan data fiktif browser dan bukan penyimpanan operasional. Snapshot Production/Preview terdahulu mencatat deployment serta login/Dashboard awal; hal tersebut tidak membuktikan perubahan kasir terbaru sudah siap hosted. Rincian dan batas bukti hosted mengikuti [laporan verifikasi hosted](hosted-verification.md). Fitur yang ditambahkan setelah snapshot laporan tersebut tetap memerlukan migrasi/deployment serta pengujian hosted tersendiri. Bukti perubahan kasir 18 Oktober dan pemeriksaan yang masih menunggu dicatat pada [validasi kasir terbaru](cashier-validation-2026-10-18.md); jumlah tes versi lama tidak dipakai sebagai bukti semua perubahan baru.
 
 Hal yang perlu diselesaikan sebelum peluncuran: data outlet/karyawan asli, koordinat/radius outlet, kebijakan penyimpanan selfie, pemantauan kapasitas Supabase, pengujian kamera/GPS pada ponsel outlet, alur lintas akun, dan hosting sesuai penggunaan bisnis. Pembuatan dokumen kontrak, impor Excel massal, perubahan data kerja terjadwal, dan pemrosesan transaksi lintas cabang belum menjadi fitur lengkap versi ini.

@@ -8,6 +8,7 @@ export interface Outlet {
   id: string; code: string; name: string; address: string; active: boolean; isProduction: boolean;
   latitude: number | null; longitude: number | null; radiusMeters: number;
   opensAt: string; closesAt: string; morningStart: string; afternoonStart: string; lateToleranceMinutes: number;
+  maxAccuracyMeters?: number;
 }
 export interface Employee {
   id: string; employeeNumber: string; fullName: string; phone: string; departmentId: string;
@@ -39,6 +40,7 @@ export interface AttendanceRecord {
   // Device capture metadata is distinct from the recorded clock-in time.
   selfieCapturedAt?: string; selfieOutletName?: string;
   source?: 'device' | 'manual';
+  assignmentId?: string | null;
   outletSnapshot?: Pick<Outlet, 'morningStart' | 'afternoonStart' | 'lateToleranceMinutes' | 'latitude' | 'longitude' | 'radiusMeters'>;
 }
 export interface AuditEntry { id: string; actorId: string; action: string; entityId: string; at: string; detail: string }
@@ -46,6 +48,29 @@ export interface LeaveLedgerEntry { id: string; employeeId: string; year: number
 export interface AppNotification {
   id: string; employeeId: string; title: string; body: string; href: string;
   entityId: string; createdAt: string; readAt: string | null;
+  entityType?: 'leave' | 'attendance_correction' | 'assignment' | 'attendance_reminder';
+}
+export interface CashierAssignment {
+  id: string; employeeId: string; workDate: string; outletId: string; shift: Shift | 'off';
+  status: 'active' | 'cancelled'; reason: string; createdBy: string;
+  createdAt: string; updatedAt: string;
+}
+export interface AttendanceCorrectionRequest {
+  id: string; employeeId: string; attendanceId: string | null; workDate: string; outletId: string; shift: Shift;
+  proposedClockIn: string; proposedClockOut: string | null; reason: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'; decisionNote: string;
+  decisionBy: string | null; createdAt: string; decidedAt: string | null;
+  originalSnapshot?: { clockIn: string; clockOut: string | null; shift: Shift; outletId: string } | null;
+}
+export interface CashierAssignmentInput {
+  id?: string; employeeId: string; workDate: string; outletId: string; shift: Shift | 'off'; reason: string; cancel?: boolean;
+}
+export interface AttendanceCorrectionInput {
+  attendanceId: string | null; workDate: string; clockIn: string; clockOut: string | null; shift: Shift; reason: string;
+}
+export interface RetrospectiveLeaveInput {
+  employeeId: string; type: 'personal' | 'sick'; startDate: string; endDate: string; reason: string;
+  extent: LeaveExtent; startTime?: string; endTime?: string; deductionDays: number; note: string; externalApproverName?: string;
 }
 export interface AppState {
   mode: 'demo' | 'live'; initialized: boolean; loading: boolean; user: Employee | null;
@@ -53,10 +78,12 @@ export interface AppState {
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];
   notifications?: AppNotification[];
+  cashierAssignments?: CashierAssignment[];
+  attendanceCorrectionRequests?: AttendanceCorrectionRequest[];
   balanceCache?: Record<string, number>;
   connected: boolean; error: string | null;
 }
 export interface LeaveInput { type: LeaveRequest['type']; startDate: string; endDate: string; startTime?: string; endTime?: string; reason: string; attachment?: File; extent?: LeaveExtent }
 export interface LeaveDecision { decision: 'approve' | 'reject' | 'needs_info'; deductionDays: number; note?: string; externalApproverName?: string }
-export interface ClockInInput { outletId: string; shift: Shift; latitude: number; longitude: number; accuracy: number; selfie: Blob; selfieCapturedAt?: string; selfieOutletName?: string }
-export interface ClockOutInput { latitude: number; longitude: number; accuracy: number }
+export interface ClockInInput { outletId: string; shift: Shift; latitude: number; longitude: number; accuracy: number; selfie: Blob; selfieCapturedAt?: string; selfieOutletName?: string; geoCapturedAt?: string; verificationToken?: string }
+export interface ClockOutInput { latitude: number; longitude: number; accuracy: number; geoCapturedAt?: string }

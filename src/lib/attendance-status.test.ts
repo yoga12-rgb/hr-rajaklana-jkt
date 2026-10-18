@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvedArrivalForAttendance, attendanceSessionStatus, classifyAttendanceLateness } from './attendance-status';
+import { approvedArrivalForAttendance, attendanceDurationReview, attendanceSessionStatus, classifyAttendanceLateness } from './attendance-status';
 import type { AttendanceRecord, LeaveRequest } from './types';
 
 const record = (overrides: Partial<AttendanceRecord> = {}): AttendanceRecord => ({
@@ -65,5 +65,29 @@ describe('Pengingat sesi kerja tanpa clock out otomatis', () => {
   });
   it('sesi yang sudah selesai tetap selesai setelah dua belas jam', () => {
     expect(attendanceSessionStatus({ ...open, clockOut: '2026-10-15T23:00:00Z' }, Date.parse('2026-10-17T00:00:00Z'))).toBe('complete');
+  });
+});
+
+
+describe('Durasi aktual dan bagian yang diizinkan', () => {
+  it('menandai sesi panjang meskipun sudah ditutup', () => {
+    expect(attendanceSessionStatus(record({ clockIn: '2026-10-15T00:00:00Z', clockOut: '2026-10-15T12:00:00Z' }))).toBe('review');
+  });
+  it('memisahkan pulang berizin dan pulang sebelum batas izin', () => {
+    const attendance = record({ clockIn: '2026-10-15T00:00:00Z', clockOut: '2026-10-15T06:00:00Z', durationMinutes: 360, lateMinutes: 0 });
+    const review = attendanceDurationReview(attendance, [permission({ extent: 'early_departure', startTime: '14:00' })]);
+    expect(review.actualMinutes).toBe(360); expect(review.shortfallMinutes).toBe(120);
+    expect(review.permittedEarlyMinutes).toBe(60); expect(review.unexplainedMinutes).toBe(60);
+  });
+  it('hanya memakai izin yang disetujui dan tidak menganggap jam kembali sudah dilacak', () => {
+    const attendance = record({ clockIn: '2026-10-15T00:00:00Z', clockOut: '2026-10-15T07:00:00Z', durationMinutes: 420, lateMinutes: 0 });
+    const review = attendanceDurationReview(attendance, [permission({ extent: 'early_departure', startTime: '14:00', status: 'pending' }), permission({ extent: 'temporary_exit', startTime: '12:00', endTime: '13:00' })]);
+    expect(review.permittedMinutes).toBe(0); expect(review.unexplainedMinutes).toBe(60);
+    expect(review.temporaryExit).toEqual(['12:00–13:00 WIB']);
+  });
+  it('menangani izin pulang untuk shift lintas tengah malam', () => {
+    const attendance = record({ shift: 'middle', scheduledStart: null, clockIn: '2026-10-15T15:00:00Z', clockOut: '2026-10-15T22:00:00Z', durationMinutes: 420, lateMinutes: 0 });
+    const review = attendanceDurationReview(attendance, [permission({ extent: 'early_departure', startTime: '05:00' })]);
+    expect(review.permittedEarlyMinutes).toBe(60); expect(review.unexplainedMinutes).toBe(0);
   });
 });

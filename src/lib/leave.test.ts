@@ -232,6 +232,30 @@ describe('Izin sebagian hari dan batas perubahan demo lokal', () => {
 });
 
 describe('Perbaikan alur cuti dan notifikasi', () => {
+  it('HR mencatat sakit susulan sebagai disetujui, menjaga saldo dan menolak duplikat serta akses pemohon', async () => {
+    const retrospective={employeeId,type:'sick' as const,startDate:'2026-10-05',endDate:'2026-10-05',extent:'full_day' as const,reason:'Sakit kemarin baru dilaporkan',deductionDays:0.5,note:'Dikonfirmasi HR melalui atasan outlet'};
+    await expect(actions.recordRetrospectiveLeave(retrospective)).rejects.toThrow('Admin HR');actAs('employee-1');
+    const id=await actions.recordRetrospectiveLeave(retrospective);
+    expect(get(app).leaveRequests.find(r=>r.id===id)).toMatchObject({status:'approved',employeeId,deductionDays:0.5,approverId:'employee-1',note:retrospective.note});
+    expect(leaveBalance(employeeId)).toBe(11.5);expect(get(app).leaveLedger.filter(e=>e.requestId===id).map(e=>e.days)).toEqual([0.5]);
+    const before=get(app);await expect(actions.recordRetrospectiveLeave({...retrospective,reason:'Alasan lain tetap pengajuan sama'})).rejects.toThrow('sama');expect(get(app)).toBe(before);
+    await expect(actions.recordRetrospectiveLeave({...retrospective,employeeId:'employee-1'})).rejects.toThrow('selain diri sendiri');
+    await expect(actions.recordRetrospectiveLeave({...retrospective,startDate:'2026-10-07',endDate:'2026-10-07'})).rejects.toThrow('lampau');
+    expect(get(app).notifications?.some(n=>n.employeeId===employeeId&&n.entityId===id)).toBe(true);
+  });
+
+  it('koreksi HR dapat memperbaiki jam izin disetujui tanpa mengubah jenis/cakupan atau menggandakan refund', async () => {
+    await actions.submitLeave(annual({type:'personal',extent:'temporary_exit',startDate:'2026-10-08',endDate:'2026-10-08',startTime:'10:00',endTime:'12:00'}));
+    actAs('employee-1');await approve(1);const id=request().id;
+    const correction={startDate:'2026-10-08',endDate:'2026-10-08',startTime:'10:30',endTime:'11:30',deductionDays:0.5,reason:'Atasan membetulkan jam izin yang dikonfirmasi',cancel:false};
+    await actions.correctLeave(id,correction);expect(request()).toMatchObject({type:'personal',extent:'temporary_exit',startTime:'10:30',endTime:'11:30',status:'approved'});
+    expect(get(app).leaveLedger.filter(e=>e.requestId===id).map(e=>e.days)).toEqual([1,-0.5]);
+    await actions.correctLeave(id,correction);expect(get(app).leaveLedger.filter(e=>e.requestId===id)).toHaveLength(2);
+    const before=get(app);await expect(actions.correctLeave(id,{...correction,endTime:'10:00'})).rejects.toThrow();expect(get(app)).toBe(before);
+    await actions.correctLeave(id,{...correction,cancel:true,startTime:'23:00',endTime:'01:00'});
+    expect(request()).toMatchObject({startTime:'10:30',endTime:'11:30',status:'cancelled'});expect(leaveBalance(employeeId)).toBe(12);
+  });
+
   it('memeriksa ulang duplikat ketika pengajuan lain dibuat setelah usulan perubahan', async () => {
     await submitApproved();
     const originalId = request().id;

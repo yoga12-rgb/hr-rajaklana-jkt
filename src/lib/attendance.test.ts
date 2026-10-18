@@ -7,7 +7,8 @@ import type { ClockInInput, ClockOutInput } from './types';
 const clientMock = vi.hoisted(() => ({ configured: false, supabase: null as any }));
 vi.mock('./state/client', () => ({ get configured() { return clientMock.configured; }, get supabase() { return clientMock.supabase; } }));
 
-const coordinates: ClockOutInput = { latitude: -6.2, longitude: 106.816666, accuracy: 10 };
+const coordinates: ClockOutInput = { latitude: -6.2, longitude: 106.816666, accuracy: 10, get geoCapturedAt() { return new Date().toISOString(); } };
+const assignShift = (shift: ClockInInput['shift']) => app.update(state => ({ ...state,cashierAssignments: state.cashierAssignments?.map(a => a.workDate === '2026-10-06' ? { ...a,shift } : a) }));
 const input = (overrides: Partial<ClockInInput> = {}): ClockInInput => ({
   outletId: 'outlet-a', shift: 'morning', ...coordinates,
   selfie: new Blob(['selfie hasil kamera uji'], { type: 'image/jpeg' }), ...overrides
@@ -29,6 +30,7 @@ beforeEach(() => {
   const state = initialDemo();
   state.initialized = true;
   state.user = state.employees.find(employee => employee.id === 'employee-4')!;
+  state.cashierAssignments = ['2026-10-06','2026-10-07'].map(workDate => ({ id:`assignment-${workDate}`,employeeId:'employee-4',workDate,outletId:'outlet-a',shift:'morning',reason:'Penugasan fixture untuk absensi',status:'active',createdBy:'employee-1',createdAt:'2026-10-05T00:00:00Z',updatedAt:'2026-10-05T00:00:00Z' }));
   app.set(state);
 });
 
@@ -129,18 +131,19 @@ describe('Pencatatan absensi kasir lokal', () => {
   });
 
   it('membatasi clock in kepada kasir di outlet penempatannya', async () => {
-    await expect(actions.clockIn(input({ outletId: 'outlet-b' }))).rejects.toThrow('outlet penempatannya');
+    await expect(actions.clockIn(input({ outletId: 'outlet-b' }))).rejects.toThrow('penugasan harian');
     app.update(state => ({ ...state, user: state.employees.find(employee => employee.id === 'employee-3')! }));
     await expect(actions.clockIn(input())).rejects.toThrow('hanya untuk kasir');
     expect(get(app).attendanceRecords).toHaveLength(0);
   });
 
   it('menolak nilai shift yang tidak dikenal tanpa menyimpan kehadiran', async () => {
-    await expect(actions.clockIn(input({ shift: 'shift-tidak-ada' as ClockInInput['shift'] }))).rejects.toThrow('Shift tidak valid');
+    await expect(actions.clockIn(input({ shift: 'shift-tidak-ada' as ClockInInput['shift'] }))).rejects.toThrow('penugasan harian');
     expect(get(app).attendanceRecords).toHaveLength(0);
   });
 
   it('middle memerlukan izin, lalu menggunakan jam aktual tanpa keterlambatan', async () => {
+    assignShift('middle');
     app.update(state => ({ ...state, user: { ...state.user!, canMiddleShift: false } }));
     await expect(actions.clockIn(input({ shift: 'middle' }))).rejects.toThrow('izin SPV');
     app.update(state => ({ ...state, user: { ...state.user!, canMiddleShift: true } }));
@@ -153,11 +156,12 @@ describe('Pencatatan absensi kasir lokal', () => {
     await expect(actions.clockIn(input())).rejects.toThrow('belum clock out');
     vi.setSystemTime(new Date('2026-10-06T08:10:00Z'));
     await actions.clockOut(coordinates);
-    await expect(actions.clockIn(input({ shift: 'afternoon' }))).rejects.toThrow('hari ini sudah tercatat');
+    await expect(actions.clockIn(input())).rejects.toThrow('hari ini sudah tercatat');
     expect(get(app).attendanceRecords).toHaveLength(1);
   });
 
   it('memeriksa GPS pulang kembali dan menghitung delapan jam termasuk istirahat', async () => {
+    assignShift('middle');
     await actions.clockIn(input({ shift: 'middle' }));
     vi.setSystemTime(new Date('2026-10-06T08:10:00Z'));
     await expect(actions.clockOut({ ...coordinates, latitude: -6.3, longitude: 106.9 })).rejects.toThrow('Radius yang diizinkan');
@@ -184,6 +188,7 @@ describe('Pencatatan absensi kasir lokal', () => {
   });
 
   it('clock out lintas tengah malam memakai lokasi/radius awal meskipun outlet berubah', async () => {
+    assignShift('middle');
     vi.setSystemTime(new Date('2026-10-06T16:30:00Z'));
     await actions.clockIn(input({ shift: 'middle' }));
     app.update(state => ({ ...state, outlets: state.outlets.map(outlet => outlet.id === 'outlet-a' ? { ...outlet, latitude: -6.3, longitude: 106.9, radiusMeters: 20 } : outlet) }));
@@ -233,23 +238,32 @@ describe('Pencatatan absensi kasir lokal', () => {
 });
 
 describe('Pengiriman metadata selfie ke Supabase', () => {
-  it.each([false,true])('memilih argumen RPC untuk metadata tersedia=%s dan menghapus unggahan ketika ditolak', async withMetadata => {
+  it('mewajibkan metadata untuk clock in live sebelum mengunggah atau memverifikasi wajah', async () => {
+    const upload=vi.fn(),rpc=vi.fn();
+    clientMock.configured=true;clientMock.supabase={ storage:{from:()=>({upload})},rpc };
+    await expect(actions.clockIn(input())).rejects.toThrow('informasi pengambilan');
+    expect(upload).not.toHaveBeenCalled();expect(rpc).not.toHaveBeenCalled();
+  });
+  it('mengirim metadata/GPS/token verifikasi dan menghapus unggahan hanya saat ditolak database', async () => {
     const upload = vi.fn().mockResolvedValue({ error: null }), remove = vi.fn().mockResolvedValue({ error: null });
-    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'RPC simulasi ditolak' } });
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'RPC simulasi ditolak',code:'P0001' } });
+    const verify=vi.fn().mockResolvedValue({ok:true,json:async()=>({verificationToken:'verified-token'})});vi.stubGlobal('fetch',verify);
     clientMock.configured = true;
     clientMock.supabase = {
-      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: 'auth-kasir' } } } }) },
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: 'auth-kasir' },access_token:'test-access-token' } } }) },
       storage: { from: vi.fn().mockReturnValue({ upload, remove }) }, rpc
     };
-    const metadata = withMetadata ? { selfieCapturedAt: '2026-10-06T00:09:30Z', selfieOutletName: 'Outlet Saat Foto' } : {};
+    const metadata = { selfieCapturedAt: '2026-10-06T00:09:30Z', selfieOutletName: 'Outlet Saat Foto' };
     await expect(actions.clockIn(input(metadata))).rejects.toThrow('RPC simulasi ditolak');
     expect(upload).toHaveBeenCalledOnce();
     const [, args] = rpc.mock.calls[0];
-    expect(rpc.mock.calls[0][0]).toBe('attendance_clock_in');
+    expect(rpc.mock.calls[0][0]).toBe('attendance_clock_in_verified');
+    expect(verify).toHaveBeenCalledOnce();
     expect(args).toEqual({
       p_shift: 'morning', p_latitude: coordinates.latitude, p_longitude: coordinates.longitude,
       p_accuracy_m: 10, p_selfie_path: expect.stringMatching(/^auth-kasir\/.+\.jpg$/),
-      ...(withMetadata ? { p_selfie_captured_at: '2026-10-06T00:09:30.000Z', p_selfie_outlet_name: 'Outlet Saat Foto' } : {})
+      p_selfie_captured_at: '2026-10-06T00:09:30.000Z', p_selfie_outlet_name: 'Outlet Saat Foto',
+      p_geo_captured_at:'2026-10-06T00:10:00.000Z',p_verification_token:'verified-token'
     });
     expect(remove).toHaveBeenCalledWith([args.p_selfie_path]);
     expect(get(app).attendanceRecords).toHaveLength(0);

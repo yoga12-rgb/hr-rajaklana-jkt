@@ -3,11 +3,12 @@ import type { AppNotification, AppState, LeaveRequest } from './types';
 /** Demo mirrors server triggers; each recipient sees only their own inbox. */
 export function demoNotifications(before: AppState, after: AppState): AppNotification[] {
   const result: AppNotification[] = [], actor = after.user?.id;
-  const send = (employeeId: string, request: LeaveRequest, title: string) => {
+  const sendWorkflow = (employeeId: string, entityId: string, entityType: NonNullable<AppNotification['entityType']>, title: string, href: string) => {
     if (employeeId === actor || !after.employees.some(e => e.id === employeeId && e.status === 'active' && e.accountStatus === 'active')) return;
     result.push({ id: crypto.randomUUID(), employeeId, title, body: 'Buka rincian pengajuan untuk melihat informasi terbaru.',
-      href: `/leave?request=${encodeURIComponent(request.id)}`, entityId: request.id, createdAt: new Date().toISOString(), readAt: null });
+      href, entityId, entityType, createdAt: new Date().toISOString(), readAt: null });
   };
+  const send = (employeeId: string, request: LeaveRequest, title: string) => sendWorkflow(employeeId,request.id,'leave',title,`/leave?request=${encodeURIComponent(request.id)}`);
   const reviewers = (request: LeaveRequest, title: string) => {
     const employee = after.employees.find(e => e.id === request.employeeId);
     if (!employee) return;
@@ -16,7 +17,7 @@ export function demoNotifications(before: AppState, after: AppState): AppNotific
   };
   for (const request of after.leaveRequests) {
     const old = before.leaveRequests.find(r => r.id === request.id);
-    if (!old) { reviewers(request, 'Pengajuan cuti/izin baru'); continue; }
+    if (!old) { if (request.status === 'approved') send(request.employeeId,request,'Izin susulan dicatat HR'); else reviewers(request, 'Pengajuan cuti/izin baru'); continue; }
     const adjustment = request.adjustment, previous = old.adjustment;
     if (adjustment?.status === 'pending' && adjustment.id !== previous?.id) reviewers(request, adjustment.type === 'cancel' ? 'Permintaan pembatalan cuti' : 'Permintaan perubahan cuti');
     if (adjustment && adjustment.id === previous?.id && previous.status === 'pending' && adjustment.status !== 'pending') {
@@ -32,6 +33,20 @@ export function demoNotifications(before: AppState, after: AppState): AppNotific
     } else if (['startDate', 'endDate', 'startTime', 'endTime', 'reason', 'attachmentUrl', 'deductionDays', 'note', 'approverId', 'externalApproverName'].some(key => request[key as keyof LeaveRequest] !== old[key as keyof LeaveRequest])) {
       if (request.status === 'pending') reviewers(request, 'Pengajuan diperbarui');
       else if (request.status === 'approved') { send(request.employeeId, request, 'Catatan cuti dikoreksi HR'); reviewers(request, 'Catatan cuti dikoreksi HR'); }
+    }
+  }
+  for (const assignment of after.cashierAssignments ?? []) {
+    const old = (before.cashierAssignments ?? []).find(a => a.id === assignment.id);
+    if (!old || ['outletId','shift','status','reason','updatedAt'].some(key => assignment[key as keyof typeof assignment] !== old[key as keyof typeof old])) {
+      sendWorkflow(assignment.employeeId,assignment.id,'assignment',assignment.status === 'cancelled' ? 'Penugasan dibatalkan' : 'Penugasan diperbarui',`/assignments?date=${assignment.workDate}`);
+    }
+  }
+  for (const request of after.attendanceCorrectionRequests ?? []) {
+    const old = (before.attendanceCorrectionRequests ?? []).find(r => r.id === request.id);
+    if (!old && request.status === 'pending') {
+      after.employees.filter(e => e.roles.includes('admin_hr')).forEach(e => sendWorkflow(e.id,request.id,'attendance_correction','Permintaan koreksi kehadiran',`/reports?tab=corrections&request=${request.id}`));
+    } else if (old?.status === 'pending' && ['approved','rejected'].includes(request.status)) {
+      sendWorkflow(request.employeeId,request.id,'attendance_correction',request.status === 'approved' ? 'Koreksi kehadiran disetujui' : 'Koreksi kehadiran ditolak',`/attendance?request=${request.id}`);
     }
   }
   return result;

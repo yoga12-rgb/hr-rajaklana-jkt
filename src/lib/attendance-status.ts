@@ -57,10 +57,34 @@ export function attendanceLatenessLabel(status: AttendanceLateness): string {
 }
 
 /** Review thresholds only; a session is never closed or rewritten automatically. */
-export function attendanceSessionStatus(record: AttendanceRecord, now = Date.now()): 'stale' | 'due' | 'working' | 'complete' {
-  if (record.clockOut) return 'complete';
+export function attendanceSessionStatus(record: AttendanceRecord, now = Date.now()): 'stale' | 'review' | 'due' | 'working' | 'complete' {
+  if (record.clockOut) return Date.parse(record.clockOut) - Date.parse(record.clockIn) >= 12 * 60 * minute ? 'review' : 'complete';
   const elapsed = now - Date.parse(record.clockIn);
   if (elapsed >= 12 * 60 * minute) return 'stale';
   if (elapsed >= 8 * 60 * minute) return 'due';
   return 'working';
+}
+
+/** Explain the 480-minute comparison without changing recorded work or payroll. */
+export function attendanceDurationReview(record: AttendanceRecord, leaves: LeaveRequest[]) {
+  const actualMinutes = record.clockOut ? Math.max(0, record.durationMinutes ?? Math.floor((Date.parse(record.clockOut) - Date.parse(record.clockIn)) / minute)) : null;
+  const shortfallMinutes = actualMinutes === null ? 0 : Math.max(0, 480 - actualMinutes);
+  const start = Date.parse(record.scheduledStart ?? record.clockIn), end = start + 480 * minute;
+  const workDate = jakartaDate(record.scheduledStart ?? record.clockIn);
+  const permissions = leaves.filter(request => request.employeeId === record.employeeId && request.status === 'approved' && request.startDate === workDate && request.endDate === workDate);
+  let permittedEarlyMinutes = 0;
+  for (const request of permissions.filter(request => request.extent === 'early_departure')) {
+    const time = request.startTime || request.endTime;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time) || !record.clockOut) continue;
+    let departure = Date.parse(`${workDate}T${time}:00+07:00`);
+    if (departure < start && jakartaDate(new Date(end).toISOString()) > workDate) departure += 24 * 60 * minute;
+    if (departure < start || departure >= end) continue;
+    permittedEarlyMinutes = Math.max(permittedEarlyMinutes, Math.max(0, Math.floor((end - Math.max(departure, Date.parse(record.clockOut))) / minute)));
+  }
+  permittedEarlyMinutes = Math.min(shortfallMinutes, permittedEarlyMinutes);
+  const permittedLateMinutes = Math.min(Math.max(0, shortfallMinutes - permittedEarlyMinutes), classifyAttendanceLateness(record, leaves).permittedMinutes);
+  const permittedMinutes = permittedEarlyMinutes + permittedLateMinutes;
+  return { actualMinutes, shortfallMinutes, permittedMinutes, permittedEarlyMinutes, permittedLateMinutes,
+    unexplainedMinutes: shortfallMinutes - permittedMinutes,
+    temporaryExit: permissions.filter(request => request.extent === 'temporary_exit').map(request => `${request.startTime}–${request.endTime} WIB`) };
 }
