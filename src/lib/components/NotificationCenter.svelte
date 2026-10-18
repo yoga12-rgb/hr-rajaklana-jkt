@@ -9,13 +9,38 @@
   import Modal from './Modal.svelte';
   import Feedback from './Feedback.svelte';
   import { devicePushStatus, enableDevicePush, disableDevicePush } from '../device-push';
+  import type { DevicePushState } from '../device-push';
   let open = false, saving = false, message = '', now = Date.now();
-  let pushState='loading',pushBusy=false;
+  let pushState:DevicePushState|'loading'='loading',pushBusy=false,mounted=false;
+  let checkedAccount='',pushRevision=0;
+  $: accountKey=`${$app.mode}:${$app.user?.id??''}`;
+  $: if(mounted&&accountKey!==checkedAccount){checkedAccount=accountKey;message='';void checkPush();}
   $: inbox = ($app.notifications ?? []).filter(n => n.employeeId === $app.user?.id).slice().sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   $: unread = inbox.filter(n => !n.readAt).length;
   $: overdue = $app.attendanceRecords.find(r => r.employeeId === $app.user?.id && ['due','stale'].includes(attendanceSessionStatus(r,now)));
-  onMount(() => { void devicePushStatus().then(state=>pushState=state).catch(()=>pushState='disabled'); const interval = window.setInterval(() => now = Date.now(), 30000); return () => window.clearInterval(interval); });
-  async function setPush(enable:boolean){pushBusy=true;message='';try{if(enable)await enableDevicePush();else await disableDevicePush();pushState=await devicePushStatus();}catch(error){message=error instanceof Error?error.message:'Pengaturan notifikasi perangkat belum tersimpan.';}finally{pushBusy=false;}}
+  onMount(() => {
+    mounted=true;
+    const interval=window.setInterval(()=>now=Date.now(),30000);
+    const focus=()=>{if(open&&document.visibilityState==='visible')void checkPush();};
+    window.addEventListener('focus',focus);document.addEventListener('visibilitychange',focus);
+    return()=>{mounted=false;pushRevision++;window.clearInterval(interval);window.removeEventListener('focus',focus);document.removeEventListener('visibilitychange',focus);};
+  });
+  async function checkPush(){
+    if(pushBusy)return;
+    const revision=++pushRevision,account=accountKey;
+    pushState='loading';
+    if($app.mode!=='live'||!$app.user){pushState='disabled';return;}
+    try{const state=await devicePushStatus();if(mounted&&revision===pushRevision&&account===accountKey)pushState=state;}
+    catch{if(mounted&&revision===pushRevision&&account===accountKey)pushState='unavailable';}
+  }
+  function openInbox(){now=Date.now();message='';open=true;void checkPush();}
+  async function setPush(enable:boolean){
+    if(pushBusy)return;
+    pushBusy=true;message='';const account=accountKey;pushRevision++;
+    try{if(enable)await enableDevicePush();else await disableDevicePush();const state=await devicePushStatus();if(mounted&&account===accountKey)pushState=state;}
+    catch(error){if(mounted&&account===accountKey){message=error instanceof Error?error.message:'Pengaturan notifikasi perangkat belum tersimpan.';try{pushState=await devicePushStatus();}catch{pushState='unavailable';}}}
+    finally{pushBusy=false;if(mounted&&account!==accountKey)void checkPush();}
+  }
   async function read(notification?: AppNotification) {
     if (saving) return;
     saving = true; message = '';
@@ -27,7 +52,7 @@
   }
 </script>
 
-<button class="notification-toggle" type="button" aria-label={`Notifikasi, ${unread} belum dibaca${overdue ? ', pengingat clock out' : ''}`} on:click={() => { now = Date.now(); message = ''; open = true; }}>
+<button class="notification-toggle" type="button" aria-label={`Notifikasi, ${unread} belum dibaca${overdue ? ', pengingat clock out' : ''}`} on:click={openInbox}>
   <Icon name="bell" size={20}/>
   {#if unread || overdue}<span class="badge">{unread ? unread > 99 ? '99+' : unread : '!'}</span>{/if}
 </button>
@@ -48,7 +73,27 @@
       {/each}
     </div>
   {:else}<p class="empty">Belum ada notifikasi. Pengajuan dan keputusan berikutnya akan tercatat di sini.</p>{/if}
-  <div class="device-push"><strong>Notifikasi di perangkat ini</strong><p>{pushState==='enabled'?'Aktif. Pemberitahuan umum dapat tampil saat aplikasi ditutup.':pushState==='denied'?'Izin diblokir browser. Ubah izin melalui pengaturan situs bila ingin mengaktifkannya.':pushState==='unsupported'?'Browser ini belum mendukung notifikasi perangkat. Di iPhone/iPad, pasang aplikasi ke Layar Utama terlebih dahulu.':'Aktifkan untuk menerima pemberitahuan ketika aplikasi ditutup.'}</p>{#if pushState==='enabled'}<button class="btn btn-secondary" disabled={pushBusy} on:click={()=>setPush(false)}>Nonaktifkan di perangkat ini</button>{:else if !['unsupported','denied'].includes(pushState)}<button class="btn btn-secondary" disabled={pushBusy||pushState==='loading'||$app.mode!=='live'} on:click={()=>setPush(true)}>{pushBusy?'Mengaktifkan…':'Aktifkan notifikasi perangkat'}</button>{/if}</div>
+  <section class="device-push" aria-labelledby="device-push-title" aria-busy={pushBusy||($app.mode==='live'&&pushState==='loading')}>
+    <strong id="device-push-title">Notifikasi di perangkat ini</strong>
+    <div role="status" aria-live="polite">
+      {#if $app.mode!=='live'}<p>Mode demo tidak mengirim notifikasi perangkat. Gunakan aplikasi yang terhubung ke server untuk mengaktifkannya.</p>
+      {:else if pushState==='loading'}<p>Memeriksa kesiapan notifikasi…</p>
+      {:else if pushState==='install_required'}
+        <p>Di iPhone/iPad, buka aplikasi dari ikon Layar Utama untuk menggunakan notifikasi. Memerlukan iOS/iPadOS 16.4 atau lebih baru.</p>
+        <ol class="install-steps"><li>Buka aplikasi melalui Safari, lalu pilih Bagikan → Tambah ke Layar Utama.</li><li>Aktifkan Buka sebagai App Web jika pilihan itu muncul, lalu tekan Tambah.</li><li>Buka ikon yang baru dipasang, login, lalu buka lonceng ini kembali.</li></ol>
+      {:else if pushState==='insecure'}<p>Notifikasi memerlukan sambungan aman. Buka aplikasi melalui alamat HTTPS, lalu periksa ulang.</p>
+      {:else if pushState==='unsupported'}<p>Browser atau versi sistem ini belum mendukung notifikasi perangkat. Gunakan browser dan sistem yang mendukung; kotak notifikasi di aplikasi tetap tersedia.</p>
+      {:else if pushState==='denied'}<p>Izin notifikasi diblokir. Aktifkan kembali melalui pengaturan notifikasi perangkat atau izin situs, lalu tekan Periksa ulang.</p>
+      {:else if pushState==='enabled'}<p>Aktif untuk akun Anda di perangkat ini. Pemberitahuan umum dapat tampil saat aplikasi ditutup. Tetap login agar langganan aktif.</p>
+      {:else if pushState==='unavailable'}<p>Kesiapan notifikasi belum dapat dipastikan. Pastikan koneksi internet tersedia, lalu tekan Periksa ulang. Jika tetap gagal, buka ulang aplikasi.</p>
+      {:else}<p>Notifikasi belum aktif. Tekan Aktifkan, lalu izinkan pemberitahuan pada perangkat.</p>{/if}
+    </div>
+    {#if $app.mode==='live'}<div class="push-actions">
+      {#if pushState==='enabled'}<button class="btn btn-secondary" disabled={pushBusy} on:click={()=>setPush(false)}>{pushBusy?'Menonaktifkan…':'Nonaktifkan di perangkat ini'}</button>
+      {:else if pushState==='disabled'}<button class="btn btn-primary" disabled={pushBusy} on:click={()=>setPush(true)}>{pushBusy?'Mengaktifkan…':'Aktifkan notifikasi perangkat'}</button>{/if}
+      <button class="btn btn-secondary" disabled={pushBusy||pushState==='loading'} on:click={()=>checkPush()}>{pushState==='loading'?'Memeriksa…':'Periksa ulang'}</button>
+    </div>{/if}
+  </section>
   <p class="hint">Isi pemberitahuan perangkat dibuat umum untuk menjaga privasi. Buka aplikasi untuk melihat rincian. Pengiriman memerlukan koneksi dan dukungan browser; jadwal pengingat dapat terlambat jika perangkat menunda pemberitahuan.</p>
 </Modal>
 
@@ -74,4 +119,5 @@
   .hint { margin: 18px 0 0; font-size: 10px; line-height: 1.7; color: var(--muted); }
   .device-push { margin-top:18px;padding:14px;border:1px solid var(--control-border);border-radius:14px;background:var(--surface-cream); }
   .device-push strong { font-size:12px; }.device-push p {font-size:11px;line-height:1.7;color:var(--muted)}.device-push .btn{font-size:11px;min-height:42px}
+  .push-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.install-steps{padding-left:18px;font-size:11px;line-height:1.8;color:var(--muted)}.install-steps li+li{margin-top:6px}
 </style>

@@ -30,6 +30,7 @@ Ini panduan uji, bukan pernyataan seluruh langkah sudah lulus. Gunakan akun/data
 - Buka **Profil → Verifikasi wajah**, baca persetujuan, lalu daftarkan referensi. HR lain meninjau; referensi disimpan privat. Uji kebutuhan daftar ulang dan pencocokan server 1:1 pada selfie masuk. Ini belum merupakan liveness kuat atau jaminan anti foto. Kegagalan/mismatch tidak otomatis menjadi pelanggaran atau potongan; gunakan konfirmasi dan jalur manual HR.
 - Buka lonceng untuk pengajuan, keputusan, penugasan, dan koreksi. Pastikan tautan sesuai akun, status dibaca persisten, dan akun lain tidak dapat membaca/menandai inbox pengguna lain.
 - Push bersifat opt-in pada browser/perangkat yang mendukung. Uji izin diterima, ditolak, platform tanpa dukungan, dan logout yang melepas langganan. Lonceng/pengingat dalam aplikasi tetap tersedia. Pengingat 8 jam di luar aplikasi memerlukan scheduler/pengirim server aktif; keberadaan komponen bukan bukti pengiriman telah berhasil.
+- Pada iPhone/iPad iOS/iPadOS 16.4+, buka Safari → Bagikan → Tambah ke Layar Utama. Aktifkan **Buka sebagai App Web** jika muncul. Buka ikon tersebut, login, lalu lonceng → **Aktifkan notifikasi perangkat** → Izinkan. Tab Safari menampilkan petunjuk pemasangan. Pemeriksaan yang gagal menyediakan **Periksa ulang**; status Aktif baru muncul setelah langganan akun dikonfirmasi server. Tutup aplikasi tanpa logout untuk menguji penerimaan push.
 
 ## Batas bukti dan uji perangkat
 

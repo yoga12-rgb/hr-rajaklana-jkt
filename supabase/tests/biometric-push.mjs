@@ -119,6 +119,31 @@ await denied('select public.push_subscribe($1,$2,$3,$4)',['https://127.0.0.1/tes
 await db.query('select public.push_subscribe($1,$2,$3,$4)',[endpoint,key,auth,'Perangkat Fiktif']);
 await denied('select * from private.push_subscriptions',[],'permission denied');
 await denied('select * from public.push_claim(10)',[],'permission denied');
+const pushStatusSQL='select public.push_subscription_status($1) as active';
+assert.equal((await row(pushStatusSQL,[endpoint])).active,true,'own active endpoint is registered');
+assert.equal((await row(pushStatusSQL,[endpoint+'-missing'])).active,false,'missing endpoint is not registered');
+assert.equal((await row(pushStatusSQL,[null])).active,false,'null endpoint is not registered');
+await asUser(otherAuth);
+assert.equal((await row(pushStatusSQL,[endpoint])).active,false,'another account cannot inspect endpoint ownership');
+await asUser('', 'anon');
+await denied(pushStatusSQL,[endpoint],'permission denied');
+await db.exec('reset role');
+for(const role of['anon','service_role'])assert.equal((await row("select has_function_privilege($1,'public.push_subscription_status(text)','EXECUTE') as allowed",[role])).allowed,false,role+' cannot execute status lookup');
+assert.equal((await row("select has_table_privilege('authenticated','private.push_subscriptions','SELECT') as allowed")).allowed,false,'status lookup does not grant direct private table access');
+const statusFunction=await row("select prosecdef,provolatile,proconfig from pg_proc where oid='public.push_subscription_status(text)'::regprocedure");
+assert.equal(statusFunction.prosecdef,true);assert.equal(statusFunction.provolatile,'s');assert.deepEqual(statusFunction.proconfig,['search_path=""']);
+for(const[column,value]of[['status','inactive'],['account_status','disabled']]) {
+  await db.query('update public.employees set '+column+'=$1 where id=$2',[value,cashId]);
+  await asUser(cashAuth);
+  await denied(pushStatusSQL,[endpoint],'Akun karyawan tidak aktif');
+  await db.exec('reset role');
+  await db.query('update public.employees set '+column+"='active' where id=$1",[cashId]);
+}
+await asUser(cashAuth);
+await db.query('select public.push_unsubscribe($1)',[endpoint]);
+assert.equal((await row(pushStatusSQL,[endpoint])).active,false,'disabled own endpoint is not registered');
+await db.query('select public.push_subscribe($1,$2,$3,$4)',[endpoint,key,auth,'Perangkat Fiktif']);
+assert.equal((await row(pushStatusSQL,[endpoint])).active,true,'explicit opt-in restores registration state');
 await db.exec('reset role');
 const notif=await row("insert into public.notifications(employee_id,entity_id,entity_type,title,body,href) values($1,$2::uuid,'attendance_reminder','Uji','Rincian hanya di aplikasi','/attendance?record='||$2::uuid::text) returning id",[cashId,attendance.id]);
 assert.equal((await row('select count(*)::int as n from private.push_outbox where notification_id=$1',[notif.id])).n,1);
@@ -134,6 +159,7 @@ await db.query("update private.push_outbox set next_attempt_at=clock_timestamp()
 await asUser('', 'service_role');claims=(await db.query('select * from public.push_claim(10)')).rows;
 await db.query('select public.push_complete($1,$2,410)',[claims[0].id,claims[0].lease_token]);
 await db.exec('reset role');assert.ok((await row('select disabled_at from private.push_subscriptions where endpoint=$1',[endpoint])).disabled_at,'410 disables invalid subscription');
+await asUser(cashAuth);assert.equal((await row(pushStatusSQL,[endpoint])).active,false,'worker-disabled endpoint is reported inactive');
 await asUser(cashAuth);await db.query('select public.push_subscribe($1,$2,$3,$4)',[endpoint,key,auth,'Fiktif']);
 await db.exec('reset role');
 const notif2=await row("insert into public.notifications(employee_id,entity_id,entity_type,title,body,href) values($1,$2::uuid,'attendance_reminder','Uji','Rahasia','/attendance?record='||$2::uuid::text) returning id",[cashId,attendance.id]);
@@ -142,5 +168,7 @@ await asUser('', 'service_role');assert.equal((await db.query('select * from pub
 await asUser(otherAuth);await db.query('select public.push_subscribe($1,$2,$3,$4)',[endpoint,key,auth,'Browser bersama']);
 await db.exec('reset role');assert.equal((await row('select employee_id from private.push_subscriptions where endpoint=$1',[endpoint])).employee_id,otherId,'browser endpoint rebinds to current account');
 assert.equal((await row('select count(*)::int as n from private.push_outbox')).n,0,'old account queue is cleared on browser rebind');
-console.log('Push security OK: opt-in ownership, SSRF allowlist, private keys, durable trigger, exclusive lease, authenticated result binding, retry, 410 disable, read suppression and shared-browser isolation');
+await asUser(cashAuth);assert.equal((await row(pushStatusSQL,[endpoint])).active,false,'previous browser account sees no active registration after rebind');
+await asUser(otherAuth);assert.equal((await row(pushStatusSQL,[endpoint])).active,true,'current browser account sees its own active registration after rebind');
+console.log('Push security OK: own active status only, inactive/anonymous denial, private grants, opt-in ownership, SSRF allowlist, private keys, durable trigger, exclusive lease, authenticated result binding, retry, 410 disable, read suppression and shared-browser isolation');
 await db.close();
