@@ -2,9 +2,9 @@
 
 Production dan Preview memakai build frontend serta proyek Supabase yang terpisah. Selama tahap uji coba, gunakan data fiktif untuk pengujian karyawan dan operasional. Nama environment **Production** menunjukkan target deployment utama; aplikasi belum layak dipakai untuk operasional sebelum pemeriksaan layanan hosted dan perangkat selesai.
 
-## Source dan rencana rilis — 16 Oktober 2026
+## Rilis alur kerja — 18 Oktober 2026
 
-Source kini memiliki sembilan migrasi. Pemeriksaan lokal pembaruan alur kerja lulus: 214 test, check Svelte/TypeScript, build, harness database sembilan migrasi, dan 13 fixture penggantian schema lama. Dua migrasi tambahan adalah `20261016063305_hr_leave_workflows.sql` dan `20261016063418_hr_notifications.sql`. Database Preview sudah memakai sembilan migrasi; uji transaksi RPC/RLS hosted lulus dan di-rollback. Frontend baru serta database Production masih menunggu rilis; Edge Function tidak berubah. Gunakan [validasi alur kerja 16 Oktober](workflows-validation-2026-10-16.md) untuk SHA snapshot rilis dan bukti hosted yang akan diisi saat rilis.
+Source kini memiliki sembilan migrasi. Pemeriksaan lokal pembaruan alur kerja lulus: 214 test, check Svelte/TypeScript, build, harness database sembilan migrasi, dan 13 fixture penggantian schema lama. Dua migrasi tambahan adalah `20261016063305_hr_leave_workflows.sql` dan `20261016063418_hr_notifications.sql`. Kedua database sudah memakai sembilan migrasi; uji transaksi RPC/RLS Preview lulus dan di-rollback. Frontend Production dan Preview READY pada snapshot kode `fe50a5e`, dengan CI kedua branch lulus; Edge Function tidak berubah. Lihat [validasi alur kerja 16 Oktober](workflows-validation-2026-10-16.md) untuk SHA, build immutable, hasil hosted, serta batas pengujian UI/perangkat.
 
 ## Snapshot hosted terverifikasi — 13 Oktober 2026
 

@@ -1,6 +1,6 @@
 # Validasi alur kerja — 16–18 Oktober 2026
 
-Dokumen ini mencatat enam perbaikan alur kerja. Database Preview sudah menerima sembilan migrasi dan lulus uji transaksi pada 18 Oktober; frontend baru dan database Production masih menunggu rilis pada snapshot persiapan ini. Snapshot hosted sebelumnya tetap tersedia pada [laporan 13 Oktober](hosted-verification.md).
+Dokumen ini mencatat enam perbaikan alur kerja yang dirilis pada 18 Oktober 2026. Snapshot kode yang diperiksa adalah `fe50a5e06958facdd86ca763c833fb48b3027e11`. Production dan Preview READY, CI keduanya lulus, serta sembilan migrasi sesuai source telah diterapkan pada kedua database. Snapshot hosted sebelumnya tetap tersedia pada [laporan 13 Oktober](hosted-verification.md). Commit dokumentasi berikutnya tidak mengubah snapshot bukti ini.
 
 ## Perilaku source
 
@@ -31,23 +31,26 @@ Browser demo berhasil membuka dashboard kasir, membuat izin datang terlambat unt
 
 Preview hosted menjalankan RPC asli sebagai tiga identitas fiktif dengan role `authenticated`: submit/duplikat, needs-info, edit jam/alasan dan reset keputusan, approve, koreksi HR milik orang lain, pembatalan dan refund tahun asal, RLS inbox, mark-one/all idempoten, serta audit. Delapan assertion lulus. Seluruh transaksi di-rollback; pemeriksaan berikutnya memastikan nol akun Auth, karyawan, dan notifikasi fiktif tersisa. Counter nomor karyawan/outlet tidak berubah; ID teknis audit/ledger dapat memiliki gap normal setelah rollback.
 
-Catalog Preview memastikan RLS inbox aktif, hanya SELECT penerima diberikan ke `authenticated`, tidak ada akses `anon` atau mutasi tabel langsung, ketiga RPC baru memakai otorisasi internal dan `search_path` kosong, serta tabel terdaftar pada `supabase_realtime`. HTTP Data API menolak keempat endpoint baru tanpa login dengan 401/42501. Advisor tidak melaporkan ERROR; catatan SECURITY DEFINER terautentikasi memang sesuai rancangan RPC yang diuji, sementara konfigurasi MFA/leaked-password dan tabel token tanpa policy klien merupakan catatan yang tetap ada.
+Catalog kedua lingkungan memastikan RLS inbox aktif, hanya SELECT penerima diberikan ke `authenticated`, tidak ada akses `anon` atau mutasi tabel langsung, ketiga RPC baru memakai otorisasi internal dan `search_path` kosong, serta tabel terdaftar pada `supabase_realtime`. HTTP Data API kedua lingkungan menolak tabel inbox dan ketiga RPC baru tanpa login dengan 401/42501. Tidak ada uji mutasi data operasional pada Production.
 
-## Snapshot rilis dan hosted — menunggu verifikasi
+Advisor kedua proyek tidak melaporkan ERROR. Catatan [SECURITY DEFINER terautentikasi](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable) sesuai rancangan RPC dengan pemeriksaan aktor/role/owner yang diuji. Catatan konfigurasi [MFA](https://supabase.com/docs/guides/auth/auth-mfa), [leaked-password protection](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection), serta [tabel token tanpa policy klien](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) tetap ada; perubahan ini tidak mengubah pengaturan Auth atau memberi akses klien ke tabel token.
 
-Semua kolom berikut tetap menunggu operator rilis. Gunakan SHA rilis yang diperiksa; jangan menganggap commit terbaru atau alias yang berubah sebagai bukti source yang diuji.
+## Snapshot rilis dan hosted — 18 Oktober 2026
+
+URL immutable berikut mengidentifikasi build yang diperiksa. Alias dapat berubah pada rilis selanjutnya; kolom ini tetap menjadi bukti snapshot kode di atas.
 
 | Bukti | Preview | Production |
 | --- | --- | --- |
-| SHA snapshot rilis yang diperiksa | Menunggu | Menunggu |
-| Riwayat sembilan migrasi sesuai source | Lulus; versi/nama sesuai source | Belum diterapkan/diverifikasi untuk pembaruan ini |
+| SHA snapshot rilis yang diperiksa | `fe50a5e06958facdd86ca763c833fb48b3027e11` | Sama |
+| Riwayat sembilan migrasi sesuai source | Lulus; versi/nama sesuai source | Lulus; versi/nama sesuai source |
 | Edge Function `hr-api` untuk snapshot ini | Tidak berubah; fitur baru memakai RPC database | Tidak berubah; fitur baru memakai RPC database |
-| Deployment frontend, ID/URL immutable, status | Menunggu | Menunggu |
-| Alias dan konfigurasi lingkungan sesuai | Menunggu | Menunggu |
-| CI pada SHA snapshot rilis | Menunggu | Menunggu |
-| Alur hosted lintas akun, saldo/audit, notifikasi | Delapan assertion RPC/role asli lulus dengan rollback; UI lintas akun belum tuntas | Belum diuji untuk pembaruan ini |
+| Deployment frontend, ID/URL immutable, status | READY, source Git, `dpl_G4JJRpKYd42VGbPi69esw6fqpi56`; [build Preview](https://hr-rajaklana-36d37puf3-hr-rajaklana.vercel.app) | READY, source Git, target Production, `dpl_13nBsZjiuYQQahwSo41rV59BryLY`; [build Production](https://hr-rajaklana-jt8yqo7zv-hr-rajaklana.vercel.app) |
+| Alias dan lingkungan | `hr-rajaklana-jkt-preview.vercel.app`, branch `codex/preview`; proteksi Vercel tetap aktif | `hr-rajaklana-jkt.vercel.app`, branch `main` |
+| CI pada SHA snapshot rilis | [39095572916 — success](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/39095572916) | [39095745396 — success](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/39095745396) |
+| HTTP frontend | `/login` build immutable 200 lewat `vercel curl`; shell aplikasi dan manifest tersedia | `/login` alias utama 200; shell aplikasi dan manifest tersedia |
+| Alur hosted lintas akun, saldo/audit, notifikasi | Delapan assertion RPC/role asli lulus dengan rollback; UI lintas akun belum tuntas | Catalog/grant/publication/advisor dan penolakan akses anonim lulus; tidak membuat data uji Production |
 
-Laporan hosted 13 Oktober mencatat tujuh migrasi dan rilis kode `db42cbc`; status tersebut merupakan snapshot lama. Dokumen ini tidak mengubah bukti historis atau menyatakan bahwa dua migrasi/alur baru sudah tersedia di kedua lingkungan.
+Laporan hosted 13 Oktober mencatat tujuh migrasi dan rilis kode `db42cbc`; status tersebut merupakan snapshot lama. Penerapan 18 Oktober menambah `20261016063305` dan `20261016063418` pada kedua lingkungan tanpa menghapus data HR atau mengubah akun Auth.
 
 ## Batas pengujian perangkat
 
@@ -55,6 +58,6 @@ Laporan hosted 13 Oktober mencatat tujuh migrasi dan rilis kode `db42cbc`; statu
 - Pemasangan, pembaruan service worker, dan perilaku PWA pada ponsel nyata belum diuji untuk pembaruan ini.
 - Pengingat 8 jam hanya berjalan di dalam aplikasi yang terbuka/aktif; tidak ada klaim notifikasi ketika browser/PWA ditutup.
 - Tidak ada integrasi push eksternal atau notifikasi OS pada source ini; pengiriman push saat aplikasi tertutup tidak diuji dan belum menjadi fitur.
-- Verifikasi lintas perangkat terhadap notifikasi belum dibaca, URL lampiran privat, serta perubahan hak akses masih menunggu layanan hosted.
+- RLS/notifikasi dan status dibaca diuji melalui role database hosted dengan rollback; pengiriman realtime pada dua browser/perangkat, URL lampiran privat baru, serta UI perubahan hak akses belum diuji menyeluruh pada rilis ini.
 
-Lanjutkan dengan data fiktif pada Preview terlebih dahulu. Catat hasil hosted dan SHA yang benar pada tabel rilis setelah langkah tersebut benar-benar selesai.
+Gunakan data fiktif pada Preview untuk pengujian perangkat dan lintas akun berikutnya. Jangan menganggap pemeriksaan HTTP atau RPC sebagai bukti semua alur UI/perangkat berjalan tanpa kendala.
