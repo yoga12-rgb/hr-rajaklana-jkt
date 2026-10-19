@@ -4,6 +4,7 @@
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
   import { cashierRosterDraftStorageKey, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterDraftCell } from '#lib/cashier-spv-drafts';
+  import { cashierRosterSaveErrorMessage } from '../cashier-roster-save-error';
   import { addWorkDays, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
   import Feedback from './Feedback.svelte';
@@ -126,7 +127,7 @@
       const result = await actions.saveCashierRosterBatch(weekStart, changes.map(change => ({ ...change, reason: reason.trim() })), idempotencyKey);
       message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
       persistDraft();
-    } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Batch jadwal belum tersimpan.'; }
+    } catch (error) { failed = true; message = cashierRosterSaveErrorMessage(error); }
     finally { saving = false; }
   }
   function selectWeek(nextWeek: string) {

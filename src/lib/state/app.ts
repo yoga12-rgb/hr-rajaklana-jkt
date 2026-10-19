@@ -114,7 +114,7 @@ function fail(error: unknown): never { throw new Error(error instanceof Error ? 
 async function rpc(name: string, args: Record<string, unknown>) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw Object.assign(new Error(error.message), { code: error.code });
+  if (error) throw Object.assign(new Error(error.message), { code: error.code, status: (error as typeof error & { status?: number }).status });
   return data;
 }
 async function cleanupRejectedLeaveUpload(path: string | null, error: unknown) {
