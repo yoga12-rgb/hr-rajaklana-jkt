@@ -6,6 +6,16 @@ export type CashierRosterDraft = {
   idempotencyKey: string;
 };
 
+export function cashierRosterIdempotencyAttempt(
+  fingerprint: string,
+  previous: Pick<CashierRosterDraft, 'idempotencyFingerprint' | 'idempotencyKey'>,
+  createKey: () => string = () => crypto.randomUUID()
+): Pick<CashierRosterDraft, 'idempotencyFingerprint' | 'idempotencyKey'> {
+  if (fingerprint === previous.idempotencyFingerprint
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(previous.idempotencyKey)) return previous;
+  return { idempotencyFingerprint: fingerprint, idempotencyKey: createKey() };
+}
+
 const allowedShifts = new Set(['', 'morning', 'afternoon', 'middle', 'off']);
 const validDay = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
-  import { cashierRosterDraftStorageKey, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterDraftCell } from '#lib/cashier-spv-drafts';
+  import { cashierRosterDraftStorageKey, cashierRosterIdempotencyAttempt, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterDraftCell } from '#lib/cashier-spv-drafts';
   import { cashierRosterSaveErrorMessage } from '../cashier-roster-save-error';
   import { addWorkDays, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
@@ -123,7 +123,8 @@
     try {
       validateRosterBatch($app, $app.user?.id ?? '', weekStart, changes.map(change => ({ ...change, reason: reason.trim() })));
       const payload = JSON.stringify({ weekStart, changes: changes.map(change => ({ ...change, reason: reason.trim() })) });
-      if (payload !== idempotencyFingerprint || !idempotencyKey) { idempotencyFingerprint = payload; idempotencyKey = crypto.randomUUID(); persistDraft(); }
+      const attempt = cashierRosterIdempotencyAttempt(payload, { idempotencyFingerprint, idempotencyKey });
+      idempotencyFingerprint = attempt.idempotencyFingerprint; idempotencyKey = attempt.idempotencyKey; persistDraft();
       const result = await actions.saveCashierRosterBatch(weekStart, changes.map(change => ({ ...change, reason: reason.trim() })), idempotencyKey);
       message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
       persistDraft();

@@ -156,6 +156,22 @@ function clearLiveState(error: string | null = null) {
   realtimeSubscribed = false;
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
 }
+function subscribeRealtimeChannel(target: NonNullable<typeof channel>) {
+  target.subscribe(status => {
+    if (channel !== target) return;
+    realtimeSubscribed = status === 'SUBSCRIBED';
+    app.update(s => ({ ...s, connected: navigator.onLine && realtimeSubscribed }));
+    if (realtimeSubscribed) void refresh();
+  });
+}
+function resumeLiveConnection() {
+  if (!supabase || !navigator.onLine) return;
+  // realtime-js reconnects transport failures itself. Calling subscribe again
+  // is a no-op while the channel is joining/joined, and rejoins a channel that
+  // has closed while the page was offline or suspended.
+  if (channel) subscribeRealtimeChannel(channel);
+  void refresh();
+}
 async function readAll(table: string, fields = '*'): Promise<any[]> {
   if (!supabase) return [];
   const rows: any[] = [];
@@ -228,12 +244,7 @@ async function refreshNow() {
       const sessionChannel = supabase.channel(`hr-${session.user.id}`);
       channel = sessionChannel;
       for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
-      sessionChannel.subscribe(status => {
-        if (channel !== sessionChannel) return;
-        realtimeSubscribed = status === 'SUBSCRIBED';
-        app.update(s => ({ ...s, connected: navigator.onLine && realtimeSubscribed }));
-        if (realtimeSubscribed) void refresh();
-      });
+      subscribeRealtimeChannel(sessionChannel);
     }
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
@@ -273,12 +284,12 @@ function updateCharge(state: AppState, request: LeaveRequest, start: string, end
 export const actions = {
   async init() {
     if (get(app).initialized) return;
-    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) void refresh(); }, 60000); }
+    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000); }
     else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
-    window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); void refresh(); });
+    window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); resumeLiveConnection(); });
     window.addEventListener('offline', () => app.update(s => ({ ...s, connected: false })));
-    window.addEventListener('focus', () => void refresh());
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void refresh(); });
+    window.addEventListener('focus', resumeLiveConnection);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeLiveConnection(); });
   },
   refresh,
   async readNotification(notificationId?: string) {
