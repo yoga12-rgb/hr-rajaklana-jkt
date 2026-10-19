@@ -79,7 +79,7 @@ describe('live Realtime recovery', () => {
     });
   });
 
-  afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
   it('rejoins a closed channel after the browser reports that it is online', async () => {
     const { app } = await openLiveApp();
@@ -105,5 +105,18 @@ describe('live Realtime recovery', () => {
     expect(channel.subscribe).toHaveBeenCalledTimes(2);
     channel.emit('SUBSCRIBED'); await flush();
     expect(get(app).connected).toBe(true);
+  });
+
+  it('backs off and rejoins an unexpectedly closed channel without waiting for a browser event', async () => {
+    const { app } = await openLiveApp();
+    channel.emit('SUBSCRIBED'); await flush();
+    vi.useFakeTimers();
+    channel.emit('CLOSED');
+
+    expect(get(app).connected).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(channel.subscribe).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(channel.subscribe).toHaveBeenCalledTimes(2);
   });
 });

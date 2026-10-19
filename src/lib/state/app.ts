@@ -19,6 +19,8 @@ let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
 let refreshRequested = false;
 let realtimeSubscribed = false;
+let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let realtimeRetryAttempt = 0;
 let authRevision = 0;
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -151,17 +153,34 @@ async function refresh() {
 }
 function clearLiveState(error: string | null = null) {
   app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
+  clearRealtimeRetry(true);
   const previousChannel = channel;
   channel = null;
   realtimeSubscribed = false;
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
+}
+function clearRealtimeRetry(resetAttempt = false) {
+  if (realtimeRetryTimer) clearTimeout(realtimeRetryTimer);
+  realtimeRetryTimer = undefined;
+  if (resetAttempt) realtimeRetryAttempt = 0;
+}
+function scheduleRealtimeRejoin(target: NonNullable<typeof channel>) {
+  if (realtimeRetryTimer || !navigator.onLine) return;
+  const delays = [1000, 2000, 5000, 10000];
+  const delay = delays[Math.min(realtimeRetryAttempt, delays.length - 1)];
+  realtimeRetryAttempt += 1;
+  realtimeRetryTimer = setTimeout(() => {
+    realtimeRetryTimer = undefined;
+    if (channel === target && navigator.onLine) subscribeRealtimeChannel(target);
+  }, delay);
 }
 function subscribeRealtimeChannel(target: NonNullable<typeof channel>) {
   target.subscribe(status => {
     if (channel !== target) return;
     realtimeSubscribed = status === 'SUBSCRIBED';
     app.update(s => ({ ...s, connected: navigator.onLine && realtimeSubscribed }));
-    if (realtimeSubscribed) void refresh();
+    if (realtimeSubscribed) { clearRealtimeRetry(true); void refresh(); }
+    else if (status === 'CLOSED' || status === 'TIMED_OUT') scheduleRealtimeRejoin(target);
   });
 }
 function resumeLiveConnection() {
@@ -169,6 +188,7 @@ function resumeLiveConnection() {
   // realtime-js reconnects transport failures itself. Calling subscribe again
   // is a no-op while the channel is joining/joined, and rejoins a channel that
   // has closed while the page was offline or suspended.
+  clearRealtimeRetry(true);
   if (channel) subscribeRealtimeChannel(channel);
   void refresh();
 }
@@ -287,7 +307,7 @@ export const actions = {
     if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000); }
     else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
     window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); resumeLiveConnection(); });
-    window.addEventListener('offline', () => app.update(s => ({ ...s, connected: false })));
+    window.addEventListener('offline', () => { clearRealtimeRetry(); app.update(s => ({ ...s, connected: false })); });
     window.addEventListener('focus', resumeLiveConnection);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeLiveConnection(); });
   },
@@ -301,7 +321,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; const previousChannel = channel; channel = null; realtimeSubscribed = false; if (previousChannel && supabase) await supabase.removeChannel(previousChannel); if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; clearRealtimeRetry(true); const previousChannel = channel; channel = null; realtimeSubscribed = false; if (previousChannel && supabase) await supabase.removeChannel(previousChannel); if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
