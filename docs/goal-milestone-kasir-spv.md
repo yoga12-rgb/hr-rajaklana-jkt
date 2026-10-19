@@ -1,7 +1,7 @@
 # Goal dan Milestone Pengembangan Kasir untuk SPV
 
 Tanggal penyusunan: **19 Oktober 2026**
-Status: **Tahap A: M0–M3 selesai; M4 implementasi reconnect/draft selesai tetapi verifikasi hosted lintas sesi/perangkat masih tertunda; M5 dirilis ke Preview. Tahap B belum dimulai.**
+Status: **Tahap A: M0–M3 selesai; M4 pembaruan Realtime dua tab Preview terverifikasi, sedangkan reconnect/app resume dan uji iPhone/PWA masih tertunda; M5 dirilis ke Preview. Tahap B belum dimulai.**
 Baseline source: `94cd99326a2d34c836a8ef1a385eeebff5c126cb`
 Status pelaksanaan diperbarui: **19 Oktober 2026**
 
@@ -214,7 +214,8 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - [x] Kelompokkan pemberitahuan live per penerima/batch dan demo per penerima/minggu.
 - [x] Isi pemberitahuan bersifat umum dan halaman rincian tetap memerlukan autentikasi.
 - [x] Simpan draft jadwal lokal per akun/minggu, alasan batch, minggu terpilih, dan kunci retry; tes browser membuktikan pemulihan setelah reload dan pemisahan minggu.
-- [ ] Verifikasi pembaruan lintas dua sesi Preview, reconnect jaringan kanal, app resume, dan retry submit terhadap Supabase hosted.
+- [x] Verifikasi pembaruan lintas dua tab Preview tanpa refresh manual; perubahan uji sementara dipulihkan setelah verifikasi.
+- [ ] Verifikasi reconnect jaringan kanal, app resume, dan retry submit terhadap Supabase hosted.
 - [ ] Uji PWA/iPhone manual untuk memastikan draft dan sesi kembali dengan baik setelah app ditutup OS.
 - [x] Pertahankan tema kuning, status teks, tombol sentuh, dan fokus kontrol.
 - [x] Uji grid horizontal pada viewport ponsel tanpa memperlebar halaman.
@@ -240,10 +241,12 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - Implementasi domain, panel SPV, grid mingguan, kebutuhan minimum, transaksi database, RLS, audit, dan pemberitahuan selesai pada source lokal.
 - Lulus pada source sebelum pemulihan draft: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (316 test), `npm.cmd run test:database` (migration dan pemeriksaan keamanan), `npm.cmd run test:database:legacy` (seluruh fixture), `npm.cmd run build`, serta Playwright demo lokal (12 lulus, 1 dilewati).
 - Setelah audit M4: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (322 test), `npm.cmd run test:database`, `npm.cmd run test:database:legacy`, `npm.cmd run build`, dan Playwright demo lokal (13 lulus, 1 dilewati). Tes tambahan memuat ulang editor mingguan dan memeriksa pemulihan draft/alasan serta isolasi minggu.
+- Setelah perbaikan deep link: check (0 error/0 warning), unit (322 lulus), build, serta Playwright demo lokal (14 lulus, 1 dilewati). Tes regresi memastikan query minggu dipakai setelah reload dan perpindahan minggu tidak mencampur draft.
 - Harness database bersifat lokal/PGlite; Playwright memakai demo lokal. Keduanya bukan bukti autentikasi atau perilaku perangkat hosted.
 - Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat lokal dan remote cocok pada seluruh 13 migration; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
-- Belum terverifikasi: perubahan Realtime antara dua sesi Preview dengan akun aplikasi, reconnect/app resume hosted, serta uji manual iPhone/PWA. Tes browser lokal memakai demo; itu bukan bukti Realtime hosted. Pemeriksaan Vercel Preview hanya memberikan URL dan kunci publik; `SUPABASE_SERVICE_ROLE_KEY` tidak tersedia pada proses lokal, dan belum ada dua sesi Preview terautentikasi yang dapat dipakai untuk pengujian lintas sesi. Production belum diubah.
-- Rilis Preview aplikasi: commit `4053f353a92f42a5dcf5b2993d9c5ba1e1b68130` (`feat: preserve cashier roster drafts and realtime state`), Vercel deployment `dpl_7JkzGQTxex9ejABk8d9YghH7Ygt5`, status **Ready**. Pembaruan status dokumentasi sesudahnya: commit `33a5a6df66031aa4c88ae0cac5c42a30b61cecfc` (`docs: record cashier SPV M4 preview status`), deployment `dpl_BbvTAHnEox5jXZAS7F5gUpV8VHCs`, status **Ready**; deploy terakhir hanya mengubah dokumentasi. Alias: [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). `vercel curl` terautentikasi mengembalikan HTTP 200 untuk `/login`; proteksi deployment tetap aktif.
+- Uji hosted Realtime pada 19 Oktober 2026: Admin HR membuka Preview di dua tab, menetapkan shift Pagi sementara untuk RK000003 pada 26 Oktober, dan perubahan tampil di tab kedua tanpa refresh. Penugasan kemudian dikosongkan kembali dan kedua tab menunjukkan nol perubahan tersimpan. Dua catatan audit dari aksi uji tetap tercatat. Ini membuktikan sinkronisasi dua tab untuk akun yang sama; belum membuktikan dua akun berbeda atau perilaku reconnect.
+- Perbaikan tambahan: tautan `?week=YYYY-MM-DD` kini dipakai saat planner pertama kali dimuat, termasuk sesudah reload dengan sesi login; navigasi minggu tetap membaca URL browser terbaru agar draft terpisah per minggu. Tes regresi browser mencakup tautan langsung, reload, dan isolasi draft. Reconnect jaringan, app resume, retry submit hosted, serta uji manual iPhone/PWA masih belum terverifikasi. Tes browser lokal memakai demo dan tidak menggantikan uji hosted.
+- Rilis Preview aplikasi: commit `6a413f0e91cf661e2bc1025b2607e747e18d06c5` (`fix: honor weekly roster deep links`), Vercel deployment `dpl_H6HW2gwnaT7RYC47xk1xgaoKEuHv`, status **Ready**, URL deployment `https://hr-rajaklana-lbkzyfaos-hr-rajaklana.vercel.app`, alias [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). Halaman `/assignments?week=2026-10-26` terautentikasi menampilkan rentang `2026-10-26 – 2026-11-01`. Build Vercel menjalankan `npm run check && npm run build`. Production tidak diubah.
 
 ## 8. Milestone Tahap B — roadmap sesudah Tahap A
 
@@ -438,8 +441,8 @@ Agent melengkapi laporan per milestone dengan:
 - [x] M1 — Fondasi data, domain, dan akses.
 - [x] M2 — Panel outlet dan tindak lanjut.
 - [x] M3 — Jadwal mingguan dan kebutuhan kasir.
-- [ ] M4 — Integrasi realtime, notifikasi, dan ponsel (lintas sesi masih perlu diverifikasi).
-- [x] M5 — Validasi dan rilis Preview Tahap A (uji lintas sesi M4 masih tertunda).
+- [ ] M4 — Integrasi realtime, notifikasi, dan ponsel (uji dua tab lulus; reconnect dan PWA/iPhone masih tertunda).
+- [x] M5 — Validasi dan rilis Preview Tahap A (rilis kode terbaru Ready; uji perangkat M4 masih tertunda).
 - [ ] M6 — Tukar shift/pengganti.
 - [ ] M7 — Serah terima shift.
 - [ ] M8 — Laporan kendala.
@@ -450,9 +453,10 @@ Agent melengkapi laporan per milestone dengan:
 
 ```text
 Lanjutkan dari status aktual di docs/goal-milestone-kasir-spv.md.
-M0–M3 selesai dan pembaruan terakhir M5 sudah dirilis ke Preview pada commit
-4053f353a92f42a5dcf5b2993d9c5ba1e1b68130. Selesaikan verifikasi M4 yang tersisa:
-pembaruan dua sesi/reconnect/app resume dan uji PWA jika sesi Preview
+M0–M3 selesai dan M5 sudah dirilis ke Preview pada commit
+6a413f0e91cf661e2bc1025b2607e747e18d06c5. Uji Realtime dua tab Preview dan
+deep link jadwal mingguan telah lulus. Selesaikan verifikasi M4 yang tersisa:
+reconnect/app resume, retry submit hosted, dan uji PWA jika sesi Preview
 terautentikasi tersedia. Jangan mengubah Production atau main.
 
 Jangan membangun ulang fitur M0–M3. Jangan memulai M6–M10 sebelum kriteria
