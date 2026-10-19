@@ -5,8 +5,8 @@
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
   import { cashierRosterDraftStorageKey, cashierRosterIdempotencyAttempt, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterDraftCell } from '#lib/cashier-spv-drafts';
-  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
-  import { cashierRosterChangesReflected } from '../cashier-roster-reconcile';
+  import { cashierRosterSaveErrorMessage } from '../cashier-roster-save-error';
+  import { reconcileUncertainCashierRosterSave } from '../cashier-roster-reconcile';
   import { addWorkDays, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
   import Feedback from './Feedback.svelte';
@@ -135,13 +135,10 @@
       persistDraft();
     } catch (error) {
       failed = true; message = cashierRosterSaveErrorMessage(error);
-      if (attemptedChanges.length && cashierRosterSaveOutcomeIsUncertain(error)) {
-        try { await actions.refresh(); } catch { /* Realtime may already have refreshed the store. */ }
-        if (cashierRosterChangesReflected(attemptedChanges, get(app).cashierAssignments ?? [])) {
-          drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
-          failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
-          persistDraft();
-        }
+      if (await reconcileUncertainCashierRosterSave(error, attemptedChanges, actions.refresh, () => get(app).cashierAssignments ?? [])) {
+        drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
+        failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
+        persistDraft();
       }
     }
     finally { saving = false; }

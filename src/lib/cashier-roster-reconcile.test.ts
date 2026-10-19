@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CashierAssignment, CashierRosterChange } from './types';
-import { cashierRosterChangesReflected } from './cashier-roster-reconcile';
+import { cashierRosterChangesReflected, reconcileUncertainCashierRosterSave } from './cashier-roster-reconcile';
 
 const row = (overrides: Partial<CashierAssignment> = {}): CashierAssignment => ({
   id: 'assignment-1', employeeId: 'employee-1', workDate: '2026-10-26', outletId: 'outlet-1', shift: 'morning',
@@ -28,5 +28,50 @@ describe('cashier roster save reconciliation', () => {
     expect(cashierRosterChangesReflected([change(), second], [row()])).toBe(false);
     expect(cashierRosterChangesReflected([change()], [row({ outletId: 'outlet-2' })])).toBe(false);
     expect(cashierRosterChangesReflected([], [row()])).toBe(false);
+  });
+});
+
+describe('uncertain cashier roster save reconciliation flow', () => {
+  const transportError = new TypeError('Failed to fetch');
+
+  it('refreshes server state and confirms the whole batch when it is reflected', async () => {
+    let assignments: CashierAssignment[] = [], refreshCount = 0;
+    const confirmed = await reconcileUncertainCashierRosterSave(transportError, [change()], async () => {
+      refreshCount += 1; assignments = [row()];
+    }, () => assignments);
+
+    expect(refreshCount).toBe(1);
+    expect(confirmed).toBe(true);
+  });
+
+  it('can confirm a Realtime update even if the follow-up refresh fails', async () => {
+    let assignments: CashierAssignment[] = [];
+    const confirmed = await reconcileUncertainCashierRosterSave(transportError, [change()], async () => {
+      assignments = [row()];
+      throw new Error('Refresh response lost');
+    }, () => assignments);
+
+    expect(confirmed).toBe(true);
+  });
+
+  it('keeps the result uncertain when refreshed state does not match the full batch', async () => {
+    let refreshCount = 0;
+    const confirmed = await reconcileUncertainCashierRosterSave(transportError, [change()], async () => {
+      refreshCount += 1;
+    }, () => [row({ shift: 'afternoon' })]);
+
+    expect(refreshCount).toBe(1);
+    expect(confirmed).toBe(false);
+  });
+
+  it('does not refresh for a definite database rejection', async () => {
+    let refreshCount = 0;
+    const databaseError = Object.assign(new Error('Jadwal berubah.'), { code: 'P0001', status: 400 });
+    const confirmed = await reconcileUncertainCashierRosterSave(databaseError, [change()], async () => {
+      refreshCount += 1;
+    }, () => [row()]);
+
+    expect(refreshCount).toBe(0);
+    expect(confirmed).toBe(false);
   });
 });
