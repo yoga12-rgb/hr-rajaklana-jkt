@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
   import { cashierRosterDraftStorageKey, cashierRosterIdempotencyAttempt, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterDraftCell } from '#lib/cashier-spv-drafts';
-  import { cashierRosterSaveErrorMessage } from '../cashier-roster-save-error';
+  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
+  import { cashierRosterChangesReflected } from '../cashier-roster-reconcile';
   import { addWorkDays, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
   import Feedback from './Feedback.svelte';
@@ -120,15 +122,28 @@
   async function save() {
     if (saving || !changes.length) return;
     saving = true; message = ''; failed = false;
+    const attemptedWeekStart = weekStart;
+    let attemptedChanges: CashierRosterChange[] = [];
     try {
-      validateRosterBatch($app, $app.user?.id ?? '', weekStart, changes.map(change => ({ ...change, reason: reason.trim() })));
-      const payload = JSON.stringify({ weekStart, changes: changes.map(change => ({ ...change, reason: reason.trim() })) });
+      attemptedChanges = changes.map(change => ({ ...change, reason: reason.trim() }));
+      validateRosterBatch($app, $app.user?.id ?? '', attemptedWeekStart, attemptedChanges);
+      const payload = JSON.stringify({ weekStart: attemptedWeekStart, changes: attemptedChanges });
       const attempt = cashierRosterIdempotencyAttempt(payload, { idempotencyFingerprint, idempotencyKey });
       idempotencyFingerprint = attempt.idempotencyFingerprint; idempotencyKey = attempt.idempotencyKey; persistDraft();
-      const result = await actions.saveCashierRosterBatch(weekStart, changes.map(change => ({ ...change, reason: reason.trim() })), idempotencyKey);
+      const result = await actions.saveCashierRosterBatch(attemptedWeekStart, attemptedChanges, idempotencyKey);
       message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
       persistDraft();
-    } catch (error) { failed = true; message = cashierRosterSaveErrorMessage(error); }
+    } catch (error) {
+      failed = true; message = cashierRosterSaveErrorMessage(error);
+      if (attemptedChanges.length && cashierRosterSaveOutcomeIsUncertain(error)) {
+        try { await actions.refresh(); } catch { /* Realtime may already have refreshed the store. */ }
+        if (cashierRosterChangesReflected(attemptedChanges, get(app).cashierAssignments ?? [])) {
+          drafts = {}; reason = ''; copyPreview = null; idempotencyFingerprint = ''; idempotencyKey = '';
+          failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
+          persistDraft();
+        }
+      }
+    }
     finally { saving = false; }
   }
   function selectWeek(nextWeek: string) {
@@ -141,23 +156,23 @@
 </script>
 
 <section class="weekly-planner">
-  <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
+  <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
   <Feedback {message} error={failed}/>
   <p class="notice">Jadwal lampau hanya dapat dilihat. Libur tetap adalah saran; jadwal tidak dibuat otomatis. Perubahan berbenturan, jadwal usang, atau tanggal dengan absensi akan ditolak sebelum disimpan.</p>
   {#if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft pada perangkat ini. Simpan jadwal sebelum menutup halaman.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
-  <div class="copy-tools"><button class="btn btn-secondary" type="button" on:click={showCopyPreview}>Pratinjau salin minggu sebelumnya</button>{#if copyPreview}<div class="copy-summary"><strong>Salin {copyPreview.sourceWeek} → {copyPreview.targetWeek}</strong><span>{copyPreview.changes.length} sel baru · {copyPreview.skipped} target sudah terisi{copyPreview.conflicts.length ? ` · ${copyPreview.conflicts.length} perlu diperiksa` : ''}{copySkippedDrafts ? ` · ${copySkippedDrafts} draft lokal dilewati` : ''}</span>{#if copyPreview.conflicts.length}<ul>{#each copyPreview.conflicts.slice(0,5) as conflict}<li>{conflict}</li>{/each}</ul>{/if}{#if copyPreview.changes.length}<button class="btn btn-primary" type="button" on:click={applyCopyPreview}>Terapkan sel kosong ke grid</button>{/if}</div>{/if}</div>
+  <div class="copy-tools"><button class="btn btn-secondary" type="button" disabled={saving} on:click={showCopyPreview}>Pratinjau salin minggu sebelumnya</button>{#if copyPreview}<div class="copy-summary"><strong>Salin {copyPreview.sourceWeek} → {copyPreview.targetWeek}</strong><span>{copyPreview.changes.length} sel baru · {copyPreview.skipped} target sudah terisi{copyPreview.conflicts.length ? ` · ${copyPreview.conflicts.length} perlu diperiksa` : ''}{copySkippedDrafts ? ` · ${copySkippedDrafts} draft lokal dilewati` : ''}</span>{#if copyPreview.conflicts.length}<ul>{#each copyPreview.conflicts.slice(0,5) as conflict}<li>{conflict}</li>{/each}</ul>{/if}{#if copyPreview.changes.length}<button class="btn btn-primary" type="button" disabled={saving} on:click={applyCopyPreview}>Terapkan sel kosong ke grid</button>{/if}</div>{/if}</div>
   {#if cashiers.length}
     <div class="table-scroll"><table class="week-grid"><thead><tr><th class="employee-col">Kasir</th>{#each days as day}<th><strong>{dayName(day)}</strong><small>{dateLabel(day)}</small></th>{/each}</tr></thead><tbody>
       {#each cashiers as employee (employee.id)}<tr><th class="employee-cell"><strong>{employee.fullName}</strong><small>{employee.employeeNumber}</small></th>{#each days as day (day)}{@const current = cell(employee.id, day, drafts)}{@const original = existingFor(employee.id, day)}{@const fixedOff = employee.weeklyOffDays.includes(new Date(`${day}T12:00:00Z`).getUTCDay())}<td class:readonly={day < today}>
         {#if day < today}<strong class="read-only-value">{shiftName(current.shift)}</strong><small>{current.shift ? ($app.outlets.find(outlet => outlet.id === current.outletId)?.name ?? '—') : fixedOff ? 'Libur tetap · belum dijadwalkan' : 'Belum dijadwalkan'}</small>
-        {:else}<select class="select shift-select" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="">Belum ditugaskan</option><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select>
-          {#if current.shift}<select class="select outlet-select" aria-label={`Outlet ${employee.fullName}, ${dateLabel(day)}`} value={current.outletId} on:change={(event) => changeCell(employee.id, day, 'outletId', event.currentTarget.value)}>{#each $app.outlets.filter(outlet => outlet.active || outlet.id === current.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select>{:else if fixedOff}<small class="off-hint">Libur tetap · saran</small>{/if}
+        {:else}<select class="select shift-select" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} disabled={saving} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="">Belum ditugaskan</option><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select>
+          {#if current.shift}<select class="select outlet-select" aria-label={`Outlet ${employee.fullName}, ${dateLabel(day)}`} disabled={saving} value={current.outletId} on:change={(event) => changeCell(employee.id, day, 'outletId', event.currentTarget.value)}>{#each $app.outlets.filter(outlet => outlet.active || outlet.id === current.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select>{:else if fixedOff}<small class="off-hint">Libur tetap · saran</small>{/if}
           {#if original?.status === 'cancelled' && current.shift}<small class="cancelled-hint">Aktifkan kembali jadwal batal</small>{/if}
         {/if}
       </td>{/each}</tr>{/each}
     </tbody></table></div>
   {:else}<p class="empty">Belum ada kasir aktif untuk dijadwalkan.</p>{/if}
-  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus diperbaiki</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}<button class="btn btn-primary" type="button" disabled={saving || !changes.length || reason.trim().length < 5 || conflicts.length > 0} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button></div></div>
+  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} disabled={saving} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus diperbaiki</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}<button class="btn btn-primary" type="button" disabled={saving || !changes.length || reason.trim().length < 5 || conflicts.length > 0} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button></div></div>
   {#if reason.trim().length > 0 && reason.trim().length < 5}<p class="validation-hint">Alasan perubahan minimal 5 karakter.</p>{/if}
   {#if warnings.length}<ul class="warnings">{#each [...new Set(warnings)].slice(0,6) as warning}<li>{warning}</li>{/each}</ul>{/if}
 

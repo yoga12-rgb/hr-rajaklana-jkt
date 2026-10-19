@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cashierRosterSaveErrorMessage } from './cashier-roster-save-error';
+import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsUncertain } from './cashier-roster-save-error';
 
 describe('cashier roster save errors', () => {
   it.each([
@@ -9,6 +9,7 @@ describe('cashier roster save errors', () => {
     Object.assign(new Error('Service Unavailable'), { status: 503 }),
     Object.assign(new Error('Request failed'), { status: 0 }),
   ])('offers a same-key retry for an uncertain transport failure', (error) => {
+    expect(cashierRosterSaveOutcomeIsUncertain(error)).toBe(true);
     const message = cashierRosterSaveErrorMessage(error);
     expect(message).toContain('Belum ada konfirmasi dari server');
     expect(message).toContain('Draft tetap tersimpan');
@@ -17,6 +18,7 @@ describe('cashier roster save errors', () => {
 
   it('preserves a database rejection instead of describing it as a retryable network error', () => {
     const error = Object.assign(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik.'), { code: 'P0001', status: 400 });
+    expect(cashierRosterSaveOutcomeIsUncertain(error)).toBe(false);
     expect(cashierRosterSaveErrorMessage(error)).toBe(error.message);
   });
 
