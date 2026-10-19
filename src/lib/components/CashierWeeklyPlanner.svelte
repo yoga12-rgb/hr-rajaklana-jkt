@@ -62,7 +62,16 @@
   function changeCell(employeeId: string, day: string, field: keyof Draft, value: string) {
     if (day < today) return;
     const current = cell(employeeId, day);
-    drafts = { ...drafts, [key(employeeId, day)]: { ...current, [field]: value } };
+    const next = { ...current, [field]: value } as Draft;
+    const existing = existingFor(employeeId, day);
+    const baseline: Draft = {
+      shift: existing?.status === 'active' ? existing.shift : '',
+      outletId: existing?.outletId ?? $app.employees.find(employee => employee.id === employeeId)?.outletId ?? ''
+    };
+    const nextDrafts = { ...drafts }, draftKey = key(employeeId, day);
+    if (next.shift === baseline.shift && next.outletId === baseline.outletId) delete nextDrafts[draftKey];
+    else nextDrafts[draftKey] = next;
+    drafts = nextDrafts;
     idempotencyFingerprint = ''; idempotencyKey = '';
     persistDraft();
   }

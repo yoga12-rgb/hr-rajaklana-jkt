@@ -199,6 +199,20 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.locator('.planner-heading')).toContainText('2026-10-26 – 2026-11-01');
   });
 
+  test('reverting the last weekly change clears the empty local draft', async ({ page }) => {
+    await login(page);
+    await page.goto('/assignments?week=2026-10-26');
+    const shift = page.getByLabel(/Shift Sari Lestari,/).first();
+    await shift.selectOption('morning');
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Uji batal draft jadwal');
+    await expect(page.getByRole('status')).toContainText('Draft jadwal tersimpan di perangkat dan akun ini');
+
+    await shift.selectOption('');
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('');
+    await expect(page.locator('.save-info')).toContainText('0 perubahan');
+    await expect(page.getByRole('status')).toHaveCount(0);
+  });
+
   test('weekly roster stays inside its horizontal scroll area on a phone viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page);
