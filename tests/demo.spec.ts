@@ -152,6 +152,31 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.locator('.requirement-list')).toContainText('0');
   });
 
+  test('weekly roster draft survives reload and is isolated by account and week', async ({ page }) => {
+    await login(page);
+    await page.goto('/assignments');
+    await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
+    const shift = page.getByLabel(/Shift Sari Lestari,/).first();
+    await shift.selectOption('morning');
+    const reason = 'Draft jadwal yang harus tetap tersimpan';
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill(reason);
+    await expect(page.getByRole('status')).toContainText('Draft jadwal tersimpan di perangkat dan akun ini');
+    await expect(page.locator('.save-info')).toContainText('1 perubahan');
+
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+    await expect(page.getByLabel(/Shift Sari Lestari,/).first()).toHaveValue('morning');
+    await expect(page.getByLabel('Alasan perubahan batch', { exact: true })).toHaveValue(reason);
+    await expect(page.locator('.save-info')).toContainText('1 perubahan');
+
+    await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
+    await expect(page.getByLabel('Alasan perubahan batch', { exact: true })).toHaveValue('');
+    await expect(page.locator('.save-info')).toContainText('0 perubahan');
+    await page.getByRole('button', { name: 'Minggu sebelumnya', exact: true }).click();
+    await expect(page.getByLabel('Alasan perubahan batch', { exact: true })).toHaveValue(reason);
+    await expect(page.getByLabel(/Shift Sari Lestari,/).first()).toHaveValue('morning');
+  });
+
   test('weekly roster stays inside its horizontal scroll area on a phone viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page);

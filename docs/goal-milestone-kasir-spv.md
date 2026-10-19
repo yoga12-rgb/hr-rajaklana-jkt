@@ -1,7 +1,7 @@
 # Goal dan Milestone Pengembangan Kasir untuk SPV
 
 Tanggal penyusunan: **19 Oktober 2026**
-Status: **Tahap A: M0–M3 selesai; M4 menunggu verifikasi lintas sesi/perangkat; M5 dirilis ke Preview. Tahap B belum dimulai.**
+Status: **Tahap A: M0–M3 selesai; M4 implementasi reconnect/draft selesai tetapi verifikasi hosted lintas sesi/perangkat masih tertunda; M5 dirilis ke Preview. Tahap B belum dimulai.**
 Baseline source: `94cd99326a2d34c836a8ef1a385eeebff5c126cb`
 Status pelaksanaan diperbarui: **19 Oktober 2026**
 
@@ -210,9 +210,12 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 
 - [x] Tambahkan tabel baru pada langganan Realtime tunggal yang dipakai aplikasi.
 - [x] Perubahan jadwal, absensi, cuti, minimum, dan kasus memicu refetch state.
+- [x] Status koneksi mengikuti status kanal Realtime; kanal yang kembali berlangganan melakukan refetch untuk menyelaraskan state.
 - [x] Kelompokkan pemberitahuan live per penerima/batch dan demo per penerima/minggu.
 - [x] Isi pemberitahuan bersifat umum dan halaman rincian tetap memerlukan autentikasi.
-- [ ] Verifikasi pembaruan lintas dua sesi Preview, reconnect, app resume, retry submit, dan PWA tanpa kehilangan draft.
+- [x] Simpan draft jadwal lokal per akun/minggu, alasan batch, minggu terpilih, dan kunci retry; tes browser membuktikan pemulihan setelah reload dan pemisahan minggu.
+- [ ] Verifikasi pembaruan lintas dua sesi Preview, reconnect jaringan kanal, app resume, dan retry submit terhadap Supabase hosted.
+- [ ] Uji PWA/iPhone manual untuk memastikan draft dan sesi kembali dengan baik setelah app ditutup OS.
 - [x] Pertahankan tema kuning, status teks, tombol sentuh, dan fokus kontrol.
 - [x] Uji grid horizontal pada viewport ponsel tanpa memperlebar halaman.
 
@@ -235,10 +238,11 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 #### Catatan pelaksanaan — 19 Oktober 2026
 
 - Implementasi domain, panel SPV, grid mingguan, kebutuhan minimum, transaksi database, RLS, audit, dan pemberitahuan selesai pada source lokal.
-- Lulus: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (316 test), `npm.cmd run test:database` (migration dan pemeriksaan keamanan), `npm.cmd run test:database:legacy` (seluruh fixture), `npm.cmd run build`, serta Playwright demo lokal (12 lulus, 1 dilewati).
+- Lulus pada source sebelum pemulihan draft: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (316 test), `npm.cmd run test:database` (migration dan pemeriksaan keamanan), `npm.cmd run test:database:legacy` (seluruh fixture), `npm.cmd run build`, serta Playwright demo lokal (12 lulus, 1 dilewati).
+- Setelah audit M4: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (322 test), `npm.cmd run test:database`, `npm.cmd run test:database:legacy`, `npm.cmd run build`, dan Playwright demo lokal (13 lulus, 1 dilewati). Tes tambahan memuat ulang editor mingguan dan memeriksa pemulihan draft/alasan serta isolasi minggu.
 - Harness database bersifat lokal/PGlite; Playwright memakai demo lokal. Keduanya bukan bukti autentikasi atau perilaku perangkat hosted.
 - Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat lokal dan remote cocok pada seluruh 13 migration; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
-- Belum terverifikasi: perubahan Realtime antara dua sesi Preview, reconnect/app resume, serta uji manual iPhone/PWA. Production belum diubah.
+- Belum terverifikasi: perubahan Realtime antara dua sesi Preview dengan akun aplikasi, reconnect/app resume hosted, serta uji manual iPhone/PWA. Tes browser lokal memakai demo; itu bukan bukti Realtime hosted. Production belum diubah.
 - Rilis Preview: commit `2db4728123085687f91f550a3dfe023277bf2eff` (`feat: add cashier SPV readiness and weekly roster`), Vercel deployment `dpl_J55Mk7XkddN8drfxRgU5vf2eDD3m`, status **Ready**. Alias: [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). `vercel curl` terautentikasi mengembalikan HTTP 200 untuk `/login`; proteksi deployment tetap aktif.
 
 ## 8. Milestone Tahap B — roadmap sesudah Tahap A

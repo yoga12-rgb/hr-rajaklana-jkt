@@ -8,6 +8,7 @@
     "#lib/types": "./src/lib/types.ts",
     "#lib/domain": "./src/lib/domain.ts",
     "#lib/cashier-spv": "./src/lib/cashier-spv.ts",
+    "#lib/cashier-spv-drafts": "./src/lib/cashier-spv-drafts.ts",
     "#lib/selfie": "./src/lib/selfie.ts",
     "#lib/attendance-status": "./src/lib/attendance-status.ts",
     "#lib/attendance-geo": "./src/lib/attendance-geo.ts",

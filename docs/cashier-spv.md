@@ -32,6 +32,8 @@ Tombol **Pratinjau salin minggu sebelumnya** hanya mengisi sel target yang belum
 
 Satu penyimpanan dapat memuat beberapa kasir dan hari. Server memeriksa semua perubahan dan menolak seluruh batch bila satu baris tidak valid, ada absensi pada tanggal itu, snapshot jadwal telah berubah, atau shift berbenturan dengan cuti penuh yang disetujui. Jadwal harian tetap dapat dibuka dari tautan tanggal pada panel. Kasir akan menerima satu pemberitahuan jadwal mingguan per batch, bukan pemberitahuan terpisah untuk setiap harinya.
 
+Perubahan shift, outlet, alasan, dan kunci percobaan ulang disimpan sebagai draft pada browser untuk akun dan minggu yang sedang dipilih. Minggu yang dipilih juga dipertahankan pada alamat halaman, sehingga draft kembali saat halaman dibuka ulang. Draft ini hanya ada di perangkat/browser yang sama dan belum menjadi jadwal bersama sebelum tombol simpan berhasil. Jika browser menolak penyimpanan lokal, aplikasi menampilkan peringatan agar jadwal disimpan sebelum halaman ditutup.
+
 Jika muncul pesan **Jadwal berubah sejak pratinjau**, muat ulang halaman dan periksa kembali jadwal yang sudah diperbarui sebelum mengirim ulang. Jangan mengulang perubahan dengan alasan atau key yang berbeda tanpa memeriksa hasil penyimpanan sebelumnya.
 
 ## Batas pemakaian dan lingkungan

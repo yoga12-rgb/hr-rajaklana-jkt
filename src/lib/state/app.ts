@@ -18,6 +18,7 @@ let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
 let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
 let refreshRequested = false;
+let realtimeSubscribed = false;
 let authRevision = 0;
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -150,8 +151,10 @@ async function refresh() {
 }
 function clearLiveState(error: string | null = null) {
   app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
-  if (channel && supabase) void supabase.removeChannel(channel);
+  const previousChannel = channel;
   channel = null;
+  realtimeSubscribed = false;
+  if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
 }
 async function readAll(table: string, fields = '*'): Promise<any[]> {
   if (!supabase) return [];
@@ -220,11 +223,17 @@ async function refreshNow() {
       createdAt: r.created_at, updatedAt: r.updated_at, reopenedCount: r.reopened_count ?? 0 }));
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     if (!channel) {
-      channel = supabase.channel(`hr-${session.user.id}`);
+      const sessionChannel = supabase.channel(`hr-${session.user.id}`);
+      channel = sessionChannel;
       for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
-      channel.subscribe(() => app.update(s => ({ ...s, connected: navigator.onLine })));
+      sessionChannel.subscribe(status => {
+        if (channel !== sessionChannel) return;
+        realtimeSubscribed = status === 'SUBSCRIBED';
+        app.update(s => ({ ...s, connected: navigator.onLine && realtimeSubscribed }));
+        if (realtimeSubscribed) void refresh();
+      });
     }
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
@@ -266,7 +275,7 @@ export const actions = {
     if (get(app).initialized) return;
     if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) void refresh(); }, 60000); }
     else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
-    window.addEventListener('online', () => { app.update(s => ({ ...s, connected: true })); void refresh(); });
+    window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); void refresh(); });
     window.addEventListener('offline', () => app.update(s => ({ ...s, connected: false })));
     window.addEventListener('focus', () => void refresh());
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void refresh(); });
@@ -281,7 +290,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (channel && supabase) await supabase.removeChannel(channel); channel = null; if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; const previousChannel = channel; channel = null; realtimeSubscribed = false; if (previousChannel && supabase) await supabase.removeChannel(previousChannel); if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
