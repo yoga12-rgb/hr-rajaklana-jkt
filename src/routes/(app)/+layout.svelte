@@ -7,10 +7,14 @@
   import NotificationCenter from '#lib/components/NotificationCenter.svelte';
   import { onMount } from 'svelte';
   import { validateApplicationEnvironment } from '../../lib/configuration';
+  import { connectionIndicator } from '../../lib/connection-status';
   const applicationEnvironment = validateApplicationEnvironment(import.meta.env.PUBLIC_APP_ENV);
   let installEvent: (Event & { prompt(): Promise<void> }) | null = null;
+  let networkOnline = true;
   $: admin = isAdmin($app.user);
   $: cashier = isCashier($app.user);
+  $: connectionStatus = connectionIndicator($app.connected, networkOnline);
+  $: connectionLabel = connectionStatus === 'connected' ? 'Terhubung' : connectionStatus === 'connecting' ? 'Menyambungkan' : 'Offline';
   $: nav = [
     { href:'/dashboard',label:'Beranda',icon:'home' },
     ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }, { href:'/assignments',label:'Penugasan harian',icon:'calendar' }] : []),
@@ -23,7 +27,16 @@
   $: if ($app.initialized && !$app.user) void goto('/login', { replaceState:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };
-    window.addEventListener('beforeinstallprompt',handler); return () => window.removeEventListener('beforeinstallprompt',handler);
+    const updateNetwork = () => { networkOnline = navigator.onLine; };
+    updateNetwork();
+    window.addEventListener('online', updateNetwork);
+    window.addEventListener('offline', updateNetwork);
+    window.addEventListener('beforeinstallprompt',handler);
+    return () => {
+      window.removeEventListener('online', updateNetwork);
+      window.removeEventListener('offline', updateNetwork);
+      window.removeEventListener('beforeinstallprompt',handler);
+    };
   });
   async function install() { await installEvent?.prompt(); installEvent = null; }
   async function logout() { await actions.logout(); await goto('/login'); }
@@ -39,11 +52,11 @@
     <div class="sidebar-bottom">{#if installEvent}<button class="install" on:click={install}><Icon name="download" size={17}/>Pasang aplikasi</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" on:click={logout}><Icon name="logout" size={17}/>Keluar akun</button><small>Rajaklana HR · v0.1</small></div>
   </aside>
   <div class="main-area">
-    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={!$app.connected}><span></span>{$app.connected?'Terhubung':'Offline'}</span><NotificationCenter/><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
+    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span><NotificationCenter/><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
       {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
       {#if $app.mode==='demo'}<div class="demo-strip"><span><Icon name="info" size={15}/><strong>Mode demo</strong> · Data contoh tersimpan di browser ini.</span><a href="/profile">Ganti akun contoh <Icon name="arrow-right" size={13}/></a></div>{/if}
-      {#if !$app.connected}<div class="error">Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.</div>{/if}
+      {#if !networkOnline}<div class="error">Internet terputus. Absensi dan penyimpanan data memerlukan koneksi internet.</div>{/if}
       {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" on:click={()=>actions.refresh()}>Coba lagi</button></div>{/if}
       <slot />
       <footer class="footer"><span>Rajaklana · Jabodetabek</span><span>Setiap orang, satu ruang kerja.</span></footer>
@@ -87,6 +100,8 @@
 .connection > span { width: 6px; height: 6px; border-radius: 50%; background: #796d44; }
 .connection.offline { color: #865525; }
 .connection.offline > span { background: #ac7439; }
+.connection.connecting { color: #88713a; }
+.connection.connecting > span { background: #c49d25; }
 .account { display: flex; align-items: center; gap: 10px; }
 .avatar { width: 38px; height: 38px; border-radius: 13px; background: var(--surface); box-shadow: var(--raised-sm); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
 .account strong { display: block; font-size: 11px; }

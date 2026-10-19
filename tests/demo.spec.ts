@@ -109,11 +109,12 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
 
     await page.context().setOffline(true);
     await expect(connection).toHaveText('Offline');
-    await expect(page.getByText('Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.', { exact: true })).toBeVisible();
+    const offlineNotice = page.getByText('Internet terputus. Absensi dan penyimpanan data memerlukan koneksi internet.', { exact: true });
+    await expect(offlineNotice).toBeVisible();
 
     await page.context().setOffline(false);
     await expect(connection).toHaveText('Terhubung');
-    await expect(page.getByText('Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.', { exact: true })).toHaveCount(0);
+    await expect(offlineNotice).toHaveCount(0);
   });
 
   test('mobile cashier navigation is usable and restricted employee pages stay protected', async ({ page }) => {
