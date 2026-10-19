@@ -242,8 +242,8 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - Setelah audit M4: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (322 test), `npm.cmd run test:database`, `npm.cmd run test:database:legacy`, `npm.cmd run build`, dan Playwright demo lokal (13 lulus, 1 dilewati). Tes tambahan memuat ulang editor mingguan dan memeriksa pemulihan draft/alasan serta isolasi minggu.
 - Harness database bersifat lokal/PGlite; Playwright memakai demo lokal. Keduanya bukan bukti autentikasi atau perilaku perangkat hosted.
 - Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat lokal dan remote cocok pada seluruh 13 migration; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
-- Belum terverifikasi: perubahan Realtime antara dua sesi Preview dengan akun aplikasi, reconnect/app resume hosted, serta uji manual iPhone/PWA. Tes browser lokal memakai demo; itu bukan bukti Realtime hosted. Production belum diubah.
-- Rilis Preview: commit `2db4728123085687f91f550a3dfe023277bf2eff` (`feat: add cashier SPV readiness and weekly roster`), Vercel deployment `dpl_J55Mk7XkddN8drfxRgU5vf2eDD3m`, status **Ready**. Alias: [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). `vercel curl` terautentikasi mengembalikan HTTP 200 untuk `/login`; proteksi deployment tetap aktif.
+- Belum terverifikasi: perubahan Realtime antara dua sesi Preview dengan akun aplikasi, reconnect/app resume hosted, serta uji manual iPhone/PWA. Tes browser lokal memakai demo; itu bukan bukti Realtime hosted. Pemeriksaan Vercel Preview hanya memberikan URL dan kunci publik; `SUPABASE_SERVICE_ROLE_KEY` tidak tersedia pada proses lokal, dan belum ada dua sesi Preview terautentikasi yang dapat dipakai untuk pengujian lintas sesi. Production belum diubah.
+- Rilis Preview terbaru: commit `4053f353a92f42a5dcf5b2993d9c5ba1e1b68130` (`feat: preserve cashier roster drafts and realtime state`), Vercel deployment `dpl_7JkzGQTxex9ejABk8d9YghH7Ygt5`, status **Ready**. Alias: [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). `vercel curl` terautentikasi mengembalikan HTTP 200 untuk `/login`; proteksi deployment tetap aktif.
 
 ## 8. Milestone Tahap B — roadmap sesudah Tahap A
 
@@ -450,8 +450,8 @@ Agent melengkapi laporan per milestone dengan:
 
 ```text
 Lanjutkan dari status aktual di docs/goal-milestone-kasir-spv.md.
-M0–M3 selesai dan M5 sudah dirilis ke Preview pada commit
-2db4728123085687f91f550a3dfe023277bf2eff. Selesaikan verifikasi M4 yang tersisa:
+M0–M3 selesai dan pembaruan terakhir M5 sudah dirilis ke Preview pada commit
+4053f353a92f42a5dcf5b2993d9c5ba1e1b68130. Selesaikan verifikasi M4 yang tersisa:
 pembaruan dua sesi/reconnect/app resume dan uji PWA jika sesi Preview
 terautentikasi tersedia. Jangan mengubah Production atau main.
 
