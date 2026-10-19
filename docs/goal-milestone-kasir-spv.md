@@ -1,7 +1,7 @@
 # Goal dan Milestone Pengembangan Kasir untuk SPV
 
 Tanggal penyusunan: **19 Oktober 2026**
-Status: **Tahap A berjalan: M0–M3 selesai; M4 menunggu verifikasi lintas sesi; M5 menunggu rilis Preview. Tahap B belum dimulai.**
+Status: **Tahap A: M0–M3 selesai; M4 menunggu verifikasi lintas sesi/perangkat; M5 dirilis ke Preview. Tahap B belum dimulai.**
 Baseline source: `94cd99326a2d34c836a8ef1a385eeebff5c126cb`
 Status pelaksanaan diperbarui: **19 Oktober 2026**
 
@@ -226,7 +226,7 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - [x] Perbarui kontrak backend, panduan pengguna, dan laporan progres dengan hasil aktual.
 - [x] Dokumentasikan cara mengatur minimum, menyalin minggu, membaca indikator, dan menangani konflik.
 - [x] Tinjau migration/RLS serta verifikasi target Preview; satu migration telah diterapkan hanya ke Supabase Preview.
-- [ ] Push branch Preview, verifikasi deployment/CI, API dan versi migration yang sama pada aplikasi Preview.
+- [x] Push branch Preview; deployment Vercel READY, halaman login merespons HTTP 200, dan 13 migration lokal cocok dengan Supabase Preview.
 - [x] Production tetap di luar ruang lingkup dan tidak menerima perubahan atau deployment.
 - [x] Catat uji pengguna/iPhone yang ditunda sebagai **belum diuji**; jangan melaporkannya lulus dari hasil unit test.
 
@@ -237,9 +237,9 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - Implementasi domain, panel SPV, grid mingguan, kebutuhan minimum, transaksi database, RLS, audit, dan pemberitahuan selesai pada source lokal.
 - Lulus: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1` (316 test), `npm.cmd run test:database` (migration dan pemeriksaan keamanan), `npm.cmd run test:database:legacy` (seluruh fixture), `npm.cmd run build`, serta Playwright demo lokal (12 lulus, 1 dilewati).
 - Harness database bersifat lokal/PGlite; Playwright memakai demo lokal. Keduanya bukan bukti autentikasi atau perilaku perangkat hosted.
-- Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat 12 migration sebelumnya cocok; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
+- Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat lokal dan remote cocok pada seluruh 13 migration; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
 - Belum terverifikasi: perubahan Realtime antara dua sesi Preview, reconnect/app resume, serta uji manual iPhone/PWA. Production belum diubah.
-- Status deployment Vercel Preview/CI akan dicatat setelah branch `codex/preview` diperbarui dan hasil READY diperiksa.
+- Rilis Preview: commit `2db4728123085687f91f550a3dfe023277bf2eff` (`feat: add cashier SPV readiness and weekly roster`), Vercel deployment `dpl_J55Mk7XkddN8drfxRgU5vf2eDD3m`, status **Ready**. Alias: [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). `vercel curl` terautentikasi mengembalikan HTTP 200 untuk `/login`; proteksi deployment tetap aktif.
 
 ## 8. Milestone Tahap B — roadmap sesudah Tahap A
 
@@ -435,7 +435,7 @@ Agent melengkapi laporan per milestone dengan:
 - [x] M2 — Panel outlet dan tindak lanjut.
 - [x] M3 — Jadwal mingguan dan kebutuhan kasir.
 - [ ] M4 — Integrasi realtime, notifikasi, dan ponsel (lintas sesi masih perlu diverifikasi).
-- [ ] M5 — Validasi dan handoff/rilis Tahap A.
+- [x] M5 — Validasi dan rilis Preview Tahap A (uji lintas sesi M4 masih tertunda).
 - [ ] M6 — Tukar shift/pengganti.
 - [ ] M7 — Serah terima shift.
 - [ ] M8 — Laporan kendala.
@@ -446,9 +446,9 @@ Agent melengkapi laporan per milestone dengan:
 
 ```text
 Lanjutkan dari status aktual di docs/goal-milestone-kasir-spv.md.
-M0–M3 telah diimplementasikan. Selesaikan M4–M5 yang tersisa: rilis hanya ke
-branch codex/preview, verifikasi deployment Vercel Preview dan versi schema
-Supabase Preview, lalu uji pembaruan dua sesi/reconnect jika sesi Preview
+M0–M3 selesai dan M5 sudah dirilis ke Preview pada commit
+2db4728123085687f91f550a3dfe023277bf2eff. Selesaikan verifikasi M4 yang tersisa:
+pembaruan dua sesi/reconnect/app resume dan uji PWA jika sesi Preview
 terautentikasi tersedia. Jangan mengubah Production atau main.
 
 Jangan membangun ulang fitur M0–M3. Jangan memulai M6–M10 sebelum kriteria
