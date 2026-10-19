@@ -102,6 +102,20 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     }
   });
 
+  test('connection status recovers when the browser reconnects', async ({ page }) => {
+    await login(page);
+    const connection = page.locator('.connection');
+    await expect(connection).toHaveText('Terhubung');
+
+    await page.context().setOffline(true);
+    await expect(connection).toHaveText('Offline');
+    await expect(page.getByText('Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.', { exact: true })).toBeVisible();
+
+    await page.context().setOffline(false);
+    await expect(connection).toHaveText('Terhubung');
+    await expect(page.getByText('Koneksi terputus. Absensi dan penyimpanan data memerlukan internet.', { exact: true })).toHaveCount(0);
+  });
+
   test('mobile cashier navigation is usable and restricted employee pages stay protected', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page, 'Kasir');
