@@ -219,7 +219,8 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - [x] Hapus entri draft lokal saat shift/outlet dikembalikan ke nilai jadwal awal; regresi browser memastikan status draft kosong hilang.
 - [x] Uji PWA pada build produksi lokal: manifest, ikon, service worker, batas cache, dan shell saat offline.
 - [x] Uji retry RPC idempoten pada Supabase Preview dengan kunci dan payload identik; hasil serta ID batch sama.
-- [ ] Uji reconnect kanal saat jaringan nyata terputus dan pemulihan setelah aplikasi kembali aktif.
+- [x] Uji tab Preview kembali aktif setelah perpindahan tab browser; status tetap **Terhubung** tanpa error JavaScript.
+- [ ] Uji reconnect kanal setelah jaringan nyata terputus dan pemulihan PWA setelah aplikasi kembali dari latar OS.
 - [ ] Uji retry dari UI setelah respons jaringan ambigu di Preview.
 - [ ] Uji manual di iPhone/iPad untuk memastikan pemasangan dan pemulihan setelah aplikasi ditutup OS.
 - [x] Pertahankan tema kuning, status teks, tombol sentuh, dan fokus kontrol.
@@ -252,9 +253,10 @@ Checklist berikut mencatat bukti implementasi aktual. M4 baru selesai setelah pe
 - Migration `20261019061522_cashier_spv_weekly_roster.sql` sudah diterapkan ke Supabase Preview `lypsqrwjzrmuyqtdcegr`. Riwayat lokal dan remote cocok pada seluruh 13 migration; metadata Preview mengonfirmasi RLS pada tabel baru, empat RPC aman hanya untuk `authenticated`, dan dua tabel terbit di publikasi Realtime.
 - Uji hosted Realtime pada 19 Oktober 2026: Admin HR membuka Preview di dua tab, menetapkan shift Pagi sementara untuk RK000003 pada 26 Oktober, dan perubahan tampil di tab kedua tanpa refresh. Penugasan kemudian dikosongkan kembali dan kedua tab menunjukkan nol perubahan tersimpan. Dua catatan audit dari aksi uji tetap tercatat. Ini membuktikan sinkronisasi dua tab untuk akun yang sama; belum membuktikan dua akun berbeda atau perilaku reconnect.
 - Smoke test hosted pada 19 Oktober 2026: tab Preview baru dan reload mempertahankan sesi Admin HR serta kembali ke status **Terhubung**. Ini membuktikan pemulihan sesi/data setelah reload; tidak membuktikan app resume dari latar belakang iPhone.
+- Uji tab aktif Preview pada 19 Oktober 2026: tab kosong dibuka lalu ditutup untuk memicu perpindahan visibilitas browser; halaman jadwal kembali menunjukkan **Terhubung** dan **0 perubahan**, tanpa error JavaScript. Ini memverifikasi fokus/visibilitas tab desktop, bukan putus-sambung jaringan atau resume aplikasi dari latar OS.
 - Uji retry hosted pada 19 Oktober 2026: RPC `cashier_roster_batch_save` dipanggil sebagai `authenticated` dua kali dengan kunci dan payload yang sama; respons identik, ID batch sama, dan `saved_count=1`. Seluruh panggilan ada dalam transaksi yang di-rollback, sehingga tidak meninggalkan jadwal, audit, atau notifikasi uji. Ini membuktikan perilaku retry RPC di Supabase Preview; retry UI setelah respons jaringan ambigu belum diuji.
 - Pembersihan draft hosted pada 19 Oktober 2026: draft kosong dari uji sebelumnya dipulihkan pada versi baru, lalu shift uji dipilih dan dikembalikan melalui UI. Status draft tersimpan hilang, indikator tetap `0 perubahan`, dan tidak ada batch yang dikirim ke server.
-- Perbaikan tambahan: tautan `?week=YYYY-MM-DD` kini dipakai saat planner pertama kali dimuat, termasuk sesudah reload dengan sesi login; navigasi minggu tetap membaca URL browser terbaru agar draft terpisah per minggu. Tes browser regresi mencakup tautan langsung, reload, isolasi draft, dan simulasi status jaringan lokal. Reconnect kanal Realtime saat jaringan nyata putus, app resume, retry UI setelah respons ambigu, serta uji manual iPhone masih belum terverifikasi. Tes browser lokal memakai demo dan tidak menggantikan uji hosted.
+- Perbaikan tambahan: tautan `?week=YYYY-MM-DD` kini dipakai saat planner pertama kali dimuat, termasuk sesudah reload dengan sesi login; navigasi minggu tetap membaca URL browser terbaru agar draft terpisah per minggu. Tes browser regresi mencakup tautan langsung, reload, isolasi draft, dan simulasi status jaringan lokal. Reconnect kanal Realtime saat jaringan nyata putus, app resume dari latar OS, retry UI setelah respons ambigu, serta uji manual iPhone masih belum terverifikasi. Tes browser lokal memakai demo dan tidak menggantikan uji hosted.
 - Rilis Preview aplikasi: commit `4881a4adca586fafb157323b20e9f62cc189bc31` (`fix: clear reverted weekly roster drafts`), Vercel deployment `dpl_9tSiGgxyXjtc15sR89ANfwT7Fv3Z`, status **Ready**, URL deployment `https://hr-rajaklana-od6ck0sxa-hr-rajaklana.vercel.app`, alias [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app/). Halaman `/assignments?week=2026-10-26` terautentikasi menampilkan rentang `2026-10-26 – 2026-11-01`. Build Vercel menjalankan `npm run check && npm run build`. Production tidak diubah.
 
 ## 8. Milestone Tahap B — roadmap sesudah Tahap A
@@ -450,7 +452,7 @@ Agent melengkapi laporan per milestone dengan:
 - [x] M1 — Fondasi data, domain, dan akses.
 - [x] M2 — Panel outlet dan tindak lanjut.
 - [x] M3 — Jadwal mingguan dan kebutuhan kasir.
-- [ ] M4 — Integrasi realtime, notifikasi, dan ponsel (uji dua tab lulus; reconnect dan PWA/iPhone masih tertunda).
+- [ ] M4 — Integrasi realtime, notifikasi, dan ponsel (uji dua tab serta visibilitas tab browser lulus; reconnect jaringan nyata dan resume/iPhone masih tertunda).
 - [x] M5 — Validasi dan rilis Preview Tahap A (rilis kode terbaru Ready; uji perangkat M4 masih tertunda).
 - [ ] M6 — Tukar shift/pengganti.
 - [ ] M7 — Serah terima shift.
@@ -462,11 +464,12 @@ Agent melengkapi laporan per milestone dengan:
 
 ```text
 Lanjutkan dari status aktual di docs/goal-milestone-kasir-spv.md.
-M0–M3 selesai dan M5 sudah dirilis ke Preview pada commit
-4881a4adca586fafb157323b20e9f62cc189bc31. Uji Realtime dua tab Preview,
-deep link, sesi setelah reload, draft kosong, dan shell offline PWA lokal telah lulus.
-Selesaikan verifikasi M4 yang tersisa: reconnect/app resume dan retry submit
-hosted, serta uji manual iPhone/iPad jika perangkat tersedia. Jangan mengubah
+M0–M3 selesai dan M5 sudah dirilis ke Preview. Uji Realtime dua tab Preview,
+deep link, sesi setelah reload, visibilitas tab, retry RPC idempoten hosted,
+draft kosong, dan shell offline PWA lokal telah lulus.
+Selesaikan verifikasi M4 yang tersisa: reconnect setelah jaringan nyata
+terputus, resume PWA dari latar OS, retry UI setelah respons jaringan ambigu,
+serta uji manual iPhone/iPad jika perangkat tersedia. Jangan mengubah
 Production atau main.
 
 Jangan membangun ulang fitur M0–M3. Jangan memulai M6–M10 sebelum kriteria
