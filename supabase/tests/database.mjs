@@ -44,6 +44,7 @@ const employeeMutexFunctions = [
   'public.claim_account_token', 'public.attendance_clock_in',
   'public.attendance_clock_out', 'public.attendance_correct',
   'public.attendance_record_manual', 'public.cashier_assignment_save',
+  'public.cashier_roster_batch_save',
   'public.attendance_correction_submit', 'public.attendance_correction_cancel',
   'public.attendance_correction_decide', 'public.leave_record_retrospective',
   'public.biometric_enroll_server', 'public.biometric_review',
@@ -693,6 +694,10 @@ await db.exec('reset role');
 const operationalAuth='10000000-0000-0000-0000-000000000088',operationalId='20000000-0000-0000-0000-000000000088';
 for(const signature of [
   'public.cashier_assignment_save(uuid,date,uuid,text,text,uuid,boolean)',
+  'public.staffing_requirement_save(uuid,integer,text,integer,date)',
+  'public.cashier_roster_batch_save(date,uuid,jsonb)',
+  'public.spv_followup_start(text,date,uuid,uuid,text,text,uuid)',
+  'public.spv_followup_update(uuid,text,uuid,text,text)',
   'public.attendance_correction_submit(uuid,date,timestamptz,timestamptz,text,text)',
   'public.attendance_correction_decide(uuid,boolean,text)','public.attendance_correction_cancel(uuid)',
   'public.leave_record_retrospective(uuid,text,date,date,text,text,time,time,jsonb,text,text)',
@@ -803,11 +808,78 @@ const operationalInbox=(await db.query("select entity_type,href,body from public
 assert.ok(operationalInbox.some(n=>n.entity_type==='assignment' && n.href===`/assignments?date=${clock.today}`));
 assert.ok(operationalInbox.some(n=>n.entity_type==='attendance_correction' && n.href===`/attendance?request=${correction.id}`));
 assert.ok(operationalInbox.every(n=>!n.body.includes('Kamera gagal')),'notifications do not expose sensitive exception reasons');
+
+// SPV staffing, a multi-day idempotent roster batch, and durable follow-up.
+await asUser(adminAuth);
+const nextWeek=await scalar(`select ((now() at time zone 'Asia/Jakarta')::date+(8-extract(isodow from now() at time zone 'Asia/Jakarta')::int))::text as monday`);
+const batchDays=await scalar('select ($1::date)::text as first,($1::date+1)::text as second,($1::date+2)::text as third,($1::date+3)::text as fourth',[nextWeek.monday]);
+const staffingWeekday=(await scalar("select extract(dow from $1::date)::int as weekday",[batchDays.first])).weekday;
+const requirement0=(await scalar("select to_jsonb(public.staffing_requirement_save($1,$2,'morning',0,$3)) as row",[alternateOutlet.id,staffingWeekday,nextWeek.monday])).row;
+assert.equal(requirement0.minimum,0,'zero is a saved no-staff-needed target, not an unset requirement');
+const requirement2=(await scalar("select to_jsonb(public.staffing_requirement_save($1,$2,'morning',2,$3)) as row",[alternateOutlet.id,staffingWeekday,nextWeek.monday])).row;
+assert.equal(requirement2.id,requirement0.id,'one effective date is updated rather than duplicated');
+assert.equal(requirement2.minimum,2);
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='staffing_requirement' and entity_id=$1",[requirement0.id])).count,2);
+assert.equal((await db.query('select id from public.staffing_requirements where id=$1',[requirement0.id])).rows.length,1,'Admin HR can read staffing history');
+
+const batchKey='30000000-0000-0000-0000-000000000088';
+const batchChanges=[batchDays.first,batchDays.second].map((work_date,index)=>({id:null,employee_id:operationalId,work_date,outlet_id:alternateOutlet.id,
+  shift:index===0?'morning':'afternoon',reason:'Pembagian kebutuhan kasir minggu depan',expected_updated_at:null,cancel:false}));
+const batchResult=(await scalar('select public.cashier_roster_batch_save($1,$2,$3::jsonb) as result',[nextWeek.monday,batchKey,JSON.stringify(batchChanges)])).result;
+assert.equal(batchResult.saved_count,2,'both dates save in one batch');
+assert.equal(batchResult.assignments.length,2);
+assert.deepEqual((await scalar('select public.cashier_roster_batch_save($1,$2,$3::jsonb) as result',[nextWeek.monday,batchKey,JSON.stringify(batchChanges)])).result,batchResult,'retry returns the same committed result');
+const mismatchedRetry=batchChanges.map(row=>({...row,reason:'Isi ulang batch berbeda'}));
+await workflowError('select public.cashier_roster_batch_save($1,$2,$3::jsonb)',[nextWeek.monday,batchKey,JSON.stringify(mismatchedRetry)],'sudah dipakai');
+const staleChange={...batchChanges[0],id:batchResult.assignments[0].id,expected_updated_at:'2000-01-01T00:00:00Z',shift:'afternoon'};
+await workflowError('select public.cashier_roster_batch_save($1,$2,$3::jsonb)',[nextWeek.monday,'30000000-0000-0000-0000-000000000089',JSON.stringify([staleChange])],'berubah sejak pratinjau');
+const badBatch=[
+  {...batchChanges[0],work_date:batchDays.third,reason:'Baris valid yang harus ikut rollback'},
+  {...batchChanges[1],work_date:batchDays.fourth,outlet_id:'ffffffff-ffff-4fff-8fff-ffffffffffff',reason:'Baris kedua gagal validasi'}
+];
+await workflowError('select public.cashier_roster_batch_save($1,$2,$3::jsonb)',[nextWeek.monday,'30000000-0000-0000-0000-000000000090',JSON.stringify(badBatch)],'query returned no rows');
+assert.equal((await scalar('select count(*)::int as count from public.cashier_assignments where employee_id=$1 and work_date in ($2::date,$3::date)',[operationalId,batchDays.third,batchDays.fourth])).count,0,'a failed row rolls back every schedule in its batch');
+
+const followDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-2)::text as day")).day;
+const followAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Penugasan historis untuk tindak lanjut SPV')) as row",[operationalId,followDate,alternateOutlet.id])).row;
+const followArgs=['missing_clockin',followDate,alternateOutlet.id,operationalId,'morning','assignment',followAssignment.id];
+const follow=(await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row;
+assert.equal(follow.status,'new');
+assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row.id,follow.id,'refresh/retry reuses one case');
+const inProgress=(await scalar("select to_jsonb(public.spv_followup_update($1,'in_progress',$2,$3,'')) as row",[follow.id,adminId,'Menghubungi kasir untuk konfirmasi'])).row;
+assert.equal(inProgress.owner_id,adminId);
+const completed=(await scalar("select to_jsonb(public.spv_followup_update($1,'completed',$2,$3,$4)) as row",[follow.id,adminId,'Kasir memberi penjelasan','Konfirmasi langsung selesai dan dicatat'])).row;
+assert.equal(completed.status,'completed');
+const reopened=(await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row;
+assert.equal(reopened.status,'new');
+assert.equal(reopened.reopened_count,1,'a recurring source reopens the same audited case');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,4);
+const leaveOnlyDate=await scalar(`select d::date::text as day from generate_series(
+  (now() at time zone 'Asia/Jakarta')::date-10,(now() at time zone 'Asia/Jakarta')::date-1,interval '1 day') d
+  where not exists(select 1 from unnest((select weekly_off_days from public.employees where id=$1)) off_day(value)
+    where off_day.value=extract(dow from d::date)::int)
+  and not exists(select 1 from public.cashier_assignments a where a.employee_id=$1 and a.work_date=d::date)
+  and not exists(select 1 from public.attendance a where a.employee_id=$1 and a.work_date=d::date)
+  and not exists(select 1 from public.leave_requests l where l.employee_id=$1 and l.status='approved' and l.starts_on<=d::date and l.ends_on>=d::date)
+  order by d desc limit 1`,[operationalId]);
+await scalar("select public.leave_record_retrospective($1,'personal',$2,$2,'Izin pribadi susulan untuk tes','full_day',null,null,'{}','Dikonfirmasi atasan outlet') as row",[operationalId,leaveOnlyDate.day]);
+await workflowError("select public.spv_followup_start('unassigned',$1,$2,$3,null,'roster',null)",[leaveOnlyDate.day,outlet.id,operationalId],'Kasir tidak lagi memerlukan tindak lanjut');
+
+await asUser(operationalAuth);
+assert.equal((await db.query('select * from public.staffing_requirements')).rows.length,0,'cashier cannot read outlet staffing requirements');
+assert.equal((await db.query('select * from public.spv_followups')).rows.length,0,'cashier cannot read follow-up cases');
+const weeklyInbox=(await db.query("select entity_type,href from public.notifications where entity_type='assignment_week' and entity_id=$1",[batchResult.batch_id])).rows;
+assert.equal(weeklyInbox.length,1,'multi-day roster save sends one privacy-safe weekly notification');
+assert.equal(weeklyInbox[0].href,`/assignments?week=${nextWeek.monday}`);
+await workflowError('update public.staffing_requirements set minimum=99',[],'permission denied');
+await workflowError('select * from public.cashier_roster_batches',[],'permission denied');
 await asUser('', 'anon');
 await workflowError('select * from public.cashier_assignments',[],'permission denied');
 await workflowError('select * from public.attendance_correction_requests',[],'permission denied');
+await workflowError('select * from public.staffing_requirements',[],'permission denied');
+await workflowError('select * from public.spv_followups',[],'permission denied');
 await db.exec('rollback');
-console.log('Operational workflows OK: mandatoryroster/off/shift/tempoutlet,historicalclockout,HRassignmentguard,ownrequests,RLS,atomicmanual,stalesnapshot/outletguard,retroactiveleave,hourcorrection,yearrefund,workflowinbox');
+console.log('Operational workflows OK: mandatoryroster/off/shift/tempoutlet,historicalclockout,HRassignmentguard,ownrequests,RLS,atomicmanual,stalesnapshot/outletguard,retroactiveleave,hourcorrection,yearrefund,workflowinbox,staffinghistory,atomicweeklybatch,idempotency,followupownership,reopen');
 
 // Tokens are server-managed, replaceable, 24h, single-use and claim protected.
 await db.exec('reset role');

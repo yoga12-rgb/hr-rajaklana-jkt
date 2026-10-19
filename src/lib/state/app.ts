@@ -1,5 +1,5 @@
 import { get, writable } from 'svelte/store';
-import type { AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest, Outlet, Position, Role, Shift, CashierAssignmentInput, AttendanceCorrectionInput, RetrospectiveLeaveInput } from '../types';
+import type { AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest, Outlet, Position, Role, Shift, CashierAssignmentInput, AttendanceCorrectionInput, RetrospectiveLeaveInput, CashierRosterChange, StaffingRequirementInput, StaffingRequirement, SpvFollowupInput, SpvFollowup, SpvFollowupUpdate } from '../types';
 import { attendanceTiming, dateRange, deductionByYear, haversineMeters, jakartaDate, leaveEntitlement } from '../domain';
 import { initialDemo } from './demo';
 import { hasApproverAccess } from '../access';
@@ -10,6 +10,7 @@ import { demoNotifications } from '../notifications';
 import { leaveAuditDetail } from '../leave-audit';
 import { assignmentFor, assertCashierAssignment, saveAssignmentInState, assertCorrectionInput, submitCorrectionInState, decideCorrectionInState } from '../cashier-workflows';
 import { disableDevicePush } from '../device-push';
+import { followupCaseKey, operationalSignals, validateRosterBatch } from '../cashier-spv';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
@@ -175,11 +176,14 @@ async function refreshNow() {
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
     if (!current || current.status !== 'active') { if (revision === authRevision) { clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.'); await supabase.auth.signOut(); } return; }
+    const [staffingRows, followupRows] = isAdmin(current)
+      ? await Promise.all([readAll('staffing_requirements'), readAll('spv_followups')])
+      : [[], []];
     const directory = await rpc('employee_directory', {});
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
     const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
       const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', assignmentId: r.assignment_id ?? null, outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
+      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, workDate: r.work_date, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', assignmentId: r.assignment_id ?? null, outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
     }));
     let auditEntries: AppState['auditEntries'] = [];
     if (isAdmin(current)) {
@@ -208,12 +212,18 @@ async function refreshNow() {
       originalSnapshot: r.original_snapshot ? { clockIn: r.original_snapshot.clock_in, clockOut: r.original_snapshot.clock_out,
         shift: r.original_snapshot.shift, outletId: r.original_snapshot.outlet_id } : null }));
     const notifications = notificationRows.map(r => ({ id: r.id, employeeId: r.employee_id, title: r.title, body: r.body, href: r.href, entityId: r.entity_id, entityType: r.entity_type ?? 'leave', createdAt: r.created_at, readAt: r.read_at }));
+    const staffingRequirements: StaffingRequirement[] = staffingRows.map(r => ({ id: r.id, outletId: r.outlet_id, weekday: r.weekday, shift: r.shift,
+      minimum: r.minimum, effectiveFrom: r.effective_from, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at }));
+    const spvFollowups: SpvFollowup[] = followupRows.map(r => ({ id: r.id, caseKey: r.case_key, issueType: r.issue_type, sourceType: r.source_type,
+      sourceId: r.source_id, workDate: r.work_date, outletId: r.outlet_id, employeeId: r.employee_id, shift: r.shift, ownerId: r.owner_id,
+      status: r.status, note: r.note ?? '', resolutionNote: r.resolution_note ?? '', createdBy: r.created_by, updatedBy: r.updated_by,
+      createdAt: r.created_at, updatedAt: r.updated_at, reopenedCount: r.reopened_count ?? 0 }));
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     if (!channel) {
       channel = supabase.channel(`hr-${session.user.id}`);
-      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
+      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
       channel.subscribe(() => app.update(s => ({ ...s, connected: navigator.onLine })));
     }
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
@@ -466,6 +476,82 @@ export const actions = {
     if (configured) { const row = await rpc('cashier_assignment_save',{ p_employee_id: input.employeeId, p_work_date: input.workDate,
       p_outlet_id: input.outletId, p_shift: input.shift, p_reason: input.reason, p_id: input.id ?? null, p_cancel: input.cancel ?? false }); await refresh(); return row.id; }
     let result = ''; commit(s => { result = saveAssignmentInState(s,input).id; },input.cancel ? 'assignment_cancelled' : 'assignment_saved', input.id ?? '', input.reason); return result;
+  },
+  async saveStaffingRequirement(input: StaffingRequirementInput) {
+    requireAdmin();
+    const state = get(app), actor = user();
+    if (!state.outlets.some(outlet => outlet.id === input.outletId && outlet.active)) throw new Error('Pilih outlet aktif.');
+    if (!Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6 || !['morning','afternoon','middle'].includes(input.shift)) throw new Error('Hari dan shift kebutuhan tidak valid.');
+    if (!Number.isInteger(input.minimum) || input.minimum < 0 || input.minimum > 100) throw new Error('Kebutuhan minimum harus angka 0 sampai 100.');
+    const date = new Date(`${input.effectiveFrom}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveFrom) || !Number.isFinite(+date) || date.toISOString().slice(0,10) !== input.effectiveFrom || input.effectiveFrom < jakartaDate()) throw new Error('Tanggal berlaku harus hari ini atau mendatang.');
+    if (configured) {
+      const row = await rpc('staffing_requirement_save', { p_outlet_id: input.outletId, p_weekday: input.weekday, p_shift: input.shift, p_minimum: input.minimum, p_effective_from: input.effectiveFrom });
+      await refresh(); return row.id;
+    }
+    const now = new Date().toISOString(), before = (state.staffingRequirements ?? []).find(row => row.outletId === input.outletId && row.weekday === input.weekday && row.shift === input.shift && row.effectiveFrom === input.effectiveFrom);
+    const row: StaffingRequirement = { id: before?.id ?? id(), ...input, createdBy: before?.createdBy ?? actor.id, createdAt: before?.createdAt ?? now, updatedAt: now };
+    commit(s => { s.staffingRequirements ??= []; const index = s.staffingRequirements.findIndex(item => item.id === row.id); if (index < 0) s.staffingRequirements.push(row); else s.staffingRequirements[index] = row; }, 'staffing_requirement_saved', row.id, `Minimum ${input.minimum} · ${input.shift} · mulai ${input.effectiveFrom}`);
+    return row.id;
+  },
+  async saveCashierRosterBatch(weekStart: string, changes: CashierRosterChange[], idempotencyKey: string) {
+    requireAdmin();
+    const state = get(app), actor = user();
+    validateRosterBatch(state, actor.id, weekStart, changes);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)) throw new Error('Kunci penyimpanan jadwal tidak valid.');
+    if (configured) {
+      const result = await rpc('cashier_roster_batch_save', { p_week_start: weekStart, p_idempotency_key: idempotencyKey,
+        p_changes: changes.map(change => ({ id: change.id ?? null, employee_id: change.employeeId, work_date: change.workDate,
+          outlet_id: change.outletId, shift: change.shift, reason: change.reason, expected_updated_at: change.expectedUpdatedAt ?? null, cancel: change.cancel ?? false })) });
+      await refresh(); return result as { batch_id: string; week_start: string; saved_count: number; assignments: unknown[] };
+    }
+    const next = structuredClone(state), saved = changes.map(change => saveAssignmentInState(next, { ...change, reason: change.reason.trim() }));
+    commit(s => {
+      s.cashierAssignments = next.cashierAssignments;
+      for (const row of saved) s.auditEntries.unshift({ id: id(), actorId: actor.id, action: 'assignment_week_saved', entityId: row.id,
+        at: new Date().toISOString(), detail: `${row.reason} · ${row.workDate} · ${row.shift}` });
+    });
+    return { batch_id: idempotencyKey, week_start: weekStart, saved_count: saved.length, assignments: saved };
+  },
+  async startSpvFollowup(input: SpvFollowupInput) {
+    requireAdmin();
+    const state = get(app), actor = user(), caseKey = followupCaseKey(input);
+    if (!operationalSignals(state, input.workDate).some(item => item.key === caseKey)) throw new Error('Kondisi sumber sudah berubah atau tidak lagi memerlukan tindak lanjut. Muat ulang panel.');
+    if (configured) {
+      const row = await rpc('spv_followup_start', { p_issue_type: input.issueType, p_work_date: input.workDate, p_outlet_id: input.outletId,
+        p_employee_id: input.employeeId, p_shift: input.shift, p_source_type: input.sourceType, p_source_id: input.sourceId });
+      await refresh(); return row.id;
+    }
+    const now = new Date().toISOString(), before = (state.spvFollowups ?? []).find(row => row.caseKey === caseKey);
+    if (before && before.status !== 'completed') return before.id;
+    const row: SpvFollowup = before ? { ...before, status: 'new', ownerId: null, resolutionNote: '', updatedBy: actor.id, updatedAt: now, reopenedCount: before.reopenedCount + 1 }
+      : { id: id(), caseKey, ...input, ownerId: null, status: 'new', note: '', resolutionNote: '', createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now, reopenedCount: 0 };
+    commit(s => {
+      s.spvFollowups ??= []; const index = s.spvFollowups.findIndex(item => item.caseKey === caseKey);
+      if (index < 0) s.spvFollowups.push(row); else s.spvFollowups[index] = row;
+      s.auditEntries.unshift({ id: id(), actorId: actor.id, action: before ? 'spv_followup_reopened' : 'spv_followup_started', entityId: row.id, at: now,
+        detail: before ? 'Kondisi sumber muncul kembali' : 'Tindak lanjut dimulai' });
+    });
+    return row.id;
+  },
+  async updateSpvFollowup(input: SpvFollowupUpdate) {
+    requireAdmin();
+    const state = get(app), actor = user(), before = (state.spvFollowups ?? []).find(row => row.id === input.id);
+    if (!before) throw new Error('Tindak lanjut tidak ditemukan. Muat ulang panel.');
+    if (before.status === 'completed' && input.status !== 'completed') throw new Error('Buka kembali kasus hanya jika kondisi sumber muncul kembali.');
+    if (input.status === 'in_progress' && !input.ownerId) throw new Error('Pilih penanggung jawab sebelum memproses kasus.');
+    if (input.status === 'completed' && input.resolutionNote.trim().length < 5) throw new Error('Catatan penyelesaian minimal 5 karakter.');
+    if (input.note.length > 2000 || input.resolutionNote.length > 2000) throw new Error('Catatan maksimal 2.000 karakter.');
+    if (input.ownerId && !state.employees.some(employee => employee.id === input.ownerId && employee.status === 'active' && employee.accountStatus === 'active' && employee.roles.includes('admin_hr'))) throw new Error('Penanggung jawab harus Admin HR aktif.');
+    if (configured) { await rpc('spv_followup_update', { p_id: input.id, p_status: input.status, p_owner_id: input.ownerId,
+      p_note: input.note, p_resolution_note: input.resolutionNote }); await refresh(); return; }
+    const now = new Date().toISOString();
+    commit(s => {
+      const row = s.spvFollowups!.find(item => item.id === input.id)!;
+      Object.assign(row, { status: input.status, ownerId: input.ownerId, note: input.note.trim(), resolutionNote: input.status === 'completed' ? input.resolutionNote.trim() : '', updatedBy: actor.id, updatedAt: now });
+      s.auditEntries.unshift({ id: id(), actorId: actor.id, action: input.status === 'completed' ? 'spv_followup_completed' : 'spv_followup_updated', entityId: row.id,
+        at: now, detail: input.resolutionNote.trim() || input.note.trim() || 'Tindak lanjut diperbarui' });
+    });
   },
   async submitAttendanceCorrection(input: AttendanceCorrectionInput) {
     const actor = user(); assertCorrectionInput(get(app),actor.id,input);

@@ -7,9 +7,10 @@
   import StatusPill from '#lib/components/StatusPill.svelte';
   import EmptyState from '#lib/components/EmptyState.svelte';
   import Feedback from '#lib/components/Feedback.svelte';
+  import CashierWeeklyPlanner from '#lib/components/CashierWeeklyPlanner.svelte';
   import { todayJakarta, dateLabel, timeLabel } from '#lib/components/format';
-  let date = todayJakarta(), employeeId = '', outletId = '', shift: Shift | 'off' = 'morning';
-  afterNavigate(() => { const query = new URLSearchParams(window.location.search), linkedDate = query.get('date') ?? query.get('workDate'); if (linkedDate && /^\d{4}-\d{2}-\d{2}$/.test(linkedDate)) { date = linkedDate; editId = undefined; } });
+  let date = todayJakarta(), employeeId = '', outletId = '', shift: Shift | 'off' = 'morning', view: 'daily' | 'weekly' = 'weekly';
+  afterNavigate(() => { const query = new URLSearchParams(window.location.search), week = query.get('week'), linkedDate = query.get('date') ?? query.get('workDate'); if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) { view = 'weekly'; date = week; editId = undefined; } else if (linkedDate && /^\d{4}-\d{2}-\d{2}$/.test(linkedDate)) { view = 'daily'; date = linkedDate; editId = undefined; } });
   let editId: string | undefined, reason = '', message = '', failed = false, saving = false;
   $: admin = isAdmin($app.user);
   $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
@@ -43,7 +44,9 @@
   }
 </script>
 
-<PageHeading eyebrow="OPERASIONAL KASIR" title="Penugasan harian" description="Outlet, shift, dan hari libur yang ditetapkan Admin HR. Absensi aktual tetap dicatat terpisah."/>
+<PageHeading eyebrow="OPERASIONAL KASIR" title="Jadwal kasir" description="Atur penugasan harian atau susun jadwal satu minggu. Absensi aktual dicatat terpisah."/>
+{#if admin}<nav class="view-toggle" aria-label="Tampilan jadwal"><button class:active={view === 'weekly'} class="btn btn-secondary" type="button" on:click={() => view = 'weekly'}>Mingguan</button><button class:active={view === 'daily'} class="btn btn-secondary" type="button" on:click={() => view = 'daily'}>Harian</button></nav>{/if}
+{#if !admin || view === 'daily'}
 <Feedback {message} error={failed}/>
 <div class="date-filter"><label class="field">Tanggal kerja (WIB)<input class="input" type="date" bind:value={date} on:change={() => { editId = undefined; reason = ''; }} required/></label></div>
 <div class="metrics"><MetricCard label="Ditugaskan bekerja" value={active.filter(a => a.shift !== 'off').length} detail={dateLabel(date)} icon="calendar"/><MetricCard label="Libur" value={active.filter(a => a.shift === 'off').length} detail="Tidak diwajibkan clock in" icon="sun"/><MetricCard label="Belum ditugaskan" value={crew.filter(employee => !assignmentFor(employee.id)).length} detail="Hubungi HR sebelum clock in" icon="alert"/></div>
@@ -56,7 +59,10 @@
 {/if}
 
 <section class="panel"><h2>{admin ? 'Kesiapan kasir' : 'Penugasan Anda'} · {dateLabel(date)}</h2>{#if crew.length}<div class="table-wrap"><table><thead><tr><th>Kasir</th><th>Penugasan</th><th>Status absensi</th>{#if admin}<th></th>{/if}</tr></thead><tbody>{#each crewRows as row}{@const employee = row.employee}{@const assignment = row.assignment}{@const attendance = row.attendance}<tr><td><strong>{displayName(employee.id)}</strong><small>{employee.employeeNumber}</small></td><td>{#if assignment}<strong>{assignment.shift === 'off' ? 'Libur' : shiftLabel(assignment.shift)}</strong><small>{outletName(assignment.outletId)}</small>{:else}<StatusPill label="Belum ditugaskan" tone="amber"/>{/if}</td><td><StatusPill label={attendance ? attendance.clockOut ? 'Sudah pulang' : 'Sedang bekerja' : assignment?.shift === 'off' ? 'Libur' : assignment ? 'Belum clock in' : 'Menunggu HR'} tone={attendance ? 'green' : assignment?.shift === 'off' ? 'blue' : 'amber'}/>{#if attendance}<small>Masuk {timeLabel(attendance.clockIn)} WIB</small>{/if}</td>{#if admin}<td>{#if assignment}<button class="btn btn-secondary" disabled={employee.id === $app.user?.id || date < employee.joinDate || (historical && !!attendance)} on:click={() => edit(assignment)}>Ubah</button>{:else}<button class="btn btn-secondary" disabled={employee.id === $app.user?.id || date < employee.joinDate || (historical && !!attendance)} on:click={() => { employeeId = employee.id; chooseEmployee(); }}>Tetapkan</button>{/if}</td>{/if}</tr>{/each}</tbody></table></div>{:else}<EmptyState icon="calendar" title="Belum ada penugasan untuk akun ini" description="Hubungi Admin HR untuk memastikan data kasir dan penugasan Anda."/>{/if}</section>
+{/if}
+{#if admin && view === 'weekly'}<section class="panel weekly-panel"><CashierWeeklyPlanner/></section>{/if}
 
 <style>
+  .view-toggle{display:flex;gap:.55rem;margin:.3rem 0 1rem}.view-toggle .btn{min-height:42px}.view-toggle .btn.active{background:var(--yellow-soft);box-shadow:var(--inset);color:var(--ink)}.weekly-panel{padding:0;overflow:hidden}
   .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:1rem 0}.date-filter{max-width:260px}.panel{margin:1.2rem 0}.panel h2{font-size:.95rem;margin:0 0 1rem}.hint{font-size:.73rem;color:var(--muted);line-height:1.7}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.form-actions{display:flex;justify-content:flex-end;gap:.7rem;margin-top:1rem;flex-wrap:wrap}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:1rem;font-size:.76rem;border-bottom:1px solid var(--border);white-space:nowrap}th{background:var(--yellow-soft);font-size:.65rem}td small{display:block;font-size:.65rem;color:var(--muted);margin-top:.4rem}td .btn{font-size:.7rem}@media(max-width:650px){.metrics{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}th,td{padding:.8rem}.panel{padding:1rem}}
 </style>

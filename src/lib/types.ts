@@ -33,6 +33,7 @@ export interface LeaveRequest {
 }
 export interface AttendanceRecord {
   id: string; employeeId: string; outletId: string; shift: Shift; clockIn: string; clockOut: string | null;
+  workDate?: string;
   scheduledStart: string | null; lateMinutes: number; durationMinutes: number | null;
   inLatitude: number | null; inLongitude: number | null; inAccuracy: number | null; inDistance: number | null;
   outLatitude?: number | null; outLongitude?: number | null; outDistance?: number | null; outAccuracy?: number | null;
@@ -48,7 +49,7 @@ export interface LeaveLedgerEntry { id: string; employeeId: string; year: number
 export interface AppNotification {
   id: string; employeeId: string; title: string; body: string; href: string;
   entityId: string; createdAt: string; readAt: string | null;
-  entityType?: 'leave' | 'attendance_correction' | 'assignment' | 'attendance_reminder';
+  entityType?: 'leave' | 'attendance_correction' | 'assignment' | 'assignment_week' | 'attendance_reminder';
 }
 export interface CashierAssignment {
   id: string; employeeId: string; workDate: string; outletId: string; shift: Shift | 'off';
@@ -62,6 +63,27 @@ export interface AttendanceCorrectionRequest {
   decisionBy: string | null; createdAt: string; decidedAt: string | null;
   originalSnapshot?: { clockIn: string; clockOut: string | null; shift: Shift; outletId: string } | null;
 }
+export interface StaffingRequirement {
+  id: string; outletId: string; weekday: number; shift: Shift; minimum: number; effectiveFrom: string;
+  createdBy: string; createdAt: string; updatedAt: string;
+}
+export type SpvFollowupIssue = 'missing_clockin' | 'unassigned' | 'open_session' | 'unexcused_lateness' | 'correction_pending' | 'leave_conflict' | 'short_duration';
+export interface SpvFollowup {
+  id: string; caseKey: string; issueType: SpvFollowupIssue; sourceType: 'assignment' | 'attendance' | 'correction' | 'roster';
+  sourceId: string | null; workDate: string; outletId: string; employeeId: string | null; shift: Shift | null;
+  ownerId: string | null; status: 'new' | 'in_progress' | 'completed'; note: string; resolutionNote: string;
+  createdBy: string; updatedBy: string; createdAt: string; updatedAt: string; reopenedCount: number;
+}
+export interface CashierRosterChange {
+  id?: string; employeeId: string; workDate: string; outletId: string; shift: Shift | 'off'; reason: string;
+  expectedUpdatedAt?: string | null; cancel?: boolean;
+}
+export interface StaffingRequirementInput { outletId: string; weekday: number; shift: Shift; minimum: number; effectiveFrom: string }
+export interface SpvFollowupInput {
+  issueType: SpvFollowupIssue; sourceType: SpvFollowup['sourceType']; sourceId: string | null;
+  workDate: string; outletId: string; employeeId: string | null; shift: Shift | null;
+}
+export interface SpvFollowupUpdate { id: string; status: SpvFollowup['status']; ownerId: string | null; note: string; resolutionNote: string }
 export interface CashierAssignmentInput {
   id?: string; employeeId: string; workDate: string; outletId: string; shift: Shift | 'off'; reason: string; cancel?: boolean;
 }
@@ -80,6 +102,8 @@ export interface AppState {
   notifications?: AppNotification[];
   cashierAssignments?: CashierAssignment[];
   attendanceCorrectionRequests?: AttendanceCorrectionRequest[];
+  staffingRequirements?: StaffingRequirement[];
+  spvFollowups?: SpvFollowup[];
   balanceCache?: Record<string, number>;
   connected: boolean; error: string | null;
 }

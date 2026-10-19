@@ -20,6 +20,19 @@ async function switchUser(page: Page, id: string) {
   await expect(page.getByRole('combobox', { name: 'Akun contoh', exact: true })).toHaveValue(id);
 }
 
+async function assignCashierToday(page: Page, employeeId = 'employee-4') {
+  await login(page);
+  await page.goto('/assignments');
+  await page.getByRole('button', { name: 'Harian', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Tetapkan penugasan kasir', exact: true })).toBeVisible();
+  await page.locator('.assignment-form select').first().selectOption(employeeId);
+  await page.locator('.assignment-form select').nth(2).selectOption('middle');
+  await page.getByLabel('Alasan / sumber penugasan', { exact: true }).fill('Penugasan fixture untuk uji browser');
+  await page.getByRole('button', { name: 'Simpan penugasan', exact: true }).click();
+  await expect(page.getByText('Penugasan harian tersimpan. Kasir mengikuti outlet dan shift ini saat clock in.', { exact: true })).toBeVisible();
+  await switchUser(page, employeeId);
+}
+
 function dateAfter(days: number) {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const date = new Date(`${today}T12:00:00Z`);
@@ -41,7 +54,7 @@ async function submitLeave(page: Page, reason: string, start = dateAfter(3), end
 
 async function openRequest(page: Page, reason: string, review = false) {
   await page.goto('/leave');
-  if (review) await page.getByRole('tab', { name: /Persetujuan tim/ }).click();
+  if (review) await page.getByRole('tab', { name: /Pengajuan karyawan/ }).click();
   await page.getByRole('button').filter({ hasText: reason }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
 }
@@ -95,13 +108,60 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     const nav = page.getByRole('navigation', { name: 'Navigasi ponsel' });
     await expect(nav).toBeVisible();
     await nav.getByRole('link', { name: 'Kehadiran', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Clock in · Masuk', exact: true })).toBeVisible();
+    await expect(page.getByText('Belum ada penugasan. Hubungi Admin HR untuk menetapkan outlet dan shift sebelum clock in.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Hubungi Admin HR', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Clock in · Masuk', exact: true })).toHaveCount(0);
     await nav.getByRole('link', { name: 'Pengajuan', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Cuti & izin', exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.goto('/employees');
     await expect(page.getByText('Akses khusus Admin HR', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Tambah karyawan', exact: true })).toHaveCount(0);
+  });
+
+  test('Admin HR follows an outlet case and saves a weekly roster and minimum', async ({ page }) => {
+    await login(page);
+    await expect(page.getByRole('heading', { name: 'Kesiapan outlet dan tindak lanjut', exact: true })).toBeVisible();
+    const unassigned = page.locator('.case-card').filter({ hasText: 'Nadia Putri' });
+    await expect(unassigned).toBeVisible();
+    await unassigned.getByRole('button', { name: 'Mulai tindak lanjut', exact: true }).click();
+    const ownerSelect = unassigned.locator('select').first();
+    await expect(ownerSelect).toBeVisible();
+    await ownerSelect.selectOption('employee-2');
+    await unassigned.getByRole('button', { name: 'Tetapkan & proses', exact: true }).click();
+    await expect(unassigned.getByText('Diproses', { exact: true })).toBeVisible();
+    await unassigned.getByLabel('Catatan penyelesaian', { exact: true }).fill('Kasir telah dikonfirmasi untuk jadwal hari ini.');
+    await unassigned.getByRole('button', { name: 'Selesaikan', exact: true }).click();
+    await expect(unassigned.getByText('Selesai', { exact: true })).toBeVisible();
+
+    await page.goto('/assignments');
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+    const cashierShift = page.getByLabel(/Shift Sari Lestari,/).nth(1);
+    await cashierShift.selectOption('morning');
+    const cashierOutlet = page.getByLabel(/Outlet Sari Lestari,/).first();
+    await expect(cashierOutlet).toBeVisible();
+    await cashierOutlet.selectOption('outlet-a');
+    await expect(page.locator('.save-info')).toContainText('1 perubahan');
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Jadwal kasir minggu ini disepakati');
+    await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+    await expect(page.getByText(/perubahan jadwal tersimpan bersama/)).toBeVisible();
+
+    await page.getByLabel('Minimum kasir', { exact: true }).fill('0');
+    await page.getByRole('button', { name: 'Simpan minimum', exact: true }).click();
+    await expect(page.getByText('Kebutuhan minimum tersimpan untuk tanggal berlaku.', { exact: true })).toBeVisible();
+    await expect(page.locator('.requirement-list')).toContainText('0');
+  });
+
+  test('weekly roster stays inside its horizontal scroll area on a phone viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page);
+    await page.goto('/assignments');
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const grid = await page.locator('.table-scroll').evaluate(element => ({ width: element.scrollWidth, viewport: element.clientWidth }));
+    expect(grid.width).toBeGreaterThan(grid.viewport);
+    await page.goto('/dashboard');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
   test('outlet, department, position and employee can be created and maintained through forms', async ({ page }) => {
@@ -274,7 +334,7 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
         },
       });
     });
-    await login(page, 'Kasir');
+    await assignCashierToday(page);
     await page.goto('/attendance');
     await context.setGeolocation({ latitude: -6.3, longitude: 106.9, accuracy: 10 });
     await page.getByRole('button', { name: 'Clock in · Masuk', exact: true }).click();
@@ -284,15 +344,15 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Periksa ulang lokasi', exact: true }).click();
     await expect(page.getByRole('dialog').getByText('Lokasi sesuai', { exact: true })).toBeVisible();
     await expect(page.getByRole('dialog').getByRole('button', { name: 'Konfirmasi clock in', exact: true })).toBeDisabled();
-    await page.getByRole('dialog').getByLabel(/Middle/).check();
+    await expect(page.getByRole('dialog').getByText('Shift dipilih: Middle', { exact: true })).toBeVisible();
     await page.getByRole('dialog').getByRole('button', { name: 'Buka kamera', exact: true }).click();
     await expect.poll(() => page.getByLabel('Pratinjau kamera selfie').evaluate((element: HTMLVideoElement) => element.videoWidth)).toBeGreaterThan(0);
     await page.getByRole('dialog').getByRole('button', { name: 'Ambil selfie', exact: true }).click();
-    await expect(page.getByRole('dialog').getByText('Selfie siap', { exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog').getByText('Selfie bertag siap', { exact: true })).toBeVisible();
     await page.getByRole('dialog').getByRole('button', { name: 'Ambil ulang', exact: true }).click();
     await expect.poll(() => page.getByLabel('Pratinjau kamera selfie').evaluate((element: HTMLVideoElement) => element.videoWidth)).toBeGreaterThan(0);
     await page.getByRole('dialog').getByRole('button', { name: 'Ambil selfie', exact: true }).click();
-    await expect(page.getByRole('dialog').getByText('Selfie siap', { exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog').getByText('Selfie bertag siap', { exact: true })).toBeVisible();
     await page.getByRole('dialog').getByRole('button', { name: 'Konfirmasi clock in', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Clock out · Pulang', exact: true })).toBeVisible();

@@ -1,4 +1,5 @@
-import type { AppNotification, AppState, LeaveRequest } from './types';
+import type { AppNotification, AppState, CashierAssignment, LeaveRequest } from './types';
+import { startOfWorkWeek } from './cashier-spv';
 
 /** Demo mirrors server triggers; each recipient sees only their own inbox. */
 export function demoNotifications(before: AppState, after: AppState): AppNotification[] {
@@ -35,11 +36,18 @@ export function demoNotifications(before: AppState, after: AppState): AppNotific
       else if (request.status === 'approved') { send(request.employeeId, request, 'Catatan cuti dikoreksi HR'); reviewers(request, 'Catatan cuti dikoreksi HR'); }
     }
   }
+  const assignmentChanges = new Map<string, CashierAssignment[]>();
   for (const assignment of after.cashierAssignments ?? []) {
     const old = (before.cashierAssignments ?? []).find(a => a.id === assignment.id);
     if (!old || ['outletId','shift','status','reason','updatedAt'].some(key => assignment[key as keyof typeof assignment] !== old[key as keyof typeof old])) {
-      sendWorkflow(assignment.employeeId,assignment.id,'assignment',assignment.status === 'cancelled' ? 'Penugasan dibatalkan' : 'Penugasan diperbarui',`/assignments?date=${assignment.workDate}`);
+      const week = startOfWorkWeek(assignment.workDate), key = `${assignment.employeeId}:${week}`;
+      assignmentChanges.set(key, [...(assignmentChanges.get(key) ?? []), assignment]);
     }
+  }
+  for (const rows of assignmentChanges.values()) {
+    const first = rows[0];
+    if (rows.length > 1) sendWorkflow(first.employeeId,crypto.randomUUID(),'assignment_week','Jadwal mingguan diperbarui',`/assignments?week=${startOfWorkWeek(first.workDate)}`);
+    else sendWorkflow(first.employeeId,first.id,'assignment',first.status === 'cancelled' ? 'Penugasan dibatalkan' : 'Penugasan diperbarui',`/assignments?date=${first.workDate}`);
   }
   for (const request of after.attendanceCorrectionRequests ?? []) {
     const old = (before.attendanceCorrectionRequests ?? []).find(r => r.id === request.id);
