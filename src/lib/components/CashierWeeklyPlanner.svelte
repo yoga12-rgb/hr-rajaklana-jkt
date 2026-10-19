@@ -10,7 +10,11 @@
   import StaffingRequirementEditor from './StaffingRequirementEditor.svelte';
 
   type Draft = CashierRosterDraftCell;
-  let weekStart = startOfWorkWeek(todayJakarta()), drafts: Record<string, Draft> = {}, reason = '', message = '', failed = false, saving = false;
+  function requestedWeekFromSearch(search: string): string | null {
+    const requested = new URLSearchParams(search).get('week');
+    return requested && /^\d{4}-\d{2}-\d{2}$/.test(requested) ? startOfWorkWeek(requested) : null;
+  }
+  let weekStart = requestedWeekFromSearch(page.url.search) ?? startOfWorkWeek(todayJakarta()), drafts: Record<string, Draft> = {}, reason = '', message = '', failed = false, saving = false;
   let copyPreview: ReturnType<typeof previewPreviousWeekCopy> | null = null, copySkippedDrafts = 0;
   let idempotencyFingerprint = '', idempotencyKey = '';
   let activeDraftStorageKey = '', draftStorageWarning = false;
@@ -39,11 +43,8 @@
     } catch { drafts = {}; reason = ''; idempotencyFingerprint = ''; idempotencyKey = ''; draftStorageWarning = true; }
   }
   afterNavigate(() => {
-    const requested = new URLSearchParams(window.location.search).get('week');
-    if (requested && /^\d{4}-\d{2}-\d{2}$/.test(requested)) {
-      const nextWeek = startOfWorkWeek(requested);
-      if (nextWeek !== weekStart) { persistDraft(); weekStart = nextWeek; copyPreview = null; }
-    }
+    const nextWeek = requestedWeekFromSearch(window.location.search);
+    if (nextWeek && nextWeek !== weekStart) { persistDraft(); weekStart = nextWeek; copyPreview = null; }
   });
   $: days = workWeekDates(weekStart);
   $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));

@@ -177,6 +177,14 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByLabel(/Shift Sari Lestari,/).first()).toHaveValue('morning');
   });
 
+  test('weekly roster opens the requested week from a direct URL', async ({ page }) => {
+    await login(page);
+    await page.goto('/assignments?week=2026-10-26');
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+    await expect(page.locator('.planner-heading')).toContainText('2026-10-26 – 2026-11-01');
+  });
+
   test('weekly roster stays inside its horizontal scroll area on a phone viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page);
