@@ -5,7 +5,8 @@ import { RealtimeClient } from '@supabase/realtime-js';
 const { mockSupabase } = vi.hoisted(() => ({ mockSupabase: {} as Record<string, any> }));
 vi.mock('./client', () => ({ configured: true, supabase: mockSupabase }));
 
-const session = { user: { id: 'auth-admin' }, access_token: 'test-session' };
+const sessionFor = (id: string) => ({ user: { id }, access_token: `test-session-${id}` });
+let currentSession: ReturnType<typeof sessionFor> | null = sessionFor('auth-admin');
 const liveTables: Record<string, Record<string, unknown>[]> = {
   employees: [{ id: 'employee-admin', employee_number: 'RK000001', full_name: 'Admin Uji', whatsapp: '0812', department_id: 'department', position_id: 'position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-admin', can_middle_shift: false, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' }],
   employee_roles: [{ employee_id: 'employee-admin', role: 'admin_hr' }],
@@ -19,22 +20,48 @@ let channels: MockChannel[];
 let windowListeners: Map<string, () => void>;
 let documentListeners: Map<string, () => void>;
 let subscribeThrows = false;
+let authListener: ((event: string, session: typeof currentSession | null) => void) | null = null;
+let failEmployeeReadForUser: string | null = null;
+let delayNextEmployeeRead = false;
+let employeeReadStarted: (() => void) | null = null;
+let releaseDelayedEmployeeRead: (() => void) | null = null;
 
 async function flush() { await Promise.resolve(); await Promise.resolve(); }
 
 function installLiveClient() {
   channels = [];
+  currentSession = sessionFor('auth-admin');
+  authListener = null;
+  failEmployeeReadForUser = null;
+  delayNextEmployeeRead = false;
+  employeeReadStarted = null;
+  releaseDelayedEmployeeRead = null;
   const client = {
     auth: {
-      getSession: vi.fn(async () => ({ data: { session }, error: null })),
-      onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+      getSession: vi.fn(async () => ({ data: { session: currentSession }, error: null })),
+      onAuthStateChange: vi.fn((callback: (event: string, session: typeof currentSession | null) => void) => {
+        authListener = callback;
+        return { data: { subscription: { unsubscribe: vi.fn() } } };
+      }),
       signOut: vi.fn(async () => ({ error: null }))
     },
     from: vi.fn((table: string) => {
       const query: any = {
         select: vi.fn(() => query),
         order: vi.fn(() => query),
-        range: vi.fn(async () => ({ data: liveTables[table] ?? [], error: null }))
+        range: vi.fn(async () => {
+          if (table === 'employees' && delayNextEmployeeRead) {
+            delayNextEmployeeRead = false;
+            await new Promise<void>(resolve => {
+              employeeReadStarted?.();
+              releaseDelayedEmployeeRead = resolve;
+            });
+          }
+          if (table === 'employees' && currentSession?.user.id === failEmployeeReadForUser) {
+            return { data: null, error: new Error('Pembacaan akun B gagal di mock.') };
+          }
+          return { data: liveTables[table] ?? [], error: null };
+        })
       };
       return query;
     }),
@@ -189,5 +216,79 @@ describe('live Realtime recovery', () => {
     channels[1].emit('SUBSCRIBED');
     await vi.advanceTimersByTimeAsync(0);
     expect(get(app).connected).toBe(true);
+  });
+
+  it('clears account A immediately and ignores its delayed fetch when account B signs in but cannot load', async () => {
+    const { actions, app } = await openLiveApp();
+    const oldChannel = channels[0];
+    oldChannel.emit('SUBSCRIBED'); await flush();
+    expect(get(app).user?.id).toBe('employee-admin');
+    expect(get(app).employees).toHaveLength(1);
+
+    let announceStarted!: () => void;
+    const started = new Promise<void>(resolve => { announceStarted = resolve; });
+    employeeReadStarted = announceStarted;
+    delayNextEmployeeRead = true;
+    const staleRefresh = actions.refresh();
+    await started;
+
+    const sessionB = sessionFor('auth-cashier');
+    currentSession = sessionB;
+    failEmployeeReadForUser = 'auth-cashier';
+    vi.stubGlobal('navigator', { onLine: false });
+    authListener?.('SIGNED_IN', sessionB); // Account switch without SIGNED_OUT.
+    expect(get(app).user).toBeNull();
+    expect(get(app).employees).toEqual([]);
+    expect(get(app).cashierAssignments).toEqual([]);
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(oldChannel);
+
+    oldChannel.emit('SUBSCRIBED');
+    expect(get(app).connected).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Queue B's refresh behind the outstanding A request.
+    releaseDelayedEmployeeRead?.();
+    await staleRefresh;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    expect(get(app).user).toBeNull();
+    expect(get(app).employees).toEqual([]);
+    expect(get(app).leaveRequests).toEqual([]);
+    expect(get(app).notifications).toEqual([]);
+    expect(get(app).cashierAssignments).toEqual([]);
+    expect(get(app).error).toBe('Pembacaan akun B gagal di mock.');
+    expect(channels).toHaveLength(1);
+    oldChannel.emit('SUBSCRIBED');
+    expect(get(app).connected).toBe(false);
+  });
+
+  it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {
+    const { app } = await openLiveApp();
+    const firstChannel = channels[0];
+    expect(get(app).user?.id).toBe('employee-admin');
+
+    authListener?.('TOKEN_REFRESHED', sessionFor('auth-admin'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app).user?.id).toBe('employee-admin');
+    expect(channels).toHaveLength(1);
+    expect(mockSupabase.removeChannel).not.toHaveBeenCalledWith(firstChannel);
+
+    currentSession = null;
+    authListener?.('SIGNED_OUT', null);
+    expect(get(app).user).toBeNull();
+    expect(get(app).employees).toEqual([]);
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(firstChannel);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    const sessionA = sessionFor('auth-admin');
+    currentSession = sessionA;
+    authListener?.('SIGNED_IN', sessionA);
+    expect(get(app).user).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app).user?.id).toBe('employee-admin');
+    expect(get(app).employees).toHaveLength(1);
+    expect(channels).toHaveLength(2);
   });
 });

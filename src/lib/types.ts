@@ -70,7 +70,7 @@ export interface StaffingRequirement {
 export type SpvFollowupIssue = 'missing_clockin' | 'unassigned' | 'open_session' | 'unexcused_lateness' | 'correction_pending' | 'leave_conflict' | 'short_duration';
 export interface SpvFollowup {
   id: string; caseKey: string; issueType: SpvFollowupIssue; sourceType: 'assignment' | 'attendance' | 'correction' | 'roster';
-  sourceId: string | null; workDate: string; outletId: string; employeeId: string | null; shift: Shift | null;
+  sourceId: string | null; workDate: string; outletId: string; employeeId: string | null; shift: Shift | 'off' | null;
   ownerId: string | null; status: 'new' | 'in_progress' | 'completed'; note: string; resolutionNote: string;
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string; reopenedCount: number;
 }
@@ -81,7 +81,7 @@ export interface CashierRosterChange {
 export interface StaffingRequirementInput { outletId: string; weekday: number; shift: Shift; minimum: number; effectiveFrom: string }
 export interface SpvFollowupInput {
   issueType: SpvFollowupIssue; sourceType: SpvFollowup['sourceType']; sourceId: string | null;
-  workDate: string; outletId: string; employeeId: string | null; shift: Shift | null;
+  workDate: string; outletId: string; employeeId: string | null; shift: Shift | 'off' | null;
 }
 export interface SpvFollowupUpdate { id: string; status: SpvFollowup['status']; ownerId: string | null; note: string; resolutionNote: string }
 export interface CashierAssignmentInput {

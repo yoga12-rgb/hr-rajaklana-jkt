@@ -23,7 +23,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "test:database": "node supabase/tests/database.mjs && node supabase/tests/biometric-push.mjs",
+    "test:database": "node supabase/tests/database.mjs && node supabase/tests/followup-upgrade-compatibility.mjs && node supabase/tests/biometric-push.mjs",
     "test:database:legacy": "node supabase/deployment/reset-known-legacy.test.mjs",
     "test:e2e": "playwright test"
   },

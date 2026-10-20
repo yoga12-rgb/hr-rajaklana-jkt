@@ -880,6 +880,74 @@ const badBatch=[
 await workflowError('select public.cashier_roster_batch_save($1,$2,$3::jsonb)',[nextWeek.monday,'30000000-0000-0000-0000-000000000090',JSON.stringify(badBatch)],'query returned no rows');
 assert.equal((await scalar('select count(*)::int as count from public.cashier_assignments where employee_id=$1 and work_date in ($2::date,$3::date)',[operationalId,batchDays.third,batchDays.fourth])).count,0,'a failed row rolls back every schedule in its batch');
 
+// A future approved full-day leave keeps a SPV case actionable while a weekly
+// batch changes its source assignment from Pagi to Libur. Future cases cannot
+// be created by the normal missing-clockin detector, so seed only that valid
+// case state as a fixture; the schedule mutation itself uses the HR batch RPC.
+const batchOffAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal awal sebelum koreksi Libur')) as row",
+  [operationalId,batchDays.third,alternateOutlet.id])).row;
+await db.exec('reset role'); // fixture-only approved leave; keep the Admin HR JWT for the SPV RPC below
+const leaveConflictId=(await scalar(`insert into public.leave_requests(employee_id,kind,extent,starts_on,ends_on,reason,status,decision_by,decided_at)
+  values($1,'personal','full_day',$2,$2,'Izin fixture untuk tindak lanjut jadwal','approved',$3,now()) returning id`,
+  [operationalId,batchDays.third,adminId])).id;
+await asUser(adminAuth);
+const batchOffCase=(await scalar("select to_jsonb(public.spv_followup_start('leave_conflict',$1,$2,$3,'morning','assignment',$4)) as row",
+  [batchDays.third,alternateOutlet.id,operationalId,batchOffAssignment.id])).row;
+assert.equal((await scalar('select count(*)::int as count from public.leave_requests where id=$1',[leaveConflictId])).count,1);
+const batchOffChange={id:batchOffAssignment.id,employee_id:operationalId,work_date:batchDays.third,outlet_id:alternateOutlet.id,
+  shift:'off',reason:'Libur ditetapkan bersama batch mingguan',expected_updated_at:batchOffAssignment.updated_at,cancel:false};
+const batchOffSave={id:null,employee_id:operationalId,work_date:batchDays.fourth,outlet_id:alternateOutlet.id,
+  shift:'morning',reason:'Jadwal kedua untuk memastikan batch atomik',expected_updated_at:null,cancel:false};
+const batchOffResult=(await scalar('select public.cashier_roster_batch_save($1,$2,$3::jsonb) as result',
+  [nextWeek.monday,'30000000-0000-0000-0000-000000000091',JSON.stringify([batchOffChange,batchOffSave])])).result;
+assert.equal(batchOffResult.saved_count,2,'batch can change an assignment with an active follow-up to Libur');
+assert.equal((await scalar('select shift from public.cashier_assignments where id=$1',[batchOffAssignment.id])).shift,'off');
+const batchOffSnapshot=(await scalar('select id,status,shift,owner_id,note,resolution_note from public.spv_followups where id=$1',[batchOffCase.id]));
+assert.deepEqual(batchOffSnapshot,{id:batchOffCase.id,status:'new',shift:'off',owner_id:null,note:'',resolution_note:''},
+  'the same active case follows Libur and remains actionable after an atomic batch');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1 and action='source_context_refreshed'",[batchOffCase.id])).count,1);
+
+// Roster unassigned cases are keyed by employee/date, not outlet. They follow
+// an inserted/changed/reinstated assignment while the employee home outlet is
+// only the fallback after a cancellation.
+const rosterCaseDate=await scalar(`select d::date::text as day from generate_series(
+  (now() at time zone 'Asia/Jakarta')::date-20,(now() at time zone 'Asia/Jakarta')::date-11,interval '1 day') d
+  where not exists(select 1 from unnest((select weekly_off_days from public.employees where id=$1)) off_day(value)
+    where off_day.value=extract(dow from d::date)::int)
+  and not exists(select 1 from public.cashier_assignments a where a.employee_id=$1 and a.work_date=d::date)
+  and not exists(select 1 from public.attendance a where a.employee_id=$1 and a.work_date=d::date)
+  and not exists(select 1 from public.leave_requests l where l.employee_id=$1 and l.status='approved' and l.starts_on<=d::date and l.ends_on>=d::date)
+  order by d desc limit 1`,[operationalId]);
+const rosterCase=(await scalar("select to_jsonb(public.spv_followup_start('unassigned',$1,$2,$3,null,'roster',null)) as row",
+  [rosterCaseDate.day,outlet.id,operationalId])).row;
+await scalar("select public.spv_followup_update($1,'in_progress',$2,'Memeriksa outlet penugasan sementara','')",[rosterCase.id,adminId]);
+const thirdOutlet=await scalar("insert into public.outlets(name,latitude,longitude,radius_m) values('Outlet Fallback Fixture',-6.3,106.9,100) returning id");
+const rosterAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Penempatan pertama di outlet sementara')) as row",
+  [operationalId,rosterCaseDate.day,alternateOutlet.id])).row;
+let rosterContext=(await scalar('select id,outlet_id,status,owner_id,note from public.spv_followups where id=$1',[rosterCase.id]));
+assert.deepEqual(rosterContext,{id:rosterCase.id,outlet_id:alternateOutlet.id,status:'in_progress',owner_id:adminId,note:'Memeriksa outlet penugasan sementara'},
+  'first assignment moves the existing roster case to outlet B and preserves its history');
+await db.exec('reset role'); // keep the authenticated Admin HR identity for the source trigger
+await db.query('update public.employees set outlet_id=$1 where id=$2',[thirdOutlet.id,operationalId]);
+rosterContext=(await scalar('select outlet_id from public.spv_followups where id=$1',[rosterCase.id])).outlet_id;
+assert.equal(rosterContext,alternateOutlet.id,'changing the home outlet does not override an active outlet B assignment');
+await asUser(adminAuth);
+await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Penugasan dipindah dari B ke C',$4,false)",
+  [operationalId,rosterCaseDate.day,thirdOutlet.id,rosterAssignment.id]);
+assert.equal((await scalar('select outlet_id from public.spv_followups where id=$1',[rosterCase.id])).outlet_id,thirdOutlet.id,
+  'an assignment update moves the same roster case to outlet C');
+await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Penugasan kembali ke outlet B',$4,false)",
+  [operationalId,rosterCaseDate.day,alternateOutlet.id,rosterAssignment.id]);
+await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Batalkan penugasan sementara',$4,true)",
+  [operationalId,rosterCaseDate.day,thirdOutlet.id,rosterAssignment.id]);
+assert.equal((await scalar('select outlet_id from public.spv_followups where id=$1',[rosterCase.id])).outlet_id,thirdOutlet.id,
+  'cancelling an assignment falls back to the employee home outlet');
+await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Aktifkan kembali penugasan di outlet B',$4,false)",
+  [operationalId,rosterCaseDate.day,alternateOutlet.id,rosterAssignment.id]);
+rosterContext=(await scalar('select id,outlet_id,status,owner_id,note from public.spv_followups where id=$1',[rosterCase.id]));
+assert.deepEqual(rosterContext,{id:rosterCase.id,outlet_id:alternateOutlet.id,status:'in_progress',owner_id:adminId,note:'Memeriksa outlet penugasan sementara'},
+  'reactivation restores outlet B on the same case without losing owner or notes');
+
 const followDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-2)::text as day")).day;
 const followAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Penugasan historis untuk tindak lanjut SPV')) as row",[operationalId,followDate,alternateOutlet.id])).row;
 const followArgs=['missing_clockin',followDate,alternateOutlet.id,operationalId,'morning','assignment',followAssignment.id];
@@ -897,6 +965,14 @@ assert.equal(refreshedFollow.owner_id,adminId,'source refresh preserves the sele
 assert.equal(refreshedFollow.note,'Menghubungi kasir untuk konfirmasi','source refresh preserves follow-up notes');
 assert.ok((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1 and action='source_context_refreshed'",[follow.id])).count===1,
   'source move records before/after follow-up audit evidence');
+const offFollowAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'off','HR menetapkan Libur saat kasus masih diproses',$4,false)) as row",
+  [operationalId,followDate,alternateOutlet.id,followAssignment.id])).row;
+const offFollow=(await scalar('select status,shift,owner_id,note,resolution_note from public.spv_followups where id=$1',[follow.id]));
+assert.deepEqual(offFollow,{status:'in_progress',shift:'off',owner_id:adminId,note:'Menghubungi kasir untuk konfirmasi',resolution_note:''},
+  'single assignment can change to Libur while a case is in progress, preserving its owner and notes');
+assert.equal(offFollowAssignment.shift,'off');
+await scalar("select public.cashier_assignment_save($1,$2,$3,'afternoon','Pulihkan sumber aktif sebelum penyelesaian',$4,false)",
+  [operationalId,followDate,alternateOutlet.id,followAssignment.id]);
 const completed=(await scalar("select to_jsonb(public.spv_followup_update($1,'completed',$2,$3,$4)) as row",[follow.id,adminId,'Kasir memberi penjelasan','Konfirmasi langsung selesai dan dicatat'])).row;
 assert.equal(completed.status,'completed');
 await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Sumber bergerak setelah kasus selesai',$4,false)",[operationalId,followDate,outlet.id,followAssignment.id]);
@@ -911,7 +987,7 @@ assert.equal(reopened.outlet_id,outlet.id,'reopening uses the source current out
 assert.equal(reopened.shift,'morning','reopening uses the source current shift');
 assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',reopenArgs)).row.reopened_count,1,
   'retrying the same open case does not count a second reopen');
-assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,5);
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,7);
 
 const shortDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-7)::text as day")).day;
 const shortAttendance=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',

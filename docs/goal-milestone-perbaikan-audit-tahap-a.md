@@ -1,10 +1,12 @@
 # Goal, alur perbaikan, dan milestone hasil audit Tahap A
 
-Tanggal rencana: **20 Oktober 2026 (WIB)**. Status pelaksanaan: **R0–R5 lulus di lokal; R6a Preview selesai; R6b hosted dan R6c perangkat masih pending**.
+Tanggal rencana: **20 Oktober 2026 (WIB)**. Catatan pada saat audit ulang: **R1/R2/R3/R5 dibuka kembali; R4 tetap mempunyai bukti lulus; R6a adalah rilis sebelumnya; R6b hosted dan R6c perangkat masih pending**. Hasil eksekusi audit ulang terbaru dicatat pada dokumen Q.
+
+> **Acuan eksekusi terbaru:** [goal dan milestone perbaikan audit ulang Tahap A](goal-milestone-perbaikan-audit-ulang-tahap-a.md). Audit ulang pada HEAD `ffd0995` menemukan U01–U06 (1 P1, 4 P2, 1 P3). Klaim lulus R1/R2/R3/R5 dan hasil tes pada dokumen ini tetap merupakan catatan pelaksanaan sebelumnya; penutupan U01–U06 dan status Q7 terbaru tercatat di dokumen audit ulang. Dokumen ini dipertahankan sebagai riwayat A01–A07/R0–R6.
 
 Acuan utama: [laporan audit 20 Oktober 2026](audit-tahap-a-2026-10-20.md). Source saat penyusunan: branch `codex/preview`, HEAD `77621e875a9aa3f1b87331baa884e72528f5ec7c`.
 
-Dokumen ini awalnya disusun sebagai handoff kepada agent pelaksana. Setelah pengguna memberi instruksi eksekusi, R0–R5 dan R6a telah dikerjakan; bukti dan status aktual tercatat pada §11. Agent yang melanjutkan harus memeriksa status repository terbaru dan berfokus pada R6b/R6c yang masih pending, bukan mengulang milestone yang sudah lulus tanpa perubahan atau temuan baru.
+Dokumen ini awalnya disusun sebagai handoff kepada agent pelaksana. R0–R5 dan R6a pernah dilaporkan telah dikerjakan; bukti pelaksanaan saat itu tercatat pada §11. Audit ulang kemudian menemukan masalah yang memerlukan perbaikan R1/R2/R3/R5. Agent yang melanjutkan harus memakai dokumen terbaru di atas dan memeriksa status repository aktual; arahan lama yang hanya berfokus pada R6b/R6c sudah tidak berlaku.
 
 ## 1. Goal dan ukuran keberhasilan
 
@@ -323,7 +325,9 @@ Uji manual cuti yang sebelumnya ditunda tidak perlu diminta ulang pada setiap mi
 
 Jika R6c atau skenario hosted belum dapat dijalankan, tandai **pending** dengan alasan dan langkah tersisa. R6 tetap terbuka; jangan menandai keseluruhan verifikasi selesai hanya karena deployment Ready atau unit test lulus.
 
-## 11. Rekap progres yang harus diisi agent pelaksana
+## 11. Rekap pelaksanaan sebelumnya — sebelum audit ulang
+
+Status “Selesai lokal” dalam tabel ini mencatat hasil yang dilaporkan sebelum audit ulang. Status eksekusi terkini mengikuti banner awal dan tabel Q0–Q7 pada dokumen terbaru; R1/R2/R3/R5 dibuka kembali.
 
 | Milestone | Status | Commit/hasil/bukti |
 | --- | --- | --- |
@@ -339,7 +343,7 @@ Jika R6c atau skenario hosted belum dapat dijalankan, tandai **pending** dengan 
 
 ### Catatan hasil pelaksanaan
 
-- Perbaikan A01–A07 sudah masuk source kerja, tetapi keseluruhan milestone belum selesai selama R6b/R6c pending.
+- Perbaikan A01–A07 sudah masuk source kerja. Audit ulang menemukan U01–U06 sehingga R1/R2/R3/R5 harus diperbaiki lagi; R6b/R6c juga tetap pending.
 - Supabase Security Advisor tidak menambah peringatan keamanan setelah migration; hitungan temuan yang tampak adalah baseline existing: 9 info RLS tanpa policy, 1 warning ekstensi `pg_net` di `public`, 33 warning fungsi `SECURITY DEFINER` authenticated yang merupakan pola RPC aplikasi, serta peringatan Auth MFA/leaked-password. Advisor performance kembali ke hitungan baseline 24 setelah indeks baru ditambahkan; temuan yang tersisa merupakan backlog existing.
 - Backfill Preview mencatat 0 kasus lama yang perlu diperbaiki, jadi tidak ada data operasional Preview yang berubah. Migration tetap membuat log private untuk koreksi jika ada baris stale pada environment lain.
 - E2E lokal memakai backend demo terisolasi. Tes live penyimpanan ambigu dilewati karena isolated Supabase mock belum dikonfigurasi; hosted acceptance tetap pending. Tes service worker/cache/offline yang dilewati pada suite umum sudah dijalankan terpisah dengan `E2E_PWA=1` pada build produksi lokal dan lulus; tes itu bukan bukti perilaku perangkat iPhone/iPad.
@@ -358,26 +362,13 @@ Agent berikutnya menyerahkan:
 5. Hasil pembersihan fixture hosted dan konfirmasi ruang lingkup environment yang disentuh.
 6. Sisa verifikasi hosted/perangkat secara spesifik. Status pending tidak dilaporkan sebagai lulus.
 
-## 13. Prompt siap pakai untuk melanjutkan verifikasi yang tersisa
+## 13. Prompt lanjutan yang diperbarui setelah audit ulang
 
 ```text
-Lanjutkan docs/goal-milestone-perbaikan-audit-tahap-a.md dari status pada §11.
-R0–R5 sudah lulus secara lokal dan R6a Preview sudah dirilis; jangan mengulang
-perbaikan atau suite lengkap tanpa perubahan/temuan baru. Branch saat ini
-codex/preview, deployment Preview memakai Supabase lypsqrwjzrmuyqtdcegr dan
-Vercel hr-rajaklana-jkt. Production dan main tetap di luar cakupan.
-
-Selesaikan R6b dengan Admin HR yang masuk ke Preview: uji konflik antar sesi,
-reconnect Realtime, hasil save ambigu/idempotensi, konteks kasus ketika source
-berubah, URL jadwal kasir, dan izin yang membuat sinyal durasi menjadi usang.
-Gunakan fixture Preview yang aman, catat kondisi awal, bersihkan melalui
-aplikasi/RPC, dan verifikasi audit/keadaan akhir. Jika hanya satu akun Admin
-tersedia, gunakan dua tab dan jelaskan batasnya. Jangan meminta kata sandi
-atau kode rahasia di chat.
-
-Selesaikan R6c pada iPhone/iPad dari ikon Layar Utama: background/resume,
-offline/online, draft saat pemulihan, tautan jadwal, dan perilaku push. Bila
-interaksi pengguna diperlukan, minta satu tindakan spesifik setelah semua
-verifikasi mandiri selesai. Perbarui status dan bukti; keseluruhan tugas tetap
-pending sampai R6b dan R6c benar-benar lulus.
+Gunakan docs/goal-milestone-perbaikan-audit-ulang-tahap-a.md sebagai acuan
+eksekusi terbaru, termasuk prompt pada §13 dokumen tersebut.
+R1/R2/R3/R5 dibuka kembali karena enam temuan audit ulang U01–U06.
+Kerjakan Q0–Q6 beserta regresinya sebelum rilis/verifikasi Q7.
+R4 tetap mempunyai bukti lulus; R6b/R6c lama tetap pending dan diteruskan
+melalui Q7b/Q7c. Branch sasaran codex/preview; Production/main di luar cakupan.
 ```

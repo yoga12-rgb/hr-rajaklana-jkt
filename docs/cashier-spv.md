@@ -32,9 +32,17 @@ Tombol **Pratinjau salin minggu sebelumnya** hanya mengisi sel target yang belum
 
 Satu penyimpanan dapat memuat beberapa kasir dan hari. Server memeriksa semua perubahan dan menolak seluruh batch bila satu baris tidak valid, ada absensi pada tanggal itu, snapshot jadwal telah berubah, atau shift berbenturan dengan cuti penuh yang disetujui. Jadwal harian tetap dapat dibuka dari tautan tanggal pada panel. Kasir akan menerima satu pemberitahuan jadwal mingguan per batch, bukan pemberitahuan terpisah untuk setiap harinya.
 
-Perubahan shift, outlet, alasan, dan kunci percobaan ulang disimpan sebagai draft pada browser untuk akun dan minggu yang sedang dipilih. Minggu yang dipilih juga dipertahankan pada alamat halaman, sehingga draft kembali saat halaman dibuka ulang. Draft ini hanya ada di perangkat/browser yang sama dan belum menjadi jadwal bersama sebelum tombol simpan berhasil. Jika browser menolak penyimpanan lokal, aplikasi menampilkan peringatan agar jadwal disimpan sebelum halaman ditutup.
+Perubahan shift, outlet, alasan, dan percobaan simpan disimpan sebagai draft pada browser untuk akun dan minggu yang sedang dipilih. Minggu yang dipilih juga dipertahankan pada alamat halaman. Draft ada di perangkat/browser yang sama dan belum menjadi jadwal bersama sampai penyimpanan terkonfirmasi. Jika browser menolak penyimpanan lokal, aplikasi menampilkan peringatan agar jadwal disimpan sebelum halaman ditutup.
 
-Jika muncul pesan **Jadwal berubah sejak pratinjau**, muat ulang halaman dan periksa kembali jadwal yang sudah diperbarui sebelum mengirim ulang. Jangan mengulang perubahan dengan alasan atau key yang berbeda tanpa memeriksa hasil penyimpanan sebelumnya.
+Jika jadwal server berubah saat draft terbuka, baris **Tinjau ... sel sebelum menyimpan** menampilkan nilai draft dan jadwal terbaru beserta dua pilihan. **Gunakan jadwal terbaru** membuang draft pada sel itu saja. **Terapkan kembali draft saya** mempertahankan pilihan Anda dengan menjadikan jadwal terbaru sebagai baseline; sel lain tetap perlu ditinjau sendiri.
+
+Jika respons simpan hilang dan aplikasi belum dapat memastikan hasilnya, draft menyimpan percobaan yang sama, termasuk payload dan kunci retry. Setelah reload, masuk kembali ke **Penugasan → Mingguan** pada akun dan minggu yang sama lalu tekan **Ulangi percobaan simpan sebelumnya**. Aplikasi mengirim ulang transaksi asli ke server agar server memeriksa idempotensi. Jangan mengganti atau mengirim batch baru sebelum percobaan itu selesai. Simpanan baru tetap diperiksa terhadap versi jadwal yang menjadi baseline; replay lama hanya boleh dikonfirmasi dengan payload/key yang persis sama.
+
+## Konteks kasus roster
+
+Kasus roster terbuka mengikuti outlet penugasan kasir yang aktif. Jika belum ada penugasan aktif, kasus memakai outlet utama karyawan. Perubahan outlet utama tidak memindahkan kasus selama penugasan aktif di outlet lain masih berlaku; saat penugasan dibatalkan, kasus mengikuti outlet utama yang berlaku.
+
+Mengubah shift ke **Libur** memperbarui konteks kasus terbuka, tetapi tidak menutup kasus otomatis. SPV tetap dapat mencatat tindak lanjut dan menyelesaikannya setelah pemeriksaan. Riwayat, penanggung jawab, dan catatan tetap tersimpan. Kasus yang sudah selesai mempertahankan snapshot penyelesaiannya sampai dibuka kembali melalui tindakan yang sah.
 
 ## Batas pemakaian dan lingkungan
 

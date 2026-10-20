@@ -16,7 +16,7 @@
   $: resolvedHistory = storedCases.filter(row => row.status === 'completed' && !activeCaseKeys.has(row.caseKey) && (!outletFilter || row.outletId === outletFilter));
   $: owners = $app.employees.filter(employee => employee.status === 'active' && employee.accountStatus === 'active' && employee.roles.includes('admin_hr'));
   const statusLabel = (status: string) => ({ new: 'Belum ditangani', in_progress: 'Diproses', completed: 'Selesai' }[status] ?? status);
-  const shiftName = (shift: 'morning' | 'afternoon' | 'middle') => shiftLabel(shift);
+  const shiftName = (shift: 'morning' | 'afternoon' | 'middle' | 'off') => shift === 'off' ? 'Libur' : shiftLabel(shift);
   const coverageLabel = (status: string) => ({ not_configured: 'Belum diatur', not_needed: 'Tidak membutuhkan kasir', shortage: 'Kurang kasir', needs_time_review: 'Perlu tinjauan jam', covered: 'Sesuai minimum' }[status] ?? status);
   const dayStatusLabel = (status: string) => ({ unassigned: 'Belum ditugaskan', off: 'Libur', leave: 'Cuti/izin disetujui', not_due: 'Belum waktunya masuk', flexible: 'Middle fleksibel', needs_confirmation: 'Perlu konfirmasi', working: 'Sedang bekerja', completed: 'Sudah pulang', needs_review: 'Perlu diperiksa' }[status] ?? status);
   onMount(() => { const timer = window.setInterval(() => now = Date.now(), 30_000); return () => window.clearInterval(timer); });

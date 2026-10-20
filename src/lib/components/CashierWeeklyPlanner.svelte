@@ -98,11 +98,16 @@
   $: changes = buildChanges(drafts);
   $: reviewEntries = Object.entries(drafts).flatMap(([draftKey, draft]) => {
     const separator = draftKey.lastIndexOf(':'), employeeId = draftKey.slice(0, separator), workDate = draftKey.slice(separator + 1);
-    const current = baselineFor(employeeId, workDate);
+    // Read the store directly so Svelte tracks source updates as a dependency
+    // and refreshes the review controls without an unrelated draft edit.
+    const current = cashierRosterBaseline(($app.cashierAssignments ?? []).find(row => row.employeeId === employeeId && row.workDate === workDate), cashiers.find(item => item.id === employeeId)?.outletId ?? '');
     return draft.needsReview || !cashierRosterBaselinesEqual(draft.baseline, current)
       ? [{ key: draftKey, employeeId, workDate, draft, current }] : [];
   });
   $: validationConflicts = changes.flatMap(change => {
+    // A stale baseline already has a per-cell review action above. Do not count
+    // the same source change again as a second generic validation conflict.
+    if (reviewEntries.some(entry => entry.employeeId === change.employeeId && entry.workDate === change.workDate)) return [];
     try { validateRosterBatch($app, $app.user?.id ?? '', weekStart, [{ ...change, reason: 'Pratinjau jadwal' }]); return []; }
     catch (error) { const employee = cashiers.find(item => item.id === change.employeeId); return [`${employee?.fullName ?? 'Kasir'} · ${dateLabel(change.workDate)}: ${error instanceof Error ? error.message : 'Konflik jadwal'}`]; }
   });
@@ -154,6 +159,7 @@
     if (saving || legacyAttemptNeedsReview || (!pendingAttempt && (!changes.length || conflicts.length))) return;
     saving = true; message = ''; failed = false;
     let attempt = pendingAttempt;
+    const replayingPersistedAttempt = attempt !== null;
     let attemptedChanges: CashierRosterChange[] = [];
     try {
       if (!attempt) {
@@ -162,7 +168,7 @@
         attempt = createCashierRosterAttempt(weekStart, attemptedChanges, null);
         pendingAttempt = attempt; persistDraft();
       } else attemptedChanges = structuredClone(attempt.changes);
-      const result = await actions.saveCashierRosterBatch(attempt.weekStart, attemptedChanges, attempt.idempotencyKey);
+      const result = await actions.saveCashierRosterBatch(attempt.weekStart, attemptedChanges, attempt.idempotencyKey, replayingPersistedAttempt);
       message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; copyPreview = null;
       clearAttemptedDrafts(attempt);
     } catch (error) {

@@ -9,9 +9,21 @@ const change = (overrides: Record<string, unknown> = {}) => ({ employeeId: 'cash
 
 describe('cashier roster draft persistence', () => {
   it('scopes a draft to its signed-in account and work week while retaining the legacy key', () => {
-    expect(cashierRosterDraftStorageKey('admin:1', '2026-10-19')).not.toBe(cashierRosterDraftStorageKey('admin:2', '2026-10-19'));
+    const accountA = cashierRosterDraftStorageKey('admin:1', '2026-10-19');
+    const accountB = cashierRosterDraftStorageKey('admin:2', '2026-10-19');
+    expect(accountA).not.toBe(accountB);
     expect(cashierRosterDraftStorageKey('admin:1', '2026-10-19')).not.toBe(cashierRosterDraftStorageKey('admin:1', '2026-10-26'));
-    expect(cashierRosterDraftStorageKey('admin:1', '2026-10-19')).toContain('-v1:');
+    expect(accountA).toContain('-v1:');
+
+    const change = { employeeId: 'cashier-1', workDate: '2026-10-19', outletId: 'outlet-a', shift: 'morning' as const,
+      reason: 'Penugasan uji', id: 'assignment-1', expectedUpdatedAt: '2026-10-18T03:00:00Z' };
+    const attempt = createCashierRosterAttempt('2026-10-19', [change], null, () => '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1');
+    const localStorage = new Map([[accountA, serializeCashierRosterDraft({
+      drafts: { 'cashier-1:2026-10-19': { shift: 'morning', outletId: 'outlet-a', baseline: cashierRosterBaseline(assignment(), 'outlet-a'), needsReview: false } },
+      reason: 'Penugasan uji', pendingAttempt: attempt, legacyAttemptNeedsReview: false
+    })]]);
+    expect(parseCashierRosterDraft(localStorage.get(accountB) ?? null)).toBeNull();
+    expect(parseCashierRosterDraft(localStorage.get(accountA) ?? null)?.pendingAttempt?.idempotencyKey).toBe(attempt.idempotencyKey);
   });
 
   it('round trips cell baselines, review state, and an unresolved immutable attempt', () => {

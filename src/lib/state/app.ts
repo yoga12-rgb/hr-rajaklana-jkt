@@ -27,6 +27,7 @@ let realtimeSubscribed = false;
 let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let realtimeRetryAttempt = 0;
 let authRevision = 0;
+let liveAuthUserId: string | null = null;
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
 function readDemoToken(token: string) {
@@ -158,6 +159,8 @@ async function refresh() {
 }
 function clearLiveState(error: string | null = null) {
   app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
+  if (timer) clearTimeout(timer);
+  timer = undefined;
   clearRealtimeRetry(true);
   const previousChannel = channel;
   channel = null;
@@ -254,9 +257,16 @@ async function readAll(table: string, fields = '*'): Promise<any[]> {
 }
 async function refreshNow() {
   if (!supabase || refreshing) return; refreshing = true;
-  const revision = authRevision;
+  let revision = authRevision;
   try {
     const { data: { session } } = await supabase.auth.getSession();
+    const nextAuthUserId = session?.user.id ?? null;
+    if (nextAuthUserId !== liveAuthUserId) {
+      liveAuthUserId = nextAuthUserId;
+      authRevision += 1;
+      revision = authRevision;
+      clearLiveState();
+    }
     if (!session) { if (revision === authRevision) clearLiveState(); return; }
     const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
     const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
@@ -347,7 +357,7 @@ function updateCharge(state: AppState, request: LeaveRequest, start: string, end
 export const actions = {
   async init() {
     if (get(app).initialized) return;
-    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000); }
+    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((_event, session) => { const nextAuthUserId = session?.user.id ?? null; if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000); }
     else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
     window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); resumeLiveConnection(); });
     window.addEventListener('offline', () => { clearRealtimeRetry(); app.update(s => ({ ...s, connected: false })); });
@@ -364,7 +374,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
@@ -577,10 +587,13 @@ export const actions = {
     commit(s => { s.staffingRequirements ??= []; const index = s.staffingRequirements.findIndex(item => item.id === row.id); if (index < 0) s.staffingRequirements.push(row); else s.staffingRequirements[index] = row; }, 'staffing_requirement_saved', row.id, `Minimum ${input.minimum} · ${input.shift} · mulai ${input.effectiveFrom}`);
     return row.id;
   },
-  async saveCashierRosterBatch(weekStart: string, changes: CashierRosterChange[], idempotencyKey: string) {
+  async saveCashierRosterBatch(weekStart: string, changes: CashierRosterChange[], idempotencyKey: string, replayPersistedAttempt = false) {
     requireAdmin();
     const state = get(app), actor = user();
-    validateRosterBatch(state, actor.id, weekStart, changes);
+    // New writes are checked against the current client snapshot. An exact
+    // persisted replay must reach the server's idempotency lookup first: its
+    // original commit may itself have advanced updated_at in this browser.
+    if (!configured || !replayPersistedAttempt) validateRosterBatch(state, actor.id, weekStart, changes);
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)) throw new Error('Kunci penyimpanan jadwal tidak valid.');
     if (configured) {
       const result = await rpc('cashier_roster_batch_save', { p_week_start: weekStart, p_idempotency_key: idempotencyKey,
