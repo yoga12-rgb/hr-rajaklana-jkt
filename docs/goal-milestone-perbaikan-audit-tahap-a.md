@@ -1,6 +1,6 @@
 # Goal, alur perbaikan, dan milestone hasil audit Tahap A
 
-Tanggal rencana: **20 Oktober 2026 (WIB)**. Status pelaksanaan: **R0–R5 selesai dan lulus di lokal; R6 Preview sudah dimulai, verifikasi hosted/perangkat masih berjalan**.
+Tanggal rencana: **20 Oktober 2026 (WIB)**. Status pelaksanaan: **R0–R5 lulus di lokal; R6a Preview selesai; R6b hosted dan R6c perangkat masih pending**.
 
 Acuan utama: [laporan audit 20 Oktober 2026](audit-tahap-a-2026-10-20.md). Source saat penyusunan: branch `codex/preview`, HEAD `77621e875a9aa3f1b87331baa884e72528f5ec7c`.
 
@@ -316,7 +316,7 @@ Uji manual cuti yang sebelumnya ditunda tidak perlu diminta ulang pada setiap mi
 
 ### Kriteria selesai R6
 
-- [ ] R6a: source final dan migration benar-benar terpasang hanya pada Preview; SHA/deployment/query verifikasi tercatat.
+- [x] R6a: source final dan migration terpasang hanya pada Preview; SHA/deployment/query verifikasi tercatat.
 - [ ] R6b: skenario hosted di atas lulus, perubahan uji dipulihkan, dan batas jumlah akun/sesi dijelaskan.
 - [ ] R6c: skenario perangkat lulus dengan bukti pengguna/perangkat yang jelas.
 - [ ] Status akhir membedakan implementasi lokal, rilis Preview, verifikasi hosted, dan verifikasi perangkat.
@@ -333,7 +333,7 @@ Jika R6c atau skenario hosted belum dapat dijalankan, tandai **pending** dengan 
 | R3 — A03/A04/A07 | Selesai lokal | Kasus terbuka tetap actionable; source context aktif diselaraskan dan diaudit, data lama diperbaiki dengan private before/after log, kasus selesai mempertahankan snapshot sampai reopen, dan validasi izin dihitung ulang server. PGlite upgrade/RPC lulus. Preview backfill menemukan 0 kasus lama yang perlu dikoreksi. |
 | R4 — A05 | Selesai lokal | Route `?week=` dinormalisasi ke Senin; kasir melihat tujuh hari jadwal miliknya. E2E demo dan pemeriksaan privasi database lulus. |
 | R5 | Selesai lokal | `check` 0 error/0 warning; unit 352/352; database + biometrik/push lulus; legacy reset refusal lulus; build lulus; E2E 19 passed, 2 skipped (dua tes membutuhkan konfigurasi Supabase hosted). `git diff --check` bersih. |
-| R6a — Rilis Preview | Berjalan | Supabase `lypsqrwjzrmuyqtdcegr` terverifikasi sebagai `hr-rajaklana-preview`; migration Preview `20261020060745_cashier_spv_audit_repairs` dan `20261020060913_cashier_spv_followup_repair_log_index` sudah diterapkan. RPC, trigger, index, hak baca log private, dan jumlah backfill diverifikasi; 0 data kasus berubah. Source push/deployment Preview masih perlu dicatat. |
+| R6a — Rilis Preview | Selesai | Commit `57907c9fc639b545a69dae07dd7753ce90404329` pada `codex/preview`; Vercel deployment `dpl_HxrXiohcTcmq3ZEV7vn1KpjpjpPV` berstatus READY, alias `hr-rajaklana-jkt-preview.vercel.app`, source Git `yoga12-rgb/hr-rajaklana-jkt`. Supabase Preview `lypsqrwjzrmuyqtdcegr` menjalankan migration `20261020060745_cashier_spv_audit_repairs` dan `20261020060913_cashier_spv_followup_repair_log_index`; query memverifikasi RPC, trigger, index, hak akses log private, publication Realtime, dan 0 backfill. GET `/login`, `/manifest.webmanifest`, dan bundle utama berhasil melalui `vercel curl` dengan proteksi tetap aktif. |
 | R6b — Hosted | Pending | Belum dijalankan: memerlukan Admin HR Preview yang login untuk dua sesi, reconnect, hasil simpan ambigu, perubahan kasus/izin dan pemulihan fixture. Uji hosted Auth/Storage juga belum dijalankan. |
 | R6c — Perangkat | Pending | Uji PWA iPhone/iPad dari ikon Layar Utama, latar/offline/online, dan notifikasi masih memerlukan interaksi perangkat. |
 
@@ -343,6 +343,7 @@ Jika R6c atau skenario hosted belum dapat dijalankan, tandai **pending** dengan 
 - Supabase Security Advisor tidak menambah peringatan keamanan setelah migration; hitungan temuan yang tampak adalah baseline existing: 9 info RLS tanpa policy, 1 warning ekstensi `pg_net` di `public`, 33 warning fungsi `SECURITY DEFINER` authenticated yang merupakan pola RPC aplikasi, serta peringatan Auth MFA/leaked-password. Advisor performance kembali ke hitungan baseline 24 setelah indeks baru ditambahkan; temuan yang tersisa merupakan backlog existing.
 - Backfill Preview mencatat 0 kasus lama yang perlu diperbaiki, jadi tidak ada data operasional Preview yang berubah. Migration tetap membuat log private untuk koreksi jika ada baris stale pada environment lain.
 - E2E lokal memakai backend demo terisolasi. Dua tes live yang dilewati bukan bukti hosted lulus; keduanya perlu dijalankan sesudah source Preview siap.
+- GitHub Actions run tidak dapat dibaca dari sesi ini (`gh` CLI tidak terpasang dan endpoint GitHub tidak tersedia melalui konektor web); padanan check/unit/database/legacy/build lulus lokal dan build Vercel deployment berstatus READY.
 
 Setelah setiap milestone, catat perubahan, tes yang benar-benar dijalankan, temuan baru, commit terkait, dan pekerjaan tersisa. Hindari mengulang suite lengkap tanpa perubahan atau alasan baru.
 
