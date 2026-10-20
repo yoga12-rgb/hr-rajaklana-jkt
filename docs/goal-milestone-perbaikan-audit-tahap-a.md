@@ -4,7 +4,7 @@ Tanggal rencana: **20 Oktober 2026 (WIB)**. Status pelaksanaan: **R0–R5 lulus 
 
 Acuan utama: [laporan audit 20 Oktober 2026](audit-tahap-a-2026-10-20.md). Source saat penyusunan: branch `codex/preview`, HEAD `77621e875a9aa3f1b87331baa884e72528f5ec7c`.
 
-Dokumen ini ditujukan kepada agent pelaksana berikutnya. Tugas sesi penyusun hanya membuat rencana; tidak menerapkan perbaikan, migration, commit, push, atau deployment. Ketika pengguna memberikan dokumen ini sebagai instruksi eksekusi, kerjakan cakupan R0–R6 di bawah. Periksa ulang kondisi repository saat mulai karena source dapat berubah setelah handoff.
+Dokumen ini awalnya disusun sebagai handoff kepada agent pelaksana. Setelah pengguna memberi instruksi eksekusi, R0–R5 dan R6a telah dikerjakan; bukti dan status aktual tercatat pada §11. Agent yang melanjutkan harus memeriksa status repository terbaru dan berfokus pada R6b/R6c yang masih pending, bukan mengulang milestone yang sudah lulus tanpa perubahan atau temuan baru.
 
 ## 1. Goal dan ukuran keberhasilan
 
@@ -358,30 +358,26 @@ Agent berikutnya menyerahkan:
 5. Hasil pembersihan fixture hosted dan konfirmasi ruang lingkup environment yang disentuh.
 6. Sisa verifikasi hosted/perangkat secara spesifik. Status pending tidak dilaporkan sebagai lulus.
 
-## 13. Prompt siap pakai untuk agent berikutnya
+## 13. Prompt siap pakai untuk melanjutkan verifikasi yang tersisa
 
 ```text
-Eksekusi docs/goal-milestone-perbaikan-audit-tahap-a.md dengan teliti,
-mengacu pada docs/audit-tahap-a-2026-10-20.md. Cakupan adalah R0–R6 untuk
-menutup A01–A07; Tahap B tidak dikerjakan. Mulai dengan memeriksa source,
-branch, perubahan lokal, dan instruksi repository yang berlaku.
+Lanjutkan docs/goal-milestone-perbaikan-audit-tahap-a.md dari status pada §11.
+R0–R5 sudah lulus secara lokal dan R6a Preview sudah dirilis; jangan mengulang
+perbaikan atau suite lengkap tanpa perubahan/temuan baru. Branch saat ini
+codex/preview, deployment Preview memakai Supabase lypsqrwjzrmuyqtdcegr dan
+Vercel hr-rajaklana-jkt. Production dan main tetap di luar cakupan.
 
-Prioritaskan A01: baseline draft harus tetap sampai pengguna meninjau
-konflik secara eksplisit. Tangani draft lama serta payload/key retry ambigu
-tanpa kehilangan data atau menimpa perubahan sesi lain. Sesudah itu benahi
-lifecycle SDK/status RPC, tindak lanjut beserta data existing, validasi izin,
-dan tampilan jadwal mingguan milik kasir.
+Selesaikan R6b dengan Admin HR yang masuk ke Preview: uji konflik antar sesi,
+reconnect Realtime, hasil save ambigu/idempotensi, konteks kasus ketika source
+berubah, URL jadwal kasir, dan izin yang membuat sinyal durasi menjadi usang.
+Gunakan fixture Preview yang aman, catat kondisi awal, bersihkan melalui
+aplikasi/RPC, dan verifikasi audit/keadaan akhir. Jika hanya satu akun Admin
+tersedia, gunakan dua tab dan jelaskan batasnya. Jangan meminta kata sandi
+atau kode rahasia di chat.
 
-Buktikan perbaikan memakai regresi UI, SDK terpasang, database authenticated,
-dan integrasi yang relevan. Migration harus baru dan bersifat koreksi ke
-depan; pertahankan seluruh riwayat/audit. Rilis yang termasuk cakupan hanya
-branch codex/preview dan Supabase Preview lypsqrwjzrmuyqtdcegr, setelah
-memastikan identitas target aktual. Jangan mengubah Production atau main.
-
-Perbarui progres dan bukti setelah setiap milestone. Setelah lokal lulus,
-verifikasi CI/deployment Preview dan skenario hosted, kemudian uji perangkat
-bila tersedia. Sisa uji manual yang benar-benar belum dijalankan tetap
-pending; jangan menyatakan keseluruhan selesai hanya dari tes lokal atau
-status Ready. Jangan meminta pengguna mengulang uji yang sudah terbukti,
-dan jangan meminta kata sandi/kode rahasia ke chat.
+Selesaikan R6c pada iPhone/iPad dari ikon Layar Utama: background/resume,
+offline/online, draft saat pemulihan, tautan jadwal, dan perilaku push. Bila
+interaksi pengguna diperlukan, minta satu tindakan spesifik setelah semua
+verifikasi mandiri selesai. Perbarui status dan bukti; keseluruhan tugas tetap
+pending sampai R6b dan R6c benar-benar lulus.
 ```
