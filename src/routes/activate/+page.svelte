@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { goto, replaceState } from '$app/navigation';
+  import { goto } from '$app/navigation';
   import { actions, app } from '#lib/state/app';
   let token='',purpose='activate',name='',number='',password='',confirm='',error='',busy=false,done=false,loaded=false;
   onMount(()=>{void load();});
   async function load(){await actions.init();const url=new URL(location.href);token=new URLSearchParams(url.hash.slice(1)).get('token')??url.searchParams.get('token')??'';try{if(!token)throw new Error('Tautan tidak lengkap. Minta tautan baru kepada HR.');const data=await actions.inspectToken(token);purpose=data.purpose;name=data.full_name;number=data.employee_number;loaded=true;}catch(e){error=e instanceof Error?e.message:'Tautan tidak dapat dibuka.';}}
-  async function activate(){error='';busy=true;try{if(password!==confirm)throw new Error('Konfirmasi kata sandi belum sama.');await actions.activate(token,password,purpose);done=true;password='';confirm='';await replaceState('/activate',{});}catch(e){error=e instanceof Error?e.message:'Aktivasi belum berhasil.';}finally{busy=false;}}
-  async function enterAccount(){busy=true;error='';try{await actions.logout();await goto('/login',{replaceState:true,state:{employeeNumber:number}});}catch(e){error=e instanceof Error?e.message:'Sesi lama belum berhasil diakhiri. Coba kembali.';}finally{busy=false;}}
+  async function activate(){error='';busy=true;try{if(password!==confirm)throw new Error('Konfirmasi kata sandi belum sama.');await actions.activate(token,password,purpose);done=true;password='';confirm='';await goto('/activate',{state:{},shallow:true,replace:true});}catch(e){error=e instanceof Error?e.message:'Aktivasi belum berhasil.';}finally{busy=false;}}
+  async function enterAccount(){busy=true;error='';try{await actions.logout();await goto('/login',{replace:true,state:{employeeNumber:number}});}catch(e){error=e instanceof Error?e.message:'Sesi lama belum berhasil diakhiri. Coba kembali.';}finally{busy=false;}}
 </script>
 <svelte:head><title>{purpose==='reset'?'Pemulihan akun':'Aktivasi akun'} · Rajaklana HR</title><meta name="robots" content="noindex,nofollow"/><meta name="referrer" content="no-referrer"/></svelte:head>
 <main>

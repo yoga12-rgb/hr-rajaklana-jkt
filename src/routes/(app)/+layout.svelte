@@ -24,7 +24,7 @@
     { href:'/guide',label:'Panduan',icon:'file' }
   ];
   $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments'].includes(n.href));
-  $: if ($app.initialized && !$app.user) void goto('/login', { replaceState:true });
+  $: if ($app.initialized && !$app.user) void goto('/login', { replace:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };
     const updateNetwork = () => { networkOnline = navigator.onLine; };

@@ -10,7 +10,7 @@
     const suggestedNumber = page.state.employeeNumber;
     if (suggestedNumber && /^RK\d{6,}$/.test(suggestedNumber)) number = suggestedNumber;
   });
-  $: if ($app.initialized && $app.user) void goto('/dashboard', { replaceState:true });
+  $: if ($app.initialized && $app.user) void goto('/dashboard', { replace:true });
   async function login() { busy=true;error='';try{await actions.login(number,password);await goto('/dashboard');}catch(e){error=e instanceof Error?e.message:'Belum berhasil masuk.';}finally{busy=false;} }
   async function demo(employeeId:string) { busy=true;try{await actions.switchDemoUser(employeeId);await goto('/dashboard');}finally{busy=false;} }
 </script>

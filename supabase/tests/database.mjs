@@ -27,12 +27,52 @@ await db.exec(`
 const migrationDir = new URL('../migrations/', import.meta.url);
 const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
 for (const name of migrationNames) {
+  // Seed a deliberately stale open case after the old roster migration but
+  // before the forward repair migration, proving the actual upgrade backfill.
+  if (name === '20261020060745_cashier_spv_audit_repairs.sql') {
+    const ids = {
+      department: '30000000-0000-4000-8000-000000000001', position: '30000000-0000-4000-8000-000000000002',
+      sourceOutlet: '30000000-0000-4000-8000-000000000003', staleOutlet: '30000000-0000-4000-8000-000000000004',
+      employee: '30000000-0000-4000-8000-000000000005', assignment: '30000000-0000-4000-8000-000000000006',
+      followup: '30000000-0000-4000-8000-000000000007'
+    };
+    const day = (await db.query("select ((now() at time zone 'Asia/Jakarta')::date-1)::text as day")).rows[0].day;
+    await db.query("insert into public.departments(id,name) values($1,'Reparasi Audit Uji')", [ids.department]);
+    await db.query("insert into public.positions(id,department_id,name,is_cashier) values($1,$2,'Kasir Reparasi Uji',true)", [ids.position,ids.department]);
+    await db.query("insert into public.outlets(id,name) values($1,'Outlet Sumber Reparasi Uji'),($2,'Outlet Lama Reparasi Uji')", [ids.sourceOutlet,ids.staleOutlet]);
+    await db.query(`insert into public.employees(id,full_name,whatsapp,department_id,position_id,outlet_id,starts_on,can_clock,account_status)
+      values($1,'Kasir Reparasi Uji','081234567890',$2,$3,$4,$5,true,'active')`, [ids.employee,ids.department,ids.position,ids.sourceOutlet,day]);
+    await db.query(`insert into public.cashier_assignments(id,employee_id,work_date,outlet_id,shift,reason,created_by)
+      values($1,$2,$3,$4,'afternoon','Fixture sumber otoritatif untuk upgrade',$2)`, [ids.assignment,ids.employee,day,ids.sourceOutlet]);
+    await db.query(`insert into public.spv_followups(id,case_key,issue_type,source_type,source_id,work_date,outlet_id,employee_id,shift,created_by,updated_by)
+      values($1,$2,'missing_clockin','assignment',$3,$4,$5,$6,'morning',$6,$6)`,
+      [ids.followup,`missing_clockin:${ids.assignment}`,ids.assignment,day,ids.staleOutlet,ids.employee]);
+    globalThis.spvRepairUpgradeFixture = { ids, day };
+  }
   let sql = await readFile(new URL(name, migrationDir), 'utf8');
   // gen_random_uuid is built into Postgres17. The pgcrypto package is owned by
   // hosted Supabase but not bundled in PGlite; no other statement is removed.
   sql = sql.replace('create extension if not exists pgcrypto with schema extensions;', '');
   try { await db.exec(sql); console.log(`Migration OK: ${name}`); }
   catch (error) { console.error(`Migration FAILED: ${name}`, error.message); throw error; }
+  if (name === '20261020060745_cashier_spv_audit_repairs.sql') {
+    const { ids, day } = globalThis.spvRepairUpgradeFixture;
+    const repaired = (await db.query('select id,work_date::text as work_date,outlet_id,employee_id,shift from public.spv_followups where id=$1',[ids.followup])).rows[0];
+    assert.deepEqual(repaired,{ id:ids.followup,work_date:day,outlet_id:ids.sourceOutlet,employee_id:ids.employee,shift:'afternoon' },
+      'upgrade migration aligns an open case with its source without replacing its identity');
+    const repairRecord = (await db.query(`select before_data->>'outlet_id' as before_outlet,after_data->>'outlet_id' as after_outlet
+      from private.spv_followup_context_repair_log where migration_key='20261020052932_cashier_spv_audit_repairs' and followup_id=$1`,[ids.followup])).rows[0];
+    assert.deepEqual(repairRecord,{ before_outlet:ids.staleOutlet,after_outlet:ids.sourceOutlet },'upgrade captures private before/after repair evidence');
+    await db.query('delete from private.spv_followup_context_repair_log where followup_id=$1',[ids.followup]);
+    await db.query('delete from public.spv_followups where id=$1',[ids.followup]);
+    await db.query('delete from public.cashier_assignments where id=$1',[ids.assignment]);
+    await db.query('delete from public.employees where id=$1',[ids.employee]);
+    await db.query('delete from public.positions where id=$1',[ids.position]);
+    await db.query('delete from public.departments where id=$1',[ids.department]);
+    await db.query('delete from public.outlets where id in ($1,$2)',[ids.sourceOutlet,ids.staleOutlet]);
+    delete globalThis.spvRepairUpgradeFixture;
+    console.log('SPV upgrade backfill OK: open case context corrected, ID retained, private before/after evidence captured');
+  }
 }
 const scalar = async (sql, params=[]) => (await db.query(sql,params)).rows[0];
 // Employee mutexes must serialize competing writes while remaining compatible
@@ -848,12 +888,57 @@ assert.equal(follow.status,'new');
 assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row.id,follow.id,'refresh/retry reuses one case');
 const inProgress=(await scalar("select to_jsonb(public.spv_followup_update($1,'in_progress',$2,$3,'')) as row",[follow.id,adminId,'Menghubungi kasir untuk konfirmasi'])).row;
 assert.equal(inProgress.owner_id,adminId);
+const movedSource=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Rotasi outlet dan shift selama tindak lanjut',$4,false)) as row",
+  [operationalId,followDate,alternateOutlet.id,followAssignment.id])).row;
+const refreshedFollow=(await scalar('select to_jsonb(f) as row from public.spv_followups f where id=$1',[follow.id])).row;
+assert.equal(refreshedFollow.shift,'afternoon','an active case follows its changed source shift in the same transaction');
+assert.equal(refreshedFollow.outlet_id,alternateOutlet.id,'an active case follows its changed source outlet');
+assert.equal(refreshedFollow.owner_id,adminId,'source refresh preserves the selected owner');
+assert.equal(refreshedFollow.note,'Menghubungi kasir untuk konfirmasi','source refresh preserves follow-up notes');
+assert.ok((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1 and action='source_context_refreshed'",[follow.id])).count===1,
+  'source move records before/after follow-up audit evidence');
 const completed=(await scalar("select to_jsonb(public.spv_followup_update($1,'completed',$2,$3,$4)) as row",[follow.id,adminId,'Kasir memberi penjelasan','Konfirmasi langsung selesai dan dicatat'])).row;
 assert.equal(completed.status,'completed');
-const reopened=(await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row;
+await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Sumber bergerak setelah kasus selesai',$4,false)",[operationalId,followDate,outlet.id,followAssignment.id]);
+const completedSnapshot=(await scalar('select to_jsonb(f) as row from public.spv_followups f where id=$1',[follow.id])).row;
+assert.equal(completedSnapshot.outlet_id,alternateOutlet.id,'a completed case preserves its historical outlet while the source moves again');
+assert.equal(completedSnapshot.shift,'afternoon','a completed case preserves its historical shift until an explicit reopen');
+const reopenArgs=['missing_clockin',followDate,outlet.id,operationalId,'morning','assignment',followAssignment.id];
+const reopened=(await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',reopenArgs)).row;
 assert.equal(reopened.status,'new');
 assert.equal(reopened.reopened_count,1,'a recurring source reopens the same audited case');
-assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,4);
+assert.equal(reopened.outlet_id,outlet.id,'reopening uses the source current outlet');
+assert.equal(reopened.shift,'morning','reopening uses the source current shift');
+assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',reopenArgs)).row.reopened_count,1,
+  'retrying the same open case does not count a second reopen');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,5);
+
+const shortDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-7)::text as day")).day;
+const shortAttendance=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
+  [operationalId,'afternoon',`${shortDate}T15:00:00+07:00`,`${shortDate}T22:00:00+07:00`,'Absensi 7 jam untuk uji izin pulang awal'])).row;
+assert.equal(shortAttendance.worked_minutes,420);
+await db.query("select public.leave_record_retrospective($1,'personal',$2,$2,'Izin pulang awal','early_departure','22:00',null,'{}','Dikonfirmasi atasan outlet')",
+  [operationalId,shortDate]);
+await workflowError("select public.spv_followup_start('short_duration',$1,$2,$3,$4,'attendance',$5)",
+  [shortDate,shortAttendance.outlet_id,operationalId,'afternoon',shortAttendance.id],'Selisih durasi sudah dijelaskan');
+assert.equal((await scalar("select count(*)::int as count from public.spv_followups where source_id=$1",[shortAttendance.id])).count,0,
+  'an approved permit explaining the full shortfall does not create a stale case');
+
+const residualDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-8)::text as day")).day;
+const residualAttendance=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
+  [operationalId,'afternoon',`${residualDate}T15:00:00+07:00`,`${residualDate}T21:30:00+07:00`,'Absensi 6,5 jam untuk uji sisa izin'])).row;
+await db.query("select public.leave_record_retrospective($1,'personal',$2,$2,'Izin pulang awal sebagian','early_departure','22:00',null,'{}','Dikonfirmasi atasan outlet')",
+  [operationalId,residualDate]);
+const residualCase=(await scalar("select to_jsonb(public.spv_followup_start('short_duration',$1,$2,$3,$4,'attendance',$5)) as row",
+  [residualDate,residualAttendance.outlet_id,operationalId,'afternoon',residualAttendance.id])).row;
+assert.equal(residualCase.issue_type,'short_duration','a partially explained shortfall still needs review');
+
+const unexplainedDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-9)::text as day")).day;
+const unexplainedAttendance=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
+  [operationalId,'afternoon',`${unexplainedDate}T15:00:00+07:00`,`${unexplainedDate}T22:00:00+07:00`,'Absensi tanpa izin untuk uji durasi'])).row;
+const unexplainedCase=(await scalar("select to_jsonb(public.spv_followup_start('short_duration',$1,$2,$3,$4,'attendance',$5)) as row",
+  [unexplainedDate,unexplainedAttendance.outlet_id,operationalId,'afternoon',unexplainedAttendance.id])).row;
+assert.equal(unexplainedCase.issue_type,'short_duration','an unexplained shortfall remains eligible for follow-up');
 const leaveOnlyDate=await scalar(`select d::date::text as day from generate_series(
   (now() at time zone 'Asia/Jakarta')::date-10,(now() at time zone 'Asia/Jakarta')::date-1,interval '1 day') d
   where not exists(select 1 from unnest((select weekly_off_days from public.employees where id=$1)) off_day(value)

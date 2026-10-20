@@ -167,6 +167,36 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.locator('.requirement-list')).toContainText('0');
   });
 
+  test('an open unassigned case stays actionable after a historical assignment resolves its signal', async ({ page }) => {
+    await login(page);
+    const day = dateAfter(-1);
+    const cases = page.locator('.spv-panel');
+    await cases.getByLabel('Tanggal kerja (WIB)', { exact: true }).fill(day);
+    const unassigned = page.locator('.case-card').filter({ hasText: 'Nadia Putri' }).filter({ hasText: 'Belum ditugaskan' });
+    await expect(unassigned).toBeVisible();
+    await unassigned.getByRole('button', { name: 'Mulai tindak lanjut', exact: true }).click();
+    await unassigned.locator('select').first().selectOption('employee-2');
+    await unassigned.getByRole('button', { name: 'Tetapkan & proses', exact: true }).click();
+    await expect(unassigned.getByText('Diproses', { exact: true })).toBeVisible();
+
+    await page.goto(`/assignments?date=${day}`);
+    await page.locator('.assignment-form select').first().selectOption('employee-4');
+    await page.locator('.assignment-form select').nth(1).selectOption('outlet-a');
+    await page.locator('.assignment-form select').nth(2).selectOption('morning');
+    await page.getByLabel('Alasan / sumber penugasan', { exact: true }).fill('Penugasan lampau dikonfirmasi untuk uji kasus');
+    await page.getByRole('button', { name: 'Simpan penugasan', exact: true }).click();
+    await expect(page.getByText('Penugasan harian tersimpan. Kasir mengikuti outlet dan shift ini saat clock in.', { exact: true })).toBeVisible();
+
+    await page.goto('/dashboard');
+    await page.locator('.spv-panel').getByLabel('Tanggal kerja (WIB)', { exact: true }).fill(day);
+    const resolved = page.locator('.case-card[data-case-id]').filter({ hasText: 'Nadia Putri' }).filter({ hasText: 'Kondisi sumber sudah teratasi' });
+    await expect(resolved).toBeVisible();
+    await expect(resolved.getByRole('button', { name: 'Selesaikan', exact: true })).toBeVisible();
+    await resolved.getByLabel('Catatan penyelesaian', { exact: true }).fill('Kasir sudah menerima jadwal pengganti dan kasus ditutup.');
+    await resolved.getByRole('button', { name: 'Selesaikan', exact: true }).click();
+    await expect(page.locator('.history')).toContainText('unassigned');
+  });
+
   test('weekly roster draft survives reload and is isolated by account and week', async ({ page }) => {
     await login(page);
     await page.goto('/assignments');
@@ -198,6 +228,72 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
     await expect(page.locator('.planner-heading')).toContainText('2026-10-26 – 2026-11-01');
+  });
+
+  test('weekly draft conflict survives refresh and editing another cell', async ({ page, browser }) => {
+    await login(page);
+    await page.goto('/assignments?week=2026-11-02');
+    await page.getByLabel(/Shift Sari Lestari,/).nth(0).selectOption('afternoon');
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Draft sesi pertama harus ditinjau');
+    await expect(page.locator('.save-info')).toContainText('1 perubahan draft');
+
+    const otherContext = await browser.newContext({ locale: 'id-ID', timezoneId: 'Asia/Jakarta', viewport: { width: 1440, height: 1000 } });
+    try {
+      const secondAdmin = await otherContext.newPage();
+      const secondaryErrors: string[] = [];
+      secondAdmin.on('pageerror', error => secondaryErrors.push(error.message));
+      await secondAdmin.goto(new URL('/login', page.url()).href);
+      await secondAdmin.getByRole('button', { name: 'Admin HR', exact: true }).click();
+      await expect(secondAdmin).toHaveURL(/\/dashboard$/);
+      await secondAdmin.goto(new URL('/assignments?week=2026-11-02', page.url()).href);
+      await secondAdmin.getByLabel(/Shift Sari Lestari,/).nth(0).selectOption('morning');
+      await secondAdmin.getByLabel('Alasan perubahan batch', { exact: true }).fill('Perubahan sesi kedua tersimpan di server');
+      await secondAdmin.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+      await expect(secondAdmin.getByText(/perubahan jadwal tersimpan bersama/)).toBeVisible();
+      const latestServerState = await secondAdmin.evaluate(() => localStorage.getItem('rajaklana-hr-demo-v1'));
+      expect(latestServerState).not.toBeNull();
+
+      // Keep the first session's independent local draft and load only the
+      // second session's committed app state, as a server refetch would.
+      await page.evaluate(state => localStorage.setItem('rajaklana-hr-demo-v1', state!), latestServerState);
+      await page.reload();
+      await expect(page.getByLabel(/Shift Sari Lestari,/).nth(0)).toHaveValue('afternoon');
+      await expect(page.getByText('Tinjau 1 sel sebelum menyimpan', { exact: true })).toBeVisible();
+      await expect(page.locator('.review-cell')).toContainText('Draft Anda: Sore');
+      await expect(page.locator('.review-cell')).toContainText('Jadwal terbaru: Pagi');
+      const save = page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true });
+      await expect(save).toBeDisabled();
+
+      await page.getByLabel(/Shift Sari Lestari,/).nth(1).selectOption('morning');
+      await expect(page.locator('.save-info')).toContainText('2 perubahan draft');
+      await expect(page.getByText('Tinjau 1 sel sebelum menyimpan', { exact: true })).toBeVisible();
+      await expect(save).toBeDisabled();
+      expect(secondaryErrors).toEqual([]);
+    } finally {
+      await otherContext.close();
+    }
+  });
+
+  test('cashier weekly notification URL shows only that account’s seven-day roster', async ({ page }) => {
+    await login(page);
+    await page.goto('/assignments?week=2026-11-02');
+    await page.getByLabel(/Shift Sari Lestari,/).nth(1).selectOption('morning');
+    await page.getByLabel(/Shift Sari Lestari,/).nth(2).selectOption('afternoon');
+    await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Jadwal uji untuk tautan notifikasi mingguan');
+    await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+    await expect(page.getByText(/perubahan jadwal tersimpan bersama/)).toBeVisible();
+
+    await switchUser(page, 'employee-6');
+    await page.goto('/assignments?week=2026-11-05');
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan Anda', exact: true })).toBeVisible();
+    await expect(page.locator('.week-heading')).toContainText('2026-11-02 – 2026-11-08');
+    await expect(page.locator('.day-card')).toHaveCount(7);
+    await expect(page.locator('.day-card').nth(1)).toContainText('Pagi');
+    await expect(page.locator('.day-card').nth(2)).toContainText('Sore');
+    await expect(page.locator('.day-card').nth(1)).toContainText(/Outlet/);
+    await expect(page.getByRole('combobox')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true })).toHaveCount(0);
+    await expect(page.getByText('Nadia Putri', { exact: true })).toHaveCount(0);
   });
 
   test('reverting the last weekly change clears the empty local draft', async ({ page }) => {

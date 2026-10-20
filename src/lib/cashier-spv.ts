@@ -6,6 +6,11 @@ const dayMs = 86_400_000;
 const shifts: Shift[] = ['morning', 'afternoon', 'middle'];
 const cashier = (state: AppState, employee: Employee) => state.positions.some(position => position.id === employee.positionId && position.isCashier);
 const dateAt = (day: string, hour = 12) => new Date(`${day}T${String(hour).padStart(2, '0')}:00:00Z`);
+export function isValidWorkDate(day: unknown): day is string {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const parsed = dateAt(day);
+  return Number.isFinite(+parsed) && parsed.toISOString().slice(0, 10) === day;
+}
 export const addWorkDays = (day: string, amount: number) => new Date(+dateAt(day) + amount * dayMs).toISOString().slice(0, 10);
 export function startOfWorkWeek(day: string): string {
   const weekday = dateAt(day).getUTCDay();

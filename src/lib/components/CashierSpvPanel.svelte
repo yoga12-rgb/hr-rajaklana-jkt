@@ -8,10 +8,12 @@
   let ownerDraft: Record<string, string> = {}, noteDraft: Record<string, string> = {}, resolutionDraft: Record<string, string> = {};
   $: coverage = staffingCoverage($app, date).filter(row => !outletFilter || row.outletId === outletFilter);
   $: dayStatuses = cashierDayStatuses($app, date, now).filter(row => !outletFilter || row.outletId === outletFilter);
-  $: signals = operationalSignals($app, date).filter(item => !outletFilter || item.input.outletId === outletFilter);
-  $: activeCaseKeys = new Set(signals.map(item => item.key));
-  $: storedCases = ($app.spvFollowups ?? []).filter(row => row.workDate === date && (!outletFilter || row.outletId === outletFilter));
-  $: resolvedHistory = storedCases.filter(row => !activeCaseKeys.has(row.caseKey));
+  $: allSignals = operationalSignals($app, date);
+  $: signals = allSignals.filter(item => !outletFilter || item.input.outletId === outletFilter);
+  $: activeCaseKeys = new Set(allSignals.map(item => item.key));
+  $: storedCases = ($app.spvFollowups ?? []).filter(row => row.workDate === date);
+  $: openResolvedCases = storedCases.filter(row => row.status !== 'completed' && !activeCaseKeys.has(row.caseKey) && (!outletFilter || row.outletId === outletFilter));
+  $: resolvedHistory = storedCases.filter(row => row.status === 'completed' && !activeCaseKeys.has(row.caseKey) && (!outletFilter || row.outletId === outletFilter));
   $: owners = $app.employees.filter(employee => employee.status === 'active' && employee.accountStatus === 'active' && employee.roles.includes('admin_hr'));
   const statusLabel = (status: string) => ({ new: 'Belum ditangani', in_progress: 'Diproses', completed: 'Selesai' }[status] ?? status);
   const shiftName = (shift: 'morning' | 'afternoon' | 'middle') => shiftLabel(shift);
@@ -35,6 +37,7 @@
     } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Tindak lanjut belum tersimpan.'; }
     finally { busy = ''; }
   }
+  const issueLabel = (issue: string) => issue.replaceAll('_', ' ');
 </script>
 
 <section class="panel spv-panel" aria-labelledby="spv-panel-title">
@@ -59,7 +62,7 @@
   <details class="status-list"><summary>Status kasir pada tanggal ini ({dayStatuses.length})</summary><div class="status-rows">{#each dayStatuses as row (row.employee.id)}<div class="status-row"><strong>{row.employee.fullName}</strong><span>{$app.outlets.find(outlet => outlet.id === row.outletId)?.name ?? 'Outlet belum diatur'} · {row.shift === 'off' ? 'Libur' : row.shift ? shiftName(row.shift) : 'Belum ada shift'}</span><span class="status-label" data-state={row.status}>{dayStatusLabel(row.status)}</span><small>{row.detail}</small></div>{/each}</div></details>
 
   <div class="case-heading"><div><h3>Perlu perhatian · {dateLabel(date)}</h3><p>Kasus baru tidak mengubah absensi, cuti, atau status disiplin.</p></div><a class="btn btn-secondary" href={`/assignments?week=${date}`}>Buka jadwal mingguan</a></div>
-  {#if signals.length}
+  {#if signals.length || openResolvedCases.length}
     <div class="case-list">
       {#each signals as item (item.key)}
         {@const existing = storedCases.find(row => row.caseKey === item.key)}
@@ -82,11 +85,25 @@
           {:else}<button class="btn btn-secondary" type="button" disabled={busy === item.key} on:click={() => start(item.key)}>{busy === item.key ? 'Menyimpan…' : 'Mulai tindak lanjut'}</button>{/if}
         </article>
       {/each}
+      {#each openResolvedCases as item (item.id)}
+        <article class="case-card" data-tone="amber" data-case-id={item.id}>
+          <div class="case-main"><div><strong class="case-title">{issueLabel(item.issueType)}</strong><p>{displayName(item.employeeId ?? '')} · {$app.outlets.find(outlet => outlet.id === item.outletId)?.name ?? 'Outlet'}{item.shift ? ` · ${shiftName(item.shift)}` : ''}</p><small class="resolved-source">Kondisi sumber sudah teratasi atau tidak lagi aktif. Tindak lanjut tetap menunggu penyelesaian eksplisit.</small></div><span class="case-status">{statusLabel(item.status)}</span></div>
+          <div class="case-actions">
+            <label class="field">Penanggung jawab<select class="select" value={ownerDraft[item.id] ?? item.ownerId ?? ''} on:change={(event) => ownerDraft = { ...ownerDraft, [item.id]: event.currentTarget.value }}><option value="">Pilih Admin HR</option>{#each owners as owner}<option value={owner.id}>{owner.fullName}</option>{/each}</select></label>
+            <label class="field">Catatan tindak lanjut<textarea class="input" rows="2" value={noteDraft[item.id] ?? item.note} on:input={(event) => noteDraft = { ...noteDraft, [item.id]: event.currentTarget.value }} placeholder="Opsional, tanpa mengubah data sumber"></textarea></label>
+            {#if item.status === 'in_progress'}<label class="field">Catatan penyelesaian<textarea class="input" rows="2" value={resolutionDraft[item.id] ?? ''} on:input={(event) => resolutionDraft = { ...resolutionDraft, [item.id]: event.currentTarget.value }} placeholder="Jelaskan tindakan yang sudah dilakukan"></textarea></label>{/if}
+            <div class="case-buttons">
+              {#if item.status === 'new'}<button class="btn btn-secondary" type="button" disabled={busy === item.id || !(ownerDraft[item.id] ?? item.ownerId)} on:click={() => update(item.id, 'in_progress')}>{busy === item.id ? 'Menyimpan…' : 'Tetapkan & proses'}</button>
+              {:else}<button class="btn btn-secondary" type="button" disabled={busy === item.id} on:click={() => update(item.id, 'in_progress')}>Simpan catatan</button><button class="btn btn-primary" type="button" disabled={busy === item.id} on:click={() => update(item.id, 'completed')}>Selesaikan</button>{/if}
+            </div>
+          </div>
+        </article>
+      {/each}
     </div>
-  {:else}<p class="empty">Tidak ada indikator yang perlu perhatian pada tanggal ini.</p>{/if}
+  {:else}<p class="empty">Tidak ada indikator atau tindak lanjut terbuka pada tanggal ini.</p>{/if}
 
   {#if resolvedHistory.length}
-    <details class="history"><summary>Riwayat tindak lanjut ({resolvedHistory.length})</summary>{#each resolvedHistory as item (item.id)}<div class="history-row"><strong>{statusLabel(item.status)} · {item.issueType.replaceAll('_',' ')}</strong><span>{displayName(item.employeeId ?? '')} · {item.resolutionNote || item.note || 'Belum ada catatan'}</span></div>{/each}</details>
+    <details class="history"><summary>Riwayat tindak lanjut ({resolvedHistory.length})</summary>{#each resolvedHistory as item (item.id)}<div class="history-row"><strong>{statusLabel(item.status)} · {issueLabel(item.issueType)}</strong><span>{displayName(item.employeeId ?? '')} · {item.resolutionNote || item.note || 'Belum ada catatan'}</span></div>{/each}</details>
   {/if}
 </section>
 

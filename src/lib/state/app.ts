@@ -11,10 +11,15 @@ import { leaveAuditDetail } from '../leave-audit';
 import { assignmentFor, assertCashierAssignment, saveAssignmentInState, assertCorrectionInput, submitCorrectionInState, decideCorrectionInState } from '../cashier-workflows';
 import { disableDevicePush } from '../device-push';
 import { followupCaseKey, operationalSignals, validateRosterBatch } from '../cashier-spv';
+import { rpcError } from '../rpc-error';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
 let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
+let realtimeUserId: string | null = null;
+let realtimeGeneration = 0;
+let realtimeReplacementPending = false;
+let realtimeTerminal = false;
 let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
 let refreshRequested = false;
@@ -115,8 +120,8 @@ function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini ha
 function fail(error: unknown): never { throw new Error(error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error ? String(error.message) : 'Permintaan belum berhasil. Coba kembali.'); }
 async function rpc(name: string, args: Record<string, unknown>) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
-  const { data, error } = await supabase.rpc(name, args);
-  if (error) throw Object.assign(new Error(error.message), { code: error.code, status: (error as typeof error & { status?: number }).status });
+  const { data, error, status } = await supabase.rpc(name, args);
+  if (error) throw rpcError(error, status);
   return data;
 }
 async function cleanupRejectedLeaveUpload(path: string | null, error: unknown) {
@@ -156,6 +161,10 @@ function clearLiveState(error: string | null = null) {
   clearRealtimeRetry(true);
   const previousChannel = channel;
   channel = null;
+  realtimeUserId = null;
+  realtimeGeneration += 1;
+  realtimeReplacementPending = false;
+  realtimeTerminal = false;
   realtimeSubscribed = false;
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
 }
@@ -164,32 +173,71 @@ function clearRealtimeRetry(resetAttempt = false) {
   realtimeRetryTimer = undefined;
   if (resetAttempt) realtimeRetryAttempt = 0;
 }
-function scheduleRealtimeRejoin(target: NonNullable<typeof channel>) {
+function scheduleRealtimeReplacement(target: NonNullable<typeof channel>, generation: number, userId: string, revision: number) {
   if (realtimeRetryTimer || !navigator.onLine) return;
   const delays = [1000, 2000, 5000, 10000];
   const delay = delays[Math.min(realtimeRetryAttempt, delays.length - 1)];
   realtimeRetryAttempt += 1;
   realtimeRetryTimer = setTimeout(() => {
     realtimeRetryTimer = undefined;
-    if (channel === target && navigator.onLine) subscribeRealtimeChannel(target);
+    if (channel !== target || realtimeGeneration !== generation || !navigator.onLine || revision !== authRevision || !supabase) return;
+    channel = null;
+    realtimeSubscribed = false;
+    realtimeGeneration += 1;
+    realtimeReplacementPending = true;
+    app.update(state => ({ ...state, connected: false }));
+    void Promise.resolve(supabase.removeChannel(target)).catch(() => undefined).finally(() => {
+      realtimeReplacementPending = false;
+      if (revision !== authRevision || !navigator.onLine || channel || !supabase) return;
+      createRealtimeChannel(userId, revision);
+      void refresh();
+    });
   }, delay);
 }
-function subscribeRealtimeChannel(target: NonNullable<typeof channel>) {
-  target.subscribe(status => {
-    if (channel !== target) return;
-    realtimeSubscribed = status === 'SUBSCRIBED';
-    app.update(s => ({ ...s, connected: navigator.onLine && realtimeSubscribed }));
-    if (realtimeSubscribed) { clearRealtimeRetry(true); void refresh(); }
-    else if (status === 'CLOSED' || status === 'TIMED_OUT') scheduleRealtimeRejoin(target);
-  });
+function createRealtimeChannel(userId: string, revision: number) {
+  if (!supabase || revision !== authRevision || realtimeReplacementPending) return;
+  if (channel && realtimeUserId === userId) return;
+  if (channel) {
+    const previous = channel;
+    channel = null;
+    realtimeUserId = null;
+    realtimeGeneration += 1;
+    realtimeSubscribed = false;
+    void supabase.removeChannel(previous).catch(() => undefined);
+  }
+  const target = supabase.channel(`hr-${userId}`), generation = ++realtimeGeneration;
+  channel = target;
+  realtimeUserId = userId;
+  realtimeTerminal = false;
+  try {
+    for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) {
+      target.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+        if (channel !== target || realtimeGeneration !== generation || authRevision !== revision) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => { if (channel === target && realtimeGeneration === generation && authRevision === revision) void refresh(); }, 300);
+      });
+    }
+    target.subscribe(status => {
+      if (channel !== target || realtimeGeneration !== generation || authRevision !== revision) return;
+      realtimeSubscribed = status === 'SUBSCRIBED';
+      app.update(state => ({ ...state, connected: navigator.onLine && realtimeSubscribed }));
+      if (realtimeSubscribed) { realtimeTerminal = false; clearRealtimeRetry(true); void refresh(); }
+      else if (status === 'CLOSED' || status === 'TIMED_OUT') { realtimeTerminal = true; scheduleRealtimeReplacement(target, generation, userId, revision); }
+      // The SDK owns CHANNEL_ERROR reconnects. Only terminal/timeout states
+      // replace this channel instance; a closed instance is never joined again.
+    });
+  } catch {
+    realtimeSubscribed = false;
+    realtimeTerminal = true;
+    app.update(state => ({ ...state, connected: false }));
+    scheduleRealtimeReplacement(target, generation, userId, revision);
+  }
 }
 function resumeLiveConnection() {
   if (!supabase || !navigator.onLine) return;
-  // realtime-js reconnects transport failures itself. Calling subscribe again
-  // is a no-op while the channel is joining/joined, and rejoins a channel that
-  // has closed while the page was offline or suspended.
-  clearRealtimeRetry(true);
-  if (channel) subscribeRealtimeChannel(channel);
+  // The SDK reconnects transport errors on a live channel. A terminal channel
+  // is replaced by its generation-guarded timer; resume always refreshes data.
+  if (channel && realtimeTerminal && realtimeUserId) scheduleRealtimeReplacement(channel, realtimeGeneration, realtimeUserId, authRevision);
   void refresh();
 }
 async function readAll(table: string, fields = '*'): Promise<any[]> {
@@ -260,12 +308,7 @@ async function refreshNow() {
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
     app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
-    if (!channel) {
-      const sessionChannel = supabase.channel(`hr-${session.user.id}`);
-      channel = sessionChannel;
-      for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); });
-      subscribeRealtimeChannel(sessionChannel);
-    }
+    createRealtimeChannel(session.user.id, revision);
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
 }
@@ -321,7 +364,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; clearRealtimeRetry(true); const previousChannel = channel; channel = null; realtimeSubscribed = false; if (previousChannel && supabase) await supabase.removeChannel(previousChannel); if (supabase) { app.set({ ...initialDemo(),mode:'live',initialized:true,user:null,employees:[],departments:[],positions:[],outlets:[],leaveRequests:[],attendanceRecords:[],leaveLedger:[],auditEntries:[],cashierAssignments:[],attendanceCorrectionRequests:[],notifications:[],balanceCache:{},connected:navigator.onLine }); } else commit(s => { s.user = null; }); },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
@@ -564,7 +607,7 @@ export const actions = {
     }
     const now = new Date().toISOString(), before = (state.spvFollowups ?? []).find(row => row.caseKey === caseKey);
     if (before && before.status !== 'completed') return before.id;
-    const row: SpvFollowup = before ? { ...before, status: 'new', ownerId: null, resolutionNote: '', updatedBy: actor.id, updatedAt: now, reopenedCount: before.reopenedCount + 1 }
+    const row: SpvFollowup = before ? { ...before, ...input, id: before.id, caseKey, status: 'new', ownerId: null, resolutionNote: '', updatedBy: actor.id, updatedAt: now, reopenedCount: before.reopenedCount + 1 }
       : { id: id(), caseKey, ...input, ownerId: null, status: 'new', note: '', resolutionNote: '', createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now, reopenedCount: 0 };
     commit(s => {
       s.spvFollowups ??= []; const index = s.spvFollowups.findIndex(item => item.caseKey === caseKey);
@@ -588,6 +631,8 @@ export const actions = {
     const now = new Date().toISOString();
     commit(s => {
       const row = s.spvFollowups!.find(item => item.id === input.id)!;
+      const currentSource = operationalSignals(s, row.workDate).find(signal => signal.key === row.caseKey);
+      if (currentSource) Object.assign(row, currentSource.input);
       Object.assign(row, { status: input.status, ownerId: input.ownerId, note: input.note.trim(), resolutionNote: input.status === 'completed' ? input.resolutionNote.trim() : '', updatedBy: actor.id, updatedAt: now });
       s.auditEntries.unshift({ id: id(), actorId: actor.id, action: input.status === 'completed' ? 'spv_followup_completed' : 'spv_followup_updated', entityId: row.id,
         at: now, detail: input.resolutionNote.trim() || input.note.trim() || 'Tindak lanjut diperbarui' });
