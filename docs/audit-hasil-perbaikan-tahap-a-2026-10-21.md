@@ -188,8 +188,18 @@ Migration adalah satu-satunya perubahan terhadap schema aplikasi Preview pada pe
 | Implementasi dan regresi lokal V01–V04 | Selesai; hasil tercantum di tabel di atas |
 | V05 — migration maju dan upgrade | Diterapkan ke Supabase Preview dan terverifikasi; bukti concurrency dua koneksi masih pending |
 | Q6 — gerbang lokal | Lulus sesuai perintah dan hasil di atas |
-| Q7a — commit/deployment Preview dari source final | Belum ditutup pada saat pembaruan ini; commit/push dan deployment perlu dicatat setelah dilakukan |
+| Q7a — commit/deployment Preview dari source final | Selesai untuk deployment dan smoke shell/aset; detail SHA dan URL di bagian berikut. Alur bisnis hosted tetap Q7b. |
 | Q7b — alur bisnis hosted | Pending; tidak diklaim dari hasil migration atau build |
 | Q7c — iPhone/iPad/PWA nyata | Pending; tidak dijalankan pada pembaruan ini |
 
 Snapshot advisor Supabase diambil setelah migration dan tidak memiliki snapshot pembanding sebelum perubahan. Karena itu temuan advisor yang sudah ada tidak dapat diatribusikan kepada patch. Salah satu temuan performa merujuk fixture sintetis di `audit_v05_20261021`; bersihkan fixture sebelum memakai snapshot advisor sebagai baseline baru.
+
+### Q7a — deployment dan smoke setelah perbaikan
+
+Source perbaikan dikomit dan didorong ke `origin/codex/preview`: commit `2f8c980055f1c37ca47347b35900e55f1e402bd6` (`fix: address cashier audit follow-up findings`). Karena push belum menghasilkan deployment untuk SHA baru, Vercel CLI terhubung digunakan dengan perintah `vercel.cmd deploy --yes --scope hr-rajaklana`; target tidak diarahkan ke Production.
+
+Deployment yang diverifikasi: `dpl_FS8KWYpwcaMxXtxF3YzzU2BqFEPK`, status `READY`, source `cli`, branch `codex/preview`, SHA `2f8c980055f1c37ca47347b35900e55f1e402bd6`, alias [hr-rajaklana-jkt-preview.vercel.app](https://hr-rajaklana-jkt-preview.vercel.app). Project Vercel `hr-rajaklana-jkt` dan team `team_S1Sn08iaksD0GQF4kk49kTkH` cocok dengan target yang telah ditetapkan. Build Vercel menjalankan `svelte-check` dengan 0 error/0 warning dan `vite build` berhasil.
+
+Smoke memakai `vercel curl` agar akses SSO tetap aktif: `/login` mengembalikan shell HTML; `/manifest.webmanifest` dan `/service-worker.js` masing-masing HTTP 200. Konektor fetch Vercel ditolak 403 oleh proteksi, lalu CLI lokal berhasil mengakses deployment. Ini membuktikan shell/aset Preview termuat, bukan login HR, RPC, replay, Realtime lintas akun, ataupun alur hosted lainnya. Deployment build mencatat 4 temuan audit dependency (3 moderate, 1 high); paket dan jalur perbaikannya belum diaudit dalam pekerjaan ini.
+
+Tidak ada deployment Production atau perubahan `main`.
