@@ -5,6 +5,7 @@ const adminId = 'hr-admin-test';
 const adminAuthId = 'auth-admin-test';
 const cashierId = 'cashier-test';
 const outletId = 'outlet-test';
+type RosterRpcPayload = { p_idempotency_key: string; p_week_start: string; p_changes: Record<string, unknown>[] };
 
 function jwt(payload: Record<string, unknown>) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -33,13 +34,16 @@ async function respond(route: Route, data: unknown, status = 200) {
 
 async function openRosterMock(page: Page, loseResponse = false, failReconciliationRead = false, commitBeforeLoss = true) {
   const savedAssignments: Record<string, unknown>[] = [];
-  const rpcPayloads: Record<string, unknown>[] = [];
+  const rpcPayloads: RosterRpcPayload[] = [];
   const committed = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
   let saveCalls = 0;
   let commitCount = 0;
   let loseNextRpcResponse = loseResponse;
   let failNextAssignmentRead = false;
+  let failAssignmentReads = false;
   let rejectNextReplay = false;
+  let baselineConflictKey: string | null = null;
+  let failRefreshAfterBaselineConflict = false;
   const now = new Date().toISOString();
   const authUser = {
     id: adminAuthId, aud: 'authenticated', role: 'authenticated', email: 'admin@example.test',
@@ -72,12 +76,20 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     if (path === '/auth/v1/user') { await respond(route, authUser); return; }
     if (path === '/auth/v1/token') { await respond(route, { ...session, expires_at: Math.floor(Date.now() / 1000) + 3600 }); return; }
     if (path === '/rest/v1/rpc/cashier_roster_batch_save') {
-      const payload = route.request().postDataJSON() as { p_idempotency_key: string; p_week_start: string; p_changes: Record<string, unknown>[] };
+      const payload = route.request().postDataJSON() as RosterRpcPayload;
       rpcPayloads.push(structuredClone(payload));
       const fingerprint = JSON.stringify({ weekStart: payload.p_week_start, changes: payload.p_changes });
       if (rejectNextReplay) {
         rejectNextReplay = false;
         await respond(route, { code: 'PGRST301', message: 'JWT expired' }, 401);
+        return;
+      }
+      if (payload.p_idempotency_key === baselineConflictKey) {
+        if (failRefreshAfterBaselineConflict) {
+          failRefreshAfterBaselineConflict = false;
+          failAssignmentReads = true;
+        }
+        await respond(route, { code: 'P0001', message: 'Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik' }, 400);
         return;
       }
       const previous = committed.get(payload.p_idempotency_key);
@@ -128,6 +140,10 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     }
     if (path.startsWith('/rest/v1/')) {
       const table = path.slice('/rest/v1/'.length);
+      if (table === 'cashier_assignments' && failAssignmentReads) {
+        await respond(route, { code: 'MOCK_REFRESH_FAILED', message: 'Simulasi refresh gagal setelah konflik baseline.' }, 503);
+        return;
+      }
       if (table === 'cashier_assignments' && failNextAssignmentRead) {
         failNextAssignmentRead = false;
         await respond(route, { code: 'MOCK_REFRESH_FAILED', message: 'Simulasi refresh gagal setelah commit ambigu.' }, 503);
@@ -153,6 +169,15 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   const shift = page.locator('select[aria-label^="Shift Kasir Uji,"]').first();
   await expect(shift).toBeVisible();
   return { weekStart, shift, savedAssignments, rpcPayloads, rejectNextReplay: () => { rejectNextReplay = true; },
+    changeSourceAndRejectReplay: () => {
+      const updatedAt = new Date(Date.now() + 9000).toISOString();
+      savedAssignments.push({ id: 'assignment-from-other-spv', employee_id: cashierId, work_date: weekStart,
+        outlet_id: outletId, shift: 'afternoon', status: 'active', reason: 'Ditetapkan SPV lain', created_by: 'other-spv',
+        created_at: updatedAt, updated_at: updatedAt });
+      baselineConflictKey = rpcPayloads[0]?.p_idempotency_key ?? null;
+    },
+    failNextRefresh: () => { failRefreshAfterBaselineConflict = true; },
+    recoverRefresh: () => { failAssignmentReads = false; },
     getSaveCalls: () => saveCalls, getCommitCount: () => commitCount };
 }
 
@@ -243,6 +268,56 @@ test('live UI retries an uncommitted ambiguous attempt once with its persisted o
   expect(mock.rpcPayloads[1]).toEqual(originalRequest);
   expect(mock.getCommitCount()).toBe(1);
   expect(mock.savedAssignments).toHaveLength(1);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
+});
+
+test('live UI resolves a definitely rejected stale replay through source review and a fresh attempt', async ({ page }) => {
+  const mock = await openRosterMock(page, true, true, false);
+  await mock.shift.selectOption('morning');
+  await page.getByLabel('Alasan perubahan batch').fill('Draft dipertahankan setelah konflik baseline pasti');
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+  expect(mock.getCommitCount()).toBe(0);
+  const originalRequest = structuredClone(mock.rpcPayloads[0]);
+
+  await page.reload();
+  await reopenNextWeekAfterReload(page);
+  mock.changeSourceAndRejectReplay();
+  mock.failNextRefresh();
+  await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+  await expect(page.getByText('Server menolak percobaan karena jadwal berubah, tetapi jadwal terbaru belum dapat dipastikan. Percobaan lama tetap tersimpan; coba ulangi setelah koneksi pulih.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+  expect(mock.getCommitCount()).toBe(0);
+  expect(mock.rpcPayloads).toHaveLength(2);
+  expect(mock.rpcPayloads[1]).toEqual(originalRequest);
+
+  mock.recoverRefresh();
+  await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+  await expect(page.getByText('Server memastikan percobaan lama tidak tersimpan karena jadwal berubah. Draft Anda tetap ada; tinjau jadwal terbaru sebelum menyimpan lagi.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeHidden();
+  await expect(page.locator('.review-cell')).toContainText('Jadwal terbaru: Sore · Outlet Uji');
+  expect(mock.getCommitCount()).toBe(0);
+  expect(mock.rpcPayloads).toHaveLength(3);
+  expect(mock.rpcPayloads[1]).toEqual(originalRequest);
+  expect(mock.rpcPayloads[2]).toEqual(originalRequest);
+
+  await page.reload();
+  await reopenNextWeekAfterReload(page);
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeHidden();
+  await expect(page.locator('.review-cell')).toContainText('Jadwal terbaru: Sore · Outlet Uji');
+  await page.getByRole('button', { name: 'Terapkan kembali draft saya', exact: true }).click();
+  await expect(page.locator('.review-cell')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+
+  await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeVisible();
+  expect(mock.rpcPayloads).toHaveLength(4);
+  expect(mock.rpcPayloads[0]).toEqual(mock.rpcPayloads[1]);
+  expect(mock.rpcPayloads[0]).toEqual(mock.rpcPayloads[2]);
+  expect(mock.rpcPayloads[3].p_idempotency_key).not.toBe(originalRequest.p_idempotency_key);
+  expect(mock.rpcPayloads[3].p_changes[0]).toMatchObject({ id: 'assignment-from-other-spv', expected_updated_at: expect.any(String), shift: 'morning' });
+  expect(mock.getCommitCount()).toBe(1);
+  expect(mock.savedAssignments).toHaveLength(1);
+  expect(mock.savedAssignments[0]).toMatchObject({ id: 'assignment-from-other-spv', shift: 'morning', status: 'active' });
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
 });
 

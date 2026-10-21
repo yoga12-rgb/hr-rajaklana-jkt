@@ -23,6 +23,7 @@ let realtimeTerminal = false;
 let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
 let refreshRequested = false;
+let initPromise: Promise<void> | null = null;
 let realtimeSubscribed = false;
 let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let realtimeRetryAttempt = 0;
@@ -120,9 +121,11 @@ function commit(change: (state: AppState) => void, action?: string, entityId = '
 function auditDemoFollowupContextChanges(state: AppState, before: SpvFollowup[], actorId: string) {
   const previous = new Map(before.map(row => [row.id, row]));
   for (const followup of state.spvFollowups ?? []) {
-    if (previous.get(followup.id)?.outletId === followup.outletId) continue;
+    const old = previous.get(followup.id);
+    if (!old || (old.workDate === followup.workDate && old.outletId === followup.outletId
+      && old.employeeId === followup.employeeId && old.shift === followup.shift)) continue;
     state.auditEntries.unshift({ id: id(), actorId, action: 'spv_followup_context_refreshed', entityId: followup.id,
-      at: followup.updatedAt, detail: 'Outlet konteks kasus mengikuti penempatan kasir.' });
+      at: followup.updatedAt, detail: 'Konteks kasus mengikuti penempatan kasir.' });
   }
 }
 function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini hanya untuk Admin HR.'); }
@@ -365,13 +368,30 @@ function updateCharge(state: AppState, request: LeaveRequest, start: string, end
 }
 export const actions = {
   async init() {
+    if (initPromise) return initPromise;
     if (get(app).initialized) return;
-    if (configured) { app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true }); await refresh(); supabase!.auth.onAuthStateChange((_event, session) => { const nextAuthUserId = session?.user.id ?? null; if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(); } setTimeout(() => void refresh(), 0); }); window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000); }
-    else { try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ } app.update(s => ({ ...s, initialized: true, connected: navigator.onLine })); }
-    window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); resumeLiveConnection(); });
-    window.addEventListener('offline', () => { clearRealtimeRetry(); app.update(s => ({ ...s, connected: false })); });
-    window.addEventListener('focus', resumeLiveConnection);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeLiveConnection(); });
+    initPromise = (async () => {
+      if (configured) {
+        app.set({ ...initialDemo(), mode: 'live', employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], loading: true });
+        // Auth identity changes must invalidate an in-flight startup read too.
+        // Register once, before getSession() or any user-scoped table fetch.
+        supabase!.auth.onAuthStateChange((_event, session) => {
+          const nextAuthUserId = session?.user.id ?? null;
+          if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(); }
+          setTimeout(() => void refresh(), 0);
+        });
+        await refresh();
+        window.setInterval(() => { if (document.visibilityState === 'visible' && navigator.onLine) resumeLiveConnection(); }, 60000);
+      } else {
+        try { const saved = localStorage.getItem(KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed.mode === 'demo' && Array.isArray(parsed.employees) && Array.isArray(parsed.leaveLedger)) app.set(parsed); } } catch { /* damaged demo data resets safely */ }
+        app.update(s => ({ ...s, initialized: true, connected: navigator.onLine }));
+      }
+      window.addEventListener('online', () => { app.update(s => ({ ...s, connected: !configured || !get(app).user })); resumeLiveConnection(); });
+      window.addEventListener('offline', () => { clearRealtimeRetry(); app.update(s => ({ ...s, connected: false })); });
+      window.addEventListener('focus', resumeLiveConnection);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeLiveConnection(); });
+    })();
+    try { await initPromise; } finally { initPromise = null; }
   },
   refresh,
   async readNotification(notificationId?: string) {

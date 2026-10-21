@@ -11,6 +11,7 @@ const assignment=(overrides:Partial<CashierAssignmentInput>={}):CashierAssignmen
 const correction=(overrides:Partial<AttendanceCorrectionInput>={}):AttendanceCorrectionInput=>({attendanceId:null,workDate:'2026-10-05',clockIn:'2026-10-05T00:10:00Z',clockOut:'2026-10-05T08:10:00Z',shift:'morning',reason:'Kamera gagal, jam dikonfirmasi SPV',...overrides});
 const clockInput=()=>({outletId:'outlet-a',shift:'morning' as const,latitude:-6.2,longitude:106.816666,accuracy:10,geoCapturedAt:new Date().toISOString(),selfie:new Blob(['foto'],{type:'image/jpeg'})});
 const unassignedFollowup=(id:string,workDate:string,status:SpvFollowup['status']='new'):SpvFollowup=>({id,caseKey:`unassigned:employee-4:${workDate}`,issueType:'unassigned',sourceType:'roster',sourceId:null,workDate,outletId:'outlet-a',employeeId:'employee-4',shift:'morning',ownerId:null,status,note:'',resolutionNote:status==='completed'?'Kasus sudah ditutup':'',createdBy:'employee-1',updatedBy:'employee-1',createdAt:'2026-10-01T00:00:00.000Z',updatedAt:'2026-10-01T00:00:00.000Z',reopenedCount:0});
+const assignmentFollowup=(id:string,sourceId:string,workDate:string,status:SpvFollowup['status']='new'):SpvFollowup=>({id,caseKey:`assignment:${sourceId}`,issueType:'missing_clockin',sourceType:'assignment',sourceId,workDate,outletId:'outlet-a',employeeId:'employee-4',shift:'morning',ownerId:status==='in_progress'?'employee-1':null,status,note:status==='in_progress'?'Sedang menghubungi kasir':'',resolutionNote:status==='completed'?'Kasus sudah ditutup':'',createdBy:'employee-1',updatedBy:'employee-1',createdAt:'2026-10-01T00:00:00.000Z',updatedAt:'2026-10-01T00:00:00.000Z',reopenedCount:0});
 
 beforeEach(()=>{
   vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-06T03:00:00Z'));
@@ -87,6 +88,48 @@ describe('Penugasan harian kasir',()=>{
     expect(get(app).spvFollowups?.find(row=>row.id==='case-employee')).toMatchObject({outletId:'outlet-b',updatedBy:'employee-1'});
     expect(get(app).spvFollowups?.find(row=>row.id==='case-employee-completed')?.outletId).toBe('outlet-a');
     expect(get(app).auditEntries.some(row=>row.entityId==='case-employee'&&row.action==='spv_followup_context_refreshed')).toBe(true);
+  });
+  it('menyinkronkan konteks kasus assignment pada pindah outlet, Libur, pembatalan dan aktivasi tanpa mengubah riwayat selesai',async()=>{
+    const id=await actions.saveCashierAssignment(assignment());
+    app.update(s=>({...s,spvFollowups:[assignmentFollowup('assignment-open',id,'2026-10-06','in_progress'),assignmentFollowup('assignment-completed',id,'2026-10-06','completed')]}));
+    const completedBefore=structuredClone(get(app).spvFollowups?.find(row=>row.id==='assignment-completed'));
+
+    vi.advanceTimersByTime(1);
+    await actions.saveCashierAssignment(assignment({id,outletId:'outlet-b',shift:'off',reason:'Jadwal berubah menjadi Libur'}));
+    let open=get(app).spvFollowups?.find(row=>row.id==='assignment-open');
+    expect(open).toMatchObject({sourceType:'assignment',sourceId:id,workDate:'2026-10-06',outletId:'outlet-b',employeeId:'employee-4',shift:'off',status:'in_progress',ownerId:'employee-1',note:'Sedang menghubungi kasir',updatedBy:'employee-1'});
+    expect(get(app).auditEntries.some(row=>row.entityId==='assignment-open'&&row.action==='spv_followup_context_refreshed')).toBe(true);
+    expect(get(app).spvFollowups?.find(row=>row.id==='assignment-completed')).toEqual(completedBefore);
+
+    vi.advanceTimersByTime(1);
+    await actions.saveCashierAssignment(assignment({id,outletId:'outlet-b',shift:'off',cancel:true,reason:'Penugasan Libur dibatalkan'}));
+    open=get(app).spvFollowups?.find(row=>row.id==='assignment-open');
+    expect(open).toMatchObject({outletId:'outlet-b',shift:'off',status:'in_progress',ownerId:'employee-1',note:'Sedang menghubungi kasir'});
+    expect(get(app).spvFollowups?.find(row=>row.id==='assignment-completed')).toEqual(completedBefore);
+
+    vi.advanceTimersByTime(1);
+    await actions.saveCashierAssignment(assignment({id,outletId:'outlet-a',shift:'afternoon',reason:'Aktifkan kembali di outlet utama'}));
+    open=get(app).spvFollowups?.find(row=>row.id==='assignment-open');
+    expect(open).toMatchObject({outletId:'outlet-a',shift:'afternoon',status:'in_progress',ownerId:'employee-1',note:'Sedang menghubungi kasir'});
+    expect(get(app).auditEntries.filter(row=>row.entityId==='assignment-open'&&row.action==='spv_followup_context_refreshed')).toHaveLength(2);
+    expect(get(app).spvFollowups?.find(row=>row.id==='assignment-completed')).toEqual(completedBefore);
+  });
+  it('menyinkronkan semua kasus assignment terbuka dalam satu batch dan mencatat audit per konteks',async()=>{
+    const firstId=await actions.saveCashierAssignment(assignment({workDate:'2026-10-07'}));
+    const secondId=await actions.saveCashierAssignment(assignment({workDate:'2026-10-08'}));
+    app.update(s=>({...s,spvFollowups:[assignmentFollowup('batch-case-moved',firstId,'2026-10-07'),assignmentFollowup('batch-case-off',secondId,'2026-10-08'),assignmentFollowup('batch-case-completed',firstId,'2026-10-07','completed')]}));
+    const completedBefore=structuredClone(get(app).spvFollowups?.find(row=>row.id==='batch-case-completed'));
+    const rows=get(app).cashierAssignments ?? [];
+    const first=rows.find(row=>row.id===firstId)!,second=rows.find(row=>row.id===secondId)!;
+
+    await actions.saveCashierRosterBatch('2026-10-05',[
+      {id:firstId,employeeId:'employee-4',workDate:first.workDate,outletId:'outlet-b',shift:'afternoon',reason:'Pindahkan kasus terbuka ke shift sore',expectedUpdatedAt:first.updatedAt},
+      {id:secondId,employeeId:'employee-4',workDate:second.workDate,outletId:'outlet-b',shift:'off',reason:'Tetapkan Libur saat kasus ditinjau',expectedUpdatedAt:second.updatedAt}
+    ],crypto.randomUUID());
+    expect(get(app).spvFollowups?.find(row=>row.id==='batch-case-moved')).toMatchObject({outletId:'outlet-b',shift:'afternoon'});
+    expect(get(app).spvFollowups?.find(row=>row.id==='batch-case-off')).toMatchObject({outletId:'outlet-b',shift:'off'});
+    expect(get(app).auditEntries.filter(row=>['batch-case-moved','batch-case-off'].includes(row.entityId)&&row.action==='spv_followup_context_refreshed')).toHaveLength(2);
+    expect(get(app).spvFollowups?.find(row=>row.id==='batch-case-completed')).toEqual(completedBefore);
   });
   it('mewajibkan penugasan kerja aktif dan mencegah kasir libur melakukan clock in',async()=>{
     actor('employee-4');await expect(actions.clockIn(clockInput())).rejects.toThrow('penugasan');

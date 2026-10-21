@@ -1,4 +1,15 @@
 const retryGuidance = 'Belum ada konfirmasi dari server. Draft tetap tersimpan. Periksa koneksi, lalu tekan Simpan jadwal mingguan lagi; permintaan yang sama memakai kunci yang sama agar jadwal tidak dibuat dua kali.';
+const baselineConflictMessage = 'Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik';
+
+/**
+ * This exact database error is raised only after the RPC has checked its
+ * idempotency key and found no committed result for the original payload.
+ * Keep the SQLSTATE and message paired; other P0001 errors remain unresolved.
+ */
+export function cashierRosterSaveOutcomeIsDefiniteBaselineConflict(error: unknown): boolean {
+  const details = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown; status?: unknown } : null;
+  return details?.code === 'P0001' && details?.status === 400 && details?.message === baselineConflictMessage;
+}
 
 export function cashierRosterSaveOutcomeIsUncertain(error: unknown): boolean {
   const details = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown; status?: unknown } : null;

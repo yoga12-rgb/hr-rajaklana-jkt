@@ -5,7 +5,7 @@
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
   import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterBaseline, type CashierRosterDraftCell, type CashierRosterDraftEntry, type CashierRosterSaveAttempt } from '#lib/cashier-spv-drafts';
-  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
+  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
   import { reconcileUncertainCashierRosterSave } from '../cashier-roster-reconcile';
   import { addWorkDays, isValidWorkDate, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
@@ -184,6 +184,24 @@
         if (attempt) clearAttemptedDrafts(attempt);
         copyPreview = null;
         failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
+      } else if (attempt && cashierRosterSaveOutcomeIsDefiniteBaselineConflict(error)) {
+        try { await actions.refresh(); } catch { /* Keep the original attempt until the latest source is available. */ }
+        const refreshed = get(app);
+        const sourceChanged = attempt.changes.some(change => {
+          const current = (refreshed.cashierAssignments ?? []).find(row => row.employeeId === change.employeeId && row.workDate === change.workDate);
+          return (current?.id ?? null) !== (change.id ?? null) || (current?.updatedAt ?? null) !== (change.expectedUpdatedAt ?? null);
+        });
+        if (!refreshed.error && sourceChanged) {
+          pendingAttempt = null;
+          if (persistDraft()) {
+            message = 'Server memastikan percobaan lama tidak tersimpan karena jadwal berubah. Draft Anda tetap ada; tinjau jadwal terbaru sebelum menyimpan lagi.';
+          } else {
+            pendingAttempt = attempt;
+            message = 'Jadwal berubah dan server menolak percobaan lama. Status pemulihan belum tersimpan di perangkat, jadi percobaan lama tetap ditahan sampai penyimpanan tersedia.';
+          }
+        } else {
+          message = 'Server menolak percobaan karena jadwal berubah, tetapi jadwal terbaru belum dapat dipastikan. Percobaan lama tetap tersimpan; coba ulangi setelah koneksi pulih.';
+        }
       } else if (!replayingPersistedAttempt && (!attempt || !cashierRosterSaveOutcomeIsUncertain(error))) { pendingAttempt = null; persistDraft(); }
     }
     finally { saving = false; }

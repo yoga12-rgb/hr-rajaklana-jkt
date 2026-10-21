@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsUncertain } from './cashier-roster-save-error';
+import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsUncertain } from './cashier-roster-save-error';
 
 describe('cashier roster save errors', () => {
   it.each([
@@ -20,6 +20,14 @@ describe('cashier roster save errors', () => {
     const error = Object.assign(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik.'), { code: 'P0001', status: 400 });
     expect(cashierRosterSaveOutcomeIsUncertain(error)).toBe(false);
     expect(cashierRosterSaveErrorMessage(error)).toBe(error.message);
+  });
+
+  it('recognizes only the exact baseline rejection that follows the idempotency lookup', () => {
+    const baselineConflict = Object.assign(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik'), { code: 'P0001', status: 400 });
+    expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(baselineConflict)).toBe(true);
+    expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(Object.assign(new Error('Kunci batch sudah dipakai untuk perubahan jadwal lain'), { code: 'P0001', status: 400 }))).toBe(false);
+    expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(Object.assign(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik'), { code: 'P0001', status: 401 }))).toBe(false);
+    expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik'))).toBe(false);
   });
 
   it('preserves other server messages when the browser is online', () => {

@@ -314,6 +314,37 @@ describe('live Realtime recovery', () => {
     expect(get(app).employees.map(employee => employee.id)).toEqual(['employee-cashier']);
   });
 
+  it('registers one Auth listener before startup fetch and loads the replacement account without signing it out', async () => {
+    vi.resetModules();
+    let announceStarted!: () => void;
+    const started = new Promise<void>(resolve => { announceStarted = resolve; });
+    getSessionStarted = announceStarted;
+    delayNextGetSession = true;
+    const { actions, app } = await import('./app');
+    const firstInit = actions.init();
+    const concurrentInit = actions.init();
+    await started;
+
+    expect(mockSupabase.auth.onAuthStateChange).toHaveBeenCalledTimes(1);
+    expect(authListener).toBeTypeOf('function');
+    const sessionB = sessionFor('auth-cashier');
+    currentSession = sessionB;
+    filterEmployeeRowsForSession = true;
+    authListener?.('SIGNED_IN', sessionB);
+    expect(get(app).user).toBeNull();
+    expect(get(app).employees).toEqual([]);
+
+    releaseDelayedGetSession?.();
+    await Promise.all([firstInit, concurrentInit]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    expect(get(app).user?.id).toBe('employee-cashier');
+    expect(get(app).user?.authUserId).toBe('auth-cashier');
+    expect(get(app).employees.map(employee => employee.id)).toEqual(['employee-cashier']);
+  });
+
   it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {
     const { app } = await openLiveApp();
     const firstChannel = channels[0];

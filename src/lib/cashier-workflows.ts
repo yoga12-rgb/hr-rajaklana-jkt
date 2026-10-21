@@ -1,4 +1,4 @@
-import type { AppState, AttendanceCorrectionInput, AttendanceCorrectionRequest, AttendanceRecord, CashierAssignmentInput, Employee, Outlet, SpvFollowup } from './types';
+import type { AppState, AttendanceCorrectionInput, AttendanceCorrectionRequest, AttendanceRecord, CashierAssignment, CashierAssignmentInput, Employee, Outlet, SpvFollowup } from './types';
 import { attendanceTiming, jakartaDate } from './domain';
 
 const uid = () => crypto.randomUUID();
@@ -33,6 +33,23 @@ export function syncUnassignedRosterFollowups(state: AppState, employeeId: strin
   }
   return changed;
 }
+export function syncAssignmentFollowups(state: AppState, assignment: CashierAssignment, actorId: string): SpvFollowup[] {
+  const changed: SpvFollowup[] = [];
+  const updatedAt = timestamp();
+  for (const followup of state.spvFollowups ?? []) {
+    if (followup.sourceType !== 'assignment' || followup.sourceId !== assignment.id || followup.status === 'completed'
+      || (followup.workDate === assignment.workDate && followup.outletId === assignment.outletId
+        && followup.employeeId === assignment.employeeId && followup.shift === assignment.shift)) continue;
+    followup.workDate = assignment.workDate;
+    followup.outletId = assignment.outletId;
+    followup.employeeId = assignment.employeeId;
+    followup.shift = assignment.shift;
+    followup.updatedBy = actorId;
+    followup.updatedAt = updatedAt;
+    changed.push(followup);
+  }
+  return changed;
+}
 export function assertCashierAssignment(state: AppState, input: CashierAssignmentInput) {
   const actor = adminActor(state), employee = state.employees.find(e => e.id === input.employeeId);
   validDay(input.workDate);
@@ -58,6 +75,7 @@ export function saveAssignmentInState(state: AppState, input: CashierAssignmentI
   state.cashierAssignments ??= [];
   if (before) state.cashierAssignments[state.cashierAssignments.findIndex(a => a.id === before.id)] = row;
   else state.cashierAssignments.push(row);
+  syncAssignmentFollowups(state, row, actor.id);
   syncUnassignedRosterFollowups(state, input.employeeId, input.workDate, actor.id);
   return row;
 }
