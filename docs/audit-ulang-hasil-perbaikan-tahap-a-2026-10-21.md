@@ -75,7 +75,7 @@ Ini masalah demo yang sudah ada, bukan regresi baru dan bukan bukti V03 khusus `
 - V02 untuk refresh setelah listener terpasang: pemeriksaan revision baru dan regresi delayed getSession bekerja; W02 adalah jalur startup yang terpisah.
 - V03 khusus roster/unassigned: perpindahan tunggal/batch, fallback outlet utama, dan snapshot completed tercakup tes yang lulus.
 - V04: kegagalan persist key/payload menghentikan pengiriman RPC pertama; skenario storage pulih dan reload lulus.
-- V05: tidak ditemukan defect baru konkret pada penguncian target, recheck completed, atau otorisasi patch terakhir. Tes upgrade masih menggunakan satu backend PGlite; assertion lock di `followup-upgrade-compatibility.mjs:96–100` memeriksa teks fungsi. **Lock wait, before-image setelah transaksi lain commit, serta perlindungan completed pada dua koneksi serentak tetap belum diuji.** Ini gap verifikasi yang sudah diakui laporan, bukan hasil repro bug baru.
+- V05: audit awal tidak menemukan defect baru konkret pada penguncian target, recheck completed, atau otorisasi patch. Tes PGlite satu backend dan assertion lock di `followup-upgrade-compatibility.mjs:96–100` belum membuktikan concurrency. Uji tambahan Preview pada fixture sintetis kini memakai dua panggilan query terpisah dan PID PostgreSQL berbeda: pada kasus terbuka, sesi pemicu menunggu 12.230 ms dan before-image audit memuat perubahan yang sudah di-commit sesi pemegang lock; pada race penyelesaian, sesi pemicu menunggu 9.640 ms, kasus tetap `completed`, dan tidak ada audit baru. Fixture trigger meniru pola lock/recheck/audit migration, bukan pemanggilan langsung helper private pada tabel `public`; keterbatasan ini tetap dicatat.
 
 ## Pengujian baru pada audit ini
 
@@ -93,7 +93,8 @@ Ini masalah demo yang sudah ada, bukan regresi baru dan bukan bukti V03 khusus `
 | Reproduksi W02/W03 melalui source aktual dalam VM | Output di atas berhasil diulang oleh pemeriksa utama |
 | `git diff --check` | Lulus |
 | Demo E2E/PWA lengkap | Tidak diulang pada audit ini; hasil sebelumnya tetap historis |
-| Alur bisnis hosted / iPhone-PWA nyata / dua koneksi PostgreSQL | Tidak dijalankan |
+| Dua koneksi PostgreSQL pada fixture race sintetis | Dijalankan terpisah di Preview; lock wait, before-image, dan recheck completed teramati. Helper private di schema `public` belum dipanggil langsung dengan dua koneksi. |
+| Alur bisnis hosted / iPhone-PWA nyata | Tidak dijalankan |
 
 Live-mock memakai server khusus `127.0.0.1:5193`, backend tiruan `127.0.0.1:54329`, publishable key palsu, dan intersepsi Playwright. Server milik audit dihentikan setelah pengujian. Harness baru berada di `.vercel/audit-recheck/` dan belum menjadi tes regresi terpelihara; perbaikan berikutnya perlu menambahkannya ke suite yang ikut commit.
 
@@ -138,16 +139,17 @@ Perbaikan lokal dan tes regresi untuk W01–W03 telah ditambahkan setelah audit 
 | Demo E2E penuh | 19 lulus, 8 terskip: 7 live-mock dan 1 PWA; masing-masing dijalankan terpisah setelahnya |
 | Live-mock eksplisit | 7/7 lulus, tanpa skip, termasuk persist/reload/retry dan recovery draft W01 |
 | PWA pada build produksi lokal | 1/1 lulus; ini bukti browser desktop lokal, bukan iPhone |
+| V05 concurrency dua sesi PostgreSQL pada Preview | Lulus pada fixture sintetis: PID `272910`/`272912`, lock wait terukur `12.230 ms`, before-image memuat marker commit; PID `272917`/`272918`, lock wait terukur `9.640 ms`, kasus tetap completed dan marker audit `0`. Sesi pemicu mengangkat P0001 setelah menangkap hasil agar transaksi assignment/audit rollback. Pemanggilan helper private production secara langsung tidak diuji; fixture dipulihkan ke snapshot awal setelah tes. |
 | `git diff --check` | Lulus |
 
 Tidak ada migration yang ditambah atau diubah karena W01–W03 dapat ditutup dengan kontrak error RPC yang sudah ada, lifecycle Auth client, dan penyelarasan state demo. Database lokal tetap lulus pada 17 migration. Implementasi sudah di-deploy ke Preview; rincian deployment dan pemeriksaan endpoint hosted dicatat pada bagian berikutnya.
 
 ### Verifikasi yang masih terbuka
 
-- V05 masih belum memiliki bukti lock wait dan audit before-image dari dua sesi PostgreSQL nyata. PGlite pada suite database menggunakan satu backend. Komputer ini tidak memiliki `psql`/PostgreSQL lokal; Docker Desktop terpasang tetapi engine tidak aktif, dan WSL menolak akses. Karena itu hasil unit/SQL-shape tidak diklaim sebagai uji konkurensi dua koneksi.
+- V05 kini memiliki bukti dua backend PostgreSQL Preview pada trigger fixture sintetis: lock wait terukur, before-image membaca commit sesi pesaing, dan kasus yang menjadi completed tidak disinkronkan atau menghasilkan audit. Ini menguji pola konkurensi pada PostgreSQL nyata, tetapi bukan pemanggilan langsung `private.sync_spv_followup_source_context()`/`private.sync_roster_followup_context()` di tabel `public`; kedua helper production tetap didukung oleh inspeksi source dan suite PGlite satu backend. Tidak ada `psql`/PostgreSQL lokal; Docker Desktop terpasang tetapi engine tidak aktif, WSL menolak akses, dan ekstensi `dblink`/`pg_background` tidak tersedia di Preview.
 - Alur bisnis hosted Preview sesudah patch belum dijalankan. Shell `/login`, manifest, dan service worker berhasil dicek `200 OK`, tetapi login aplikasi dan workflow kasir nyata masih perlu diuji pada akun uji.
 - iPhone/iPad, ikon Layar Utama, offline/resume, kamera/GPS, dan push belum diuji pada versi yang diperbaiki. Tes PWA 1/1 hanya menguji build lokal di browser desktop.
-- Schema fixture sintetis `audit_v05_20261021` yang sudah ada tetap tidak disentuh. Tidak ada data operasional, audit, atau schema hosted yang direset/dihapus pada tindak lanjut ini.
+- Schema fixture sintetis `audit_v05_20261021` yang sudah ada tidak direset atau dihapus. Dalam skenario race, note/status kasus sintetis diubah sementara untuk menguji commit di balik lock, kemudian dipulihkan. Sesi pemicu menangkap before/after di pesan exception P0001 yang sengaja dibuat sehingga perubahan assignment dan audit pada transaksi itu rollback. Snapshot akhir sama dengan snapshot awal: dua assignment, dua kasus, dan satu audit record lama; tidak ada tabel/data operasional yang disentuh atau audit record yang dihapus.
 
 ### Status deployment Preview setelah patch
 
