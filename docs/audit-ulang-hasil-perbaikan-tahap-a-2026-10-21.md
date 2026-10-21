@@ -97,7 +97,7 @@ Ini masalah demo yang sudah ada, bukan regresi baru dan bukan bukti V03 khusus `
 
 Live-mock memakai server khusus `127.0.0.1:5193`, backend tiruan `127.0.0.1:54329`, publishable key palsu, dan intersepsi Playwright. Server milik audit dihentikan setelah pengujian. Harness baru berada di `.vercel/audit-recheck/` dan belum menjadi tes regresi terpelihara; perbaikan berikutnya perlu menambahkannya ke suite yang ikut commit.
 
-## Pemeriksaan remote read-only
+## Pemeriksaan remote read-only saat audit awal
 
 Supabase terverifikasi sebagai `hr-rajaklana-preview`, ref `lypsqrwjzrmuyqtdcegr`, organisasi `bvwgekyfibloctfslgdf`, region `ap-southeast-2`, `ACTIVE_HEALTHY`. Riwayat memiliki 17 migration, terakhir `20261021154511_cashier_followup_context_locking`, cocok dengan nama file lokal. Kedua fungsi sinkronisasi private mempunyai lock `FOR UPDATE OF f`, bukan security definer, dan tidak dapat dieksekusi langsung oleh anon/authenticated.
 
@@ -107,7 +107,7 @@ Alias Vercel Preview menunjuk deployment `dpl_FS8KWYpwcaMxXtxF3YzzU2BqFEPK`, `RE
 
 Peringatan empat dependency dari build Vercel sebelumnya belum ditelaah ulang pada audit ini dan tidak dinyatakan sebagai kerentanan baru dari patch.
 
-## Urutan tindak lanjut
+## Urutan tindak lanjut yang ditetapkan saat audit awal
 
 1. Perbaiki W01 tanpa mengurangi perlindungan key/payload replay ambigu dan 401.
 2. Tutup W02 dengan regresi startup yang benar-benar mengganti identitas sebelum init selesai.
@@ -140,11 +140,25 @@ Perbaikan lokal dan tes regresi untuk W01–W03 telah ditambahkan setelah audit 
 | PWA pada build produksi lokal | 1/1 lulus; ini bukti browser desktop lokal, bukan iPhone |
 | `git diff --check` | Lulus |
 
-Tidak ada migration yang ditambah atau diubah karena W01–W03 dapat ditutup dengan kontrak error RPC yang sudah ada, lifecycle Auth client, dan penyelarasan state demo. Database lokal tetap lulus pada 17 migration. Implementasi yang mengubah source produksi belum di-deploy saat laporan ini ditulis; status deployment dicatat pada pembaruan setelah rilis Preview.
+Tidak ada migration yang ditambah atau diubah karena W01–W03 dapat ditutup dengan kontrak error RPC yang sudah ada, lifecycle Auth client, dan penyelarasan state demo. Database lokal tetap lulus pada 17 migration. Implementasi sudah di-deploy ke Preview; rincian deployment dan pemeriksaan endpoint hosted dicatat pada bagian berikutnya.
 
 ### Verifikasi yang masih terbuka
 
 - V05 masih belum memiliki bukti lock wait dan audit before-image dari dua sesi PostgreSQL nyata. PGlite pada suite database menggunakan satu backend. Komputer ini tidak memiliki `psql`/PostgreSQL lokal; Docker Desktop terpasang tetapi engine tidak aktif, dan WSL menolak akses. Karena itu hasil unit/SQL-shape tidak diklaim sebagai uji konkurensi dua koneksi.
-- Alur bisnis hosted Preview sesudah patch belum dijalankan. Perlu memeriksa login dan workflow nyata pada akun uji; deployment Ready saja tidak cukup.
+- Alur bisnis hosted Preview sesudah patch belum dijalankan. Shell `/login`, manifest, dan service worker berhasil dicek `200 OK`, tetapi login aplikasi dan workflow kasir nyata masih perlu diuji pada akun uji.
 - iPhone/iPad, ikon Layar Utama, offline/resume, kamera/GPS, dan push belum diuji pada versi yang diperbaiki. Tes PWA 1/1 hanya menguji build lokal di browser desktop.
 - Schema fixture sintetis `audit_v05_20261021` yang sudah ada tetap tidak disentuh. Tidak ada data operasional, audit, atau schema hosted yang direset/dihapus pada tindak lanjut ini.
+
+### Status deployment Preview setelah patch
+
+Identitas proyek tetap `hr-rajaklana-jkt`, project ID `prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`, dengan source GitHub `yoga12-rgb/hr-rajaklana-jkt`. Target Supabase tetap Preview `lypsqrwjzrmuyqtdcegr` dengan 17 migration yang sudah diterapkan; patch W01–W03 tidak memerlukan migration dan tidak mengubah database hosted.
+
+Commit `77f81a14d6d992193e61d63dbd16184eab5cf394` berada di branch `codex/preview`. Vercel membuat deployment Git otomatis `dpl_7t6LX5N6ZNumzGMJP9QFcTgvYbN2`; status `READY`, target Preview, dan alias `hr-rajaklana-jkt-preview.vercel.app` tercantum pada deployment tersebut. Deployment `dpl_MQpbMyPXQQL56pHdRP3zMMDk4Who` kemudian dibuat ulang dari latest commit lewat koneksi Git proyek yang sama; statusnya juga `READY` dan metadata SHA/branch sama. Pemeriksaan HTTP pada alias Preview melalui `vercel curl -I` memberikan:
+
+| Endpoint hosted | Status | Content-Type |
+| --- | --- | --- |
+| `/login` | `200 OK` | `text/html; charset=utf-8` |
+| `/manifest.webmanifest` | `200 OK` | `application/manifest+json; charset=utf-8` |
+| `/service-worker.js` | `200 OK` | `application/javascript; charset=utf-8` |
+
+Pemeriksaan ini hanya mencakup shell dan aset PWA hosted. Sesi autentikasi aplikasi, operasi kasir, alur database hosted, serta iPhone/iPad belum dijalankan. Konektor fetch Vercel menolak bypass dengan 403; pemeriksaan endpoint yang tercatat dilakukan melalui Vercel CLI pada proyek tertaut. Deployment Protection tidak diubah. Production dan branch `main` tetap di luar cakupan.
