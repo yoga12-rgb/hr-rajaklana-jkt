@@ -3,13 +3,14 @@ import { get } from 'svelte/store';
 import { actions,app } from './state/app';
 import { initialDemo } from './state/demo';
 import { assertCashierAssignment,assignmentFor,saveAssignmentInState } from './cashier-workflows';
-import type { AttendanceCorrectionInput,CashierAssignmentInput } from './types';
+import type { AttendanceCorrectionInput,CashierAssignmentInput,SpvFollowup } from './types';
 
 vi.mock('./state/client',()=>({configured:false,supabase:null}));
 const actor=(id:string)=>app.update(s=>({...s,user:s.employees.find(e=>e.id===id)!}));
 const assignment=(overrides:Partial<CashierAssignmentInput>={}):CashierAssignmentInput=>({employeeId:'employee-4',workDate:'2026-10-06',outletId:'outlet-a',shift:'morning',reason:'Penugasan dikonfirmasi HR',...overrides});
 const correction=(overrides:Partial<AttendanceCorrectionInput>={}):AttendanceCorrectionInput=>({attendanceId:null,workDate:'2026-10-05',clockIn:'2026-10-05T00:10:00Z',clockOut:'2026-10-05T08:10:00Z',shift:'morning',reason:'Kamera gagal, jam dikonfirmasi SPV',...overrides});
 const clockInput=()=>({outletId:'outlet-a',shift:'morning' as const,latitude:-6.2,longitude:106.816666,accuracy:10,geoCapturedAt:new Date().toISOString(),selfie:new Blob(['foto'],{type:'image/jpeg'})});
+const unassignedFollowup=(id:string,workDate:string,status:SpvFollowup['status']='new'):SpvFollowup=>({id,caseKey:`unassigned:employee-4:${workDate}`,issueType:'unassigned',sourceType:'roster',sourceId:null,workDate,outletId:'outlet-a',employeeId:'employee-4',shift:'morning',ownerId:null,status,note:'',resolutionNote:status==='completed'?'Kasus sudah ditutup':'',createdBy:'employee-1',updatedBy:'employee-1',createdAt:'2026-10-01T00:00:00.000Z',updatedAt:'2026-10-01T00:00:00.000Z',reopenedCount:0});
 
 beforeEach(()=>{
   vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-06T03:00:00Z'));
@@ -60,6 +61,32 @@ describe('Penugasan harian kasir',()=>{
     await actions.saveCashierAssignment(assignment({id,outletId:'outlet-a',shift:'morning',cancel:true,reason:'Pembatalan dari formulir lama'}));
     expect(get(app).cashierAssignments?.find(a=>a.id===id)).toMatchObject({status:'cancelled',outletId:'outlet-b',shift:'afternoon'});
     const before=get(app);await expect(actions.saveCashierAssignment(assignment({id,cancel:true}))).rejects.toThrow('aktif tidak ditemukan');expect(get(app)).toBe(before);
+  });
+  it('memindahkan konteks kasus terbuka mengikuti assignment, pembatalan dan aktivasi ulang serta menjaga riwayat selesai',async()=>{
+    app.update(s=>({...s,spvFollowups:[unassignedFollowup('case-open','2026-10-06'),unassignedFollowup('case-completed','2026-10-06','completed')]}));
+    const completedBefore=get(app).spvFollowups?.find(row=>row.id==='case-completed');
+    const assignmentId=await actions.saveCashierAssignment(assignment({outletId:'outlet-b'}));
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-open')).toMatchObject({outletId:'outlet-b',updatedBy:'employee-1'});
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-completed')).toEqual(completedBefore);
+    expect(get(app).auditEntries.some(row=>row.entityId==='case-open'&&row.action==='spv_followup_context_refreshed')).toBe(true);
+
+    await actions.saveCashierAssignment(assignment({id:assignmentId,outletId:'outlet-b',cancel:true}));
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-open')?.outletId).toBe('outlet-a');
+    await actions.saveCashierAssignment(assignment({id:assignmentId,outletId:'outlet-b',shift:'afternoon',reason:'Aktifkan kembali penempatan',cancel:false}));
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-open')?.outletId).toBe('outlet-b');
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-completed')).toEqual(completedBefore);
+  });
+  it('menyelaraskan konteks kasus setelah simpan batch dan perubahan outlet utama karyawan',async()=>{
+    app.update(s=>({...s,spvFollowups:[unassignedFollowup('case-batch','2026-10-12'),unassignedFollowup('case-employee','2026-10-13'),unassignedFollowup('case-employee-completed','2026-10-13','completed')]}));
+    await actions.saveCashierRosterBatch('2026-10-12',[{employeeId:'employee-4',workDate:'2026-10-12',outletId:'outlet-b',shift:'morning',reason:'Jadwal bantuan outlet mingguan',expectedUpdatedAt:null}],crypto.randomUUID());
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-batch')).toMatchObject({outletId:'outlet-b',updatedBy:'employee-1'});
+    expect(get(app).auditEntries.some(row=>row.entityId==='case-batch'&&row.action==='spv_followup_context_refreshed')).toBe(true);
+
+    const cashier=get(app).employees.find(employee=>employee.id==='employee-4')!;
+    await actions.saveEmployee({...cashier,outletId:'outlet-b'});
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-employee')).toMatchObject({outletId:'outlet-b',updatedBy:'employee-1'});
+    expect(get(app).spvFollowups?.find(row=>row.id==='case-employee-completed')?.outletId).toBe('outlet-a');
+    expect(get(app).auditEntries.some(row=>row.entityId==='case-employee'&&row.action==='spv_followup_context_refreshed')).toBe(true);
   });
   it('mewajibkan penugasan kerja aktif dan mencegah kasir libur melakukan clock in',async()=>{
     actor('employee-4');await expect(actions.clockIn(clockInput())).rejects.toThrow('penugasan');

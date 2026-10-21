@@ -11,9 +11,13 @@ const liveTables: Record<string, Record<string, unknown>[]> = {
   employees: [{ id: 'employee-admin', employee_number: 'RK000001', full_name: 'Admin Uji', whatsapp: '0812', department_id: 'department', position_id: 'position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-admin', can_middle_shift: false, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' }],
   employee_roles: [{ employee_id: 'employee-admin', role: 'admin_hr' }],
   departments: [{ id: 'department', name: 'Kasir', code: 'KSR', active: true }],
-  positions: [{ id: 'position', name: 'Admin Uji', department_id: 'department', active: true, is_cashier: false }],
+  positions: [
+    { id: 'position', name: 'Admin Uji', department_id: 'department', active: true, is_cashier: false },
+    { id: 'cashier-position', name: 'Kasir Uji', department_id: 'department', active: true, is_cashier: true }
+  ],
   outlets: [{ id: 'outlet', code: 'UJI', name: 'Outlet Uji', address: '', active: true, production_location: false, latitude: null, longitude: null, radius_m: 500, opens_at: '07:00:00', closes_at: '23:00:00', morning_starts_at: '07:00:00', afternoon_starts_at: '15:00:00', late_tolerance_minutes: 10 }]
 };
+const cashierEmployeeRow = { id: 'employee-cashier', employee_number: 'RK000002', full_name: 'Kasir Uji', whatsapp: '0813', department_id: 'department', position_id: 'cashier-position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-cashier', can_middle_shift: true, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' };
 
 type MockChannel = { on: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn>; emit: (status: string) => void; joined: boolean };
 let channels: MockChannel[];
@@ -25,6 +29,10 @@ let failEmployeeReadForUser: string | null = null;
 let delayNextEmployeeRead = false;
 let employeeReadStarted: (() => void) | null = null;
 let releaseDelayedEmployeeRead: (() => void) | null = null;
+let delayNextGetSession = false;
+let getSessionStarted: (() => void) | null = null;
+let releaseDelayedGetSession: (() => void) | null = null;
+let filterEmployeeRowsForSession = false;
 
 async function flush() { await Promise.resolve(); await Promise.resolve(); }
 
@@ -36,9 +44,20 @@ function installLiveClient() {
   delayNextEmployeeRead = false;
   employeeReadStarted = null;
   releaseDelayedEmployeeRead = null;
+  delayNextGetSession = false;
+  getSessionStarted = null;
+  releaseDelayedGetSession = null;
+  filterEmployeeRowsForSession = false;
   const client = {
     auth: {
-      getSession: vi.fn(async () => ({ data: { session: currentSession }, error: null })),
+      getSession: vi.fn(async () => {
+        const capturedSession = currentSession;
+        if (delayNextGetSession) {
+          delayNextGetSession = false;
+          await new Promise<void>(resolve => { getSessionStarted?.(); releaseDelayedGetSession = resolve; });
+        }
+        return { data: { session: capturedSession }, error: null };
+      }),
       onAuthStateChange: vi.fn((callback: (event: string, session: typeof currentSession | null) => void) => {
         authListener = callback;
         return { data: { subscription: { unsubscribe: vi.fn() } } };
@@ -59,6 +78,13 @@ function installLiveClient() {
           }
           if (table === 'employees' && currentSession?.user.id === failEmployeeReadForUser) {
             return { data: null, error: new Error('Pembacaan akun B gagal di mock.') };
+          }
+          if (filterEmployeeRowsForSession && table === 'employees') {
+            return { data: currentSession?.user.id === 'auth-cashier' ? [cashierEmployeeRow] : liveTables.employees ?? [], error: null };
+          }
+          if (filterEmployeeRowsForSession && table === 'employee_roles') {
+            const visibleEmployeeIds = new Set((liveTables.employees ?? []).filter(row => row.auth_user_id === currentSession?.user.id).map(row => row.id));
+            return { data: (liveTables.employee_roles ?? []).filter(row => visibleEmployeeIds.has(row.employee_id)), error: null };
           }
           return { data: liveTables[table] ?? [], error: null };
         })
@@ -259,6 +285,33 @@ describe('live Realtime recovery', () => {
     expect(channels).toHaveLength(1);
     oldChannel.emit('SUBSCRIBED');
     expect(get(app).connected).toBe(false);
+  });
+
+  it('discards an obsolete getSession result before it can sign out the account that replaced it', async () => {
+    const { actions, app } = await openLiveApp();
+    expect(get(app).user?.id).toBe('employee-admin');
+
+    let announceStarted!: () => void;
+    const started = new Promise<void>(resolve => { announceStarted = resolve; });
+    getSessionStarted = announceStarted;
+    delayNextGetSession = true;
+    const staleRefresh = actions.refresh();
+    await started;
+
+    const sessionB = sessionFor('auth-cashier');
+    currentSession = sessionB;
+    filterEmployeeRowsForSession = true;
+    authListener?.('SIGNED_IN', sessionB);
+    expect(get(app).user).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 0)); // Queue B behind the refresh that captured A.
+    releaseDelayedGetSession?.();
+    await staleRefresh;
+    await flush();
+
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    expect(get(app).user?.id).toBe('employee-cashier');
+    expect(get(app).user?.authUserId).toBe('auth-cashier');
+    expect(get(app).employees.map(employee => employee.id)).toEqual(['employee-cashier']);
   });
 
   it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {

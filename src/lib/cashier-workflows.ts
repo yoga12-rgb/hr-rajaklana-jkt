@@ -1,4 +1,4 @@
-import type { AppState, AttendanceCorrectionInput, AttendanceCorrectionRequest, AttendanceRecord, CashierAssignmentInput, Employee, Outlet } from './types';
+import type { AppState, AttendanceCorrectionInput, AttendanceCorrectionRequest, AttendanceRecord, CashierAssignmentInput, Employee, Outlet, SpvFollowup } from './types';
 import { attendanceTiming, jakartaDate } from './domain';
 
 const uid = () => crypto.randomUUID();
@@ -15,6 +15,23 @@ function adminActor(state: AppState) {
 }
 export function assignmentFor(state: AppState, employeeId: string, day = jakartaDate()) {
   return (state.cashierAssignments ?? []).find(a => a.employeeId === employeeId && a.workDate === day && a.status === 'active');
+}
+export function syncUnassignedRosterFollowups(state: AppState, employeeId: string, workDate: string | null, actorId: string): SpvFollowup[] {
+  const employee = state.employees.find(item => item.id === employeeId);
+  if (!employee) return [];
+  const changed: SpvFollowup[] = [];
+  const updatedAt = timestamp();
+  for (const followup of state.spvFollowups ?? []) {
+    if (followup.sourceType !== 'roster' || followup.issueType !== 'unassigned' || followup.sourceId !== null
+      || followup.employeeId !== employeeId || (workDate !== null && followup.workDate !== workDate) || followup.status === 'completed') continue;
+    const outletId = assignmentFor(state, employeeId, followup.workDate)?.outletId ?? employee.outletId;
+    if (!outletId || outletId === followup.outletId) continue;
+    followup.outletId = outletId;
+    followup.updatedBy = actorId;
+    followup.updatedAt = updatedAt;
+    changed.push(followup);
+  }
+  return changed;
 }
 export function assertCashierAssignment(state: AppState, input: CashierAssignmentInput) {
   const actor = adminActor(state), employee = state.employees.find(e => e.id === input.employeeId);
@@ -41,6 +58,7 @@ export function saveAssignmentInState(state: AppState, input: CashierAssignmentI
   state.cashierAssignments ??= [];
   if (before) state.cashierAssignments[state.cashierAssignments.findIndex(a => a.id === before.id)] = row;
   else state.cashierAssignments.push(row);
+  syncUnassignedRosterFollowups(state, input.employeeId, input.workDate, actor.id);
   return row;
 }
 export function assertCorrectionInput(state: AppState, employeeId: string, input: AttendanceCorrectionInput) {

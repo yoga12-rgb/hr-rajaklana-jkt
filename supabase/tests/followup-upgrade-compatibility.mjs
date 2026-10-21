@@ -74,8 +74,8 @@ const setupHistory = async (db, sourceShift='off') => {
     activeCase:activeCase.id,completedCase:completedCase.id,rosterCase:rosterCase.id,completedRoster:completedRoster.id};
 };
 
-// Preview-style upgrade: all 15 known migrations are installed before the new
-// forward migration. Existing open and completed cases are both present.
+// Preview-style upgrade: the known 15-migration baseline is upgraded through
+// both forward corrections. Existing open and completed cases are present.
 {
   const db = await createDb();
   try {
@@ -91,6 +91,13 @@ const setupHistory = async (db, sourceShift='off') => {
     let sql=await readFile(new URL(migrationNames[15],migrationDir),'utf8');
     sql=sql.replace('create extension if not exists pgcrypto with schema extensions;','');
     await db.exec(sql);
+    sql=await readFile(new URL(migrationNames[16],migrationDir),'utf8');
+    await db.exec(sql);
+    const rosterSync=await scalar(db,"select prosrc from pg_proc where oid='private.sync_roster_followup_context(uuid,date,uuid,text)'::regprocedure");
+    assert.match(rosterSync.prosrc,/for update of f/i,'context refresh locks target cases before capturing audit snapshots');
+    assert.match(rosterSync.prosrc,/f\.status\s*<>\s*'completed'/i,'context refresh rechecks completed status under the row lock');
+    const sourceSync=await scalar(db,"select prosrc from pg_proc where oid='private.sync_spv_followup_source_context()'::regprocedure");
+    assert.match(sourceSync.prosrc,/for update of f/i,'source trigger locks target cases before capturing audit snapshots');
     open = await scalar(db,'select id,status,shift,outlet_id,owner_id,note,resolution_note from public.spv_followups where id=$1',[ids.activeCase]);
     assert.equal(open.shift,'morning');
     await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
@@ -113,7 +120,7 @@ const setupHistory = async (db, sourceShift='off') => {
       'Preview upgrade does not rewrite a completed roster snapshot');
     assert.equal((await scalar(db,"select count(*)::int as count from private.spv_followup_context_repair_log where migration_key='20261020081916_cashier_followup_context_consistency'")).count,1,
       'Preview upgrade records one private before/after repair');
-    console.log('Preview 15→16 upgrade OK: open/off case, completed snapshot, roster outlet repair and private evidence');
+    console.log('Preview 15→17 upgrade OK: open/off case, completed snapshot, roster outlet repair and locked audit snapshots');
   } finally { await db.close(); }
 }
 
@@ -159,6 +166,6 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('rollback');
     assert.equal((await scalar(db,'select shift from public.spv_followups where id=$1',[ids.activeCase])).shift,'off',
       'refusing an out-of-scope preflight does not change the migrated case');
-    console.log('Historical 13→16 upgrade OK: preflight absence reproduced; bounded preflight applied twice; migration 14 backfill completed');
+    console.log('Historical 13→17 upgrade OK: preflight absence reproduced; bounded preflight applied twice; migrations 14–17 completed');
   } finally { await db.close(); }
 }

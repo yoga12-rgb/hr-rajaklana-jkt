@@ -39,6 +39,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   let commitCount = 0;
   let loseNextRpcResponse = loseResponse;
   let failNextAssignmentRead = false;
+  let rejectNextReplay = false;
   const now = new Date().toISOString();
   const authUser = {
     id: adminAuthId, aud: 'authenticated', role: 'authenticated', email: 'admin@example.test',
@@ -74,6 +75,11 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
       const payload = route.request().postDataJSON() as { p_idempotency_key: string; p_week_start: string; p_changes: Record<string, unknown>[] };
       rpcPayloads.push(structuredClone(payload));
       const fingerprint = JSON.stringify({ weekStart: payload.p_week_start, changes: payload.p_changes });
+      if (rejectNextReplay) {
+        rejectNextReplay = false;
+        await respond(route, { code: 'PGRST301', message: 'JWT expired' }, 401);
+        return;
+      }
       const previous = committed.get(payload.p_idempotency_key);
       if (previous) {
         if (previous.fingerprint !== fingerprint) { await respond(route, { code: 'P0001', message: 'Kunci batch sudah dipakai untuk perubahan jadwal lain' }, 400); return; }
@@ -146,7 +152,8 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   const weekStart = nextMonday();
   const shift = page.locator('select[aria-label^="Shift Kasir Uji,"]').first();
   await expect(shift).toBeVisible();
-  return { weekStart, shift, savedAssignments, rpcPayloads, getSaveCalls: () => saveCalls, getCommitCount: () => commitCount };
+  return { weekStart, shift, savedAssignments, rpcPayloads, rejectNextReplay: () => { rejectNextReplay = true; },
+    getSaveCalls: () => saveCalls, getCommitCount: () => commitCount };
 }
 
 async function reopenNextWeekAfterReload(page: Page) {
@@ -234,6 +241,63 @@ test('live UI retries an uncommitted ambiguous attempt once with its persisted o
   await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeVisible();
   expect(mock.rpcPayloads).toHaveLength(2);
   expect(mock.rpcPayloads[1]).toEqual(originalRequest);
+  expect(mock.getCommitCount()).toBe(1);
+  expect(mock.savedAssignments).toHaveLength(1);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
+});
+
+test('live UI keeps the original attempt when replay is rejected before the idempotency lookup', async ({ page }) => {
+  const mock = await openRosterMock(page, true, true);
+  await mock.shift.selectOption('morning');
+  await page.getByLabel('Alasan perubahan batch').fill('Pulihkan replay setelah sesi masuk diperbarui');
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+  const originalRequest = structuredClone(mock.rpcPayloads[0]);
+  expect(mock.getCommitCount()).toBe(1);
+
+  await page.reload();
+  await reopenNextWeekAfterReload(page);
+  mock.rejectNextReplay();
+  await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true })).toBeVisible();
+  expect(mock.getCommitCount()).toBe(1);
+  expect(mock.rpcPayloads).toHaveLength(2);
+  expect(mock.rpcPayloads[1]).toEqual(originalRequest);
+
+  await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+  await expect(page.getByText(/perubahan jadwal tersimpan bersama\./i)).toBeVisible();
+  expect(mock.getCommitCount()).toBe(1);
+  expect(mock.rpcPayloads).toHaveLength(3);
+  expect(mock.rpcPayloads[2]).toEqual(originalRequest);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
+});
+
+test('live UI refuses a new roster save when local recovery persistence fails, then succeeds after reload', async ({ page }) => {
+  const mock = await openRosterMock(page);
+  await mock.shift.selectOption('morning');
+  await page.getByLabel('Alasan perubahan batch').fill('Draft dipulihkan setelah storage tersedia');
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key.startsWith('rajaklana-hr-roster-draft-v1:')) throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('Jadwal belum dikirim karena catatan pemulihan gagal disimpan di perangkat ini. Coba kembali setelah ruang penyimpanan tersedia.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Browser tidak dapat menyimpan draft dan kunci pemulihan. Jadwal tidak dikirim sampai penyimpanan perangkat kembali tersedia.', { exact: true })).toBeVisible();
+  expect(mock.rpcPayloads).toHaveLength(0);
+  expect(mock.getCommitCount()).toBe(0);
+
+  await page.reload();
+  await reopenNextWeekAfterReload(page);
+  await expect(mock.shift).toHaveValue('morning');
+  await expect(page.getByLabel('Alasan perubahan batch')).toHaveValue('Draft dipulihkan setelah storage tersedia');
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeVisible();
+  expect(mock.rpcPayloads).toHaveLength(1);
   expect(mock.getCommitCount()).toBe(1);
   expect(mock.savedAssignments).toHaveLength(1);
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);

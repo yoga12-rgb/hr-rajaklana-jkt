@@ -25,13 +25,14 @@
   $: wantedDraftStorageKey = $app.user?.id ? cashierRosterDraftStorageKey($app.user.id, weekStart) : '';
   $: if (wantedDraftStorageKey !== activeDraftStorageKey) activateDraftKey(wantedDraftStorageKey);
 
-  function persistDraft(storageKey = activeDraftStorageKey) {
-    if (!storageKey) return;
+  function persistDraft(storageKey = activeDraftStorageKey): boolean {
+    if (!storageKey) { draftStorageWarning = true; return false; }
     try {
       if (!Object.keys(drafts).length && !reason.trim() && !pendingAttempt && !legacyAttemptNeedsReview) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, serializeCashierRosterDraft({ drafts, reason, pendingAttempt, legacyAttemptNeedsReview }));
       draftStorageWarning = false;
-    } catch { draftStorageWarning = true; }
+      return true;
+    } catch { draftStorageWarning = true; return false; }
   }
   function activateDraftKey(nextKey: string) {
     persistDraft(activeDraftStorageKey);
@@ -166,7 +167,13 @@
         attemptedChanges = changes.map(change => ({ ...change, reason: reason.trim() }));
         validateRosterBatch($app, $app.user?.id ?? '', weekStart, attemptedChanges);
         attempt = createCashierRosterAttempt(weekStart, attemptedChanges, null);
-        pendingAttempt = attempt; persistDraft();
+        pendingAttempt = attempt;
+        if (!persistDraft()) {
+          pendingAttempt = null;
+          failed = true;
+          message = 'Jadwal belum dikirim karena catatan pemulihan gagal disimpan di perangkat ini. Coba kembali setelah ruang penyimpanan tersedia.';
+          return;
+        }
       } else attemptedChanges = structuredClone(attempt.changes);
       const result = await actions.saveCashierRosterBatch(attempt.weekStart, attemptedChanges, attempt.idempotencyKey, replayingPersistedAttempt);
       message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; copyPreview = null;
@@ -177,7 +184,7 @@
         if (attempt) clearAttemptedDrafts(attempt);
         copyPreview = null;
         failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
-      } else if (!attempt || !cashierRosterSaveOutcomeIsUncertain(error)) { pendingAttempt = null; persistDraft(); }
+      } else if (!replayingPersistedAttempt && (!attempt || !cashierRosterSaveOutcomeIsUncertain(error))) { pendingAttempt = null; persistDraft(); }
     }
     finally { saving = false; }
   }
@@ -195,7 +202,7 @@
   <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
   <Feedback {message} error={failed}/>
   <p class="notice">Jadwal lampau hanya dapat dilihat. Libur tetap adalah saran; jadwal tidak dibuat otomatis. Perubahan berbenturan, jadwal usang, atau tanggal dengan absensi akan ditolak sebelum disimpan.</p>
-  {#if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft pada perangkat ini. Simpan jadwal sebelum menutup halaman.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
+  {#if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft dan kunci pemulihan. Jadwal tidak dikirim sampai penyimpanan perangkat kembali tersedia.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
   {#if legacyAttemptNeedsReview}<section class="draft-review" role="alert"><strong>Draft lama membawa percobaan simpan yang tidak dapat dipastikan.</strong><p>Periksa jadwal terbaru dan bandingkan dengan draft sebelum mengizinkan penyimpanan baru. Kunci percobaan lama tidak dapat dipulihkan secara aman.</p><button class="btn btn-secondary" type="button" disabled={saving} on:click={acknowledgeLegacyAttemptAfterReview}>Saya sudah memeriksa status jadwal di server</button></section>{/if}
   {#if pendingAttempt}<section class="pending-attempt" role="status"><strong>Ada percobaan simpan sebelumnya yang belum dipastikan</strong><p>{pendingAttempt.changes.length} perubahan dari minggu {dateLabel(pendingAttempt.weekStart)} akan dikirim ulang dengan payload dan kunci yang sama. Draft baru tetap tersimpan lokal sampai percobaan ini selesai.</p><button class="btn btn-secondary" type="button" disabled={saving} on:click={retryPendingAttempt}>{saving ? 'Memeriksa hasil…' : 'Ulangi percobaan simpan sebelumnya'}</button></section>{/if}
   {#if reviewEntries.length}<section class="draft-review" aria-labelledby="draft-review-title"><strong id="draft-review-title">Tinjau {reviewEntries.length} sel sebelum menyimpan</strong><p>Perubahan dari sesi lain atau draft lama perlu ditinjau satu per satu. Menyentuh sel lain tidak menghapus konflik.</p>{#each reviewEntries as item (item.key)}{@const employee = cashiers.find(person => person.id === item.employeeId)}<article class="review-cell"><div><strong>{employee?.fullName ?? 'Kasir'} · {dateLabel(item.workDate)}</strong><span>Draft Anda: {item.draft.shift ? `${shiftName(item.draft.shift)} · ${$app.outlets.find(outlet => outlet.id === item.draft.outletId)?.name ?? 'Outlet tidak dikenal'}` : 'Belum ditugaskan'}</span><span>Jadwal terbaru: {item.current.status === 'active' ? `${shiftName(item.current.shift)} · ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'Outlet tidak dikenal'}` : item.current.status === 'cancelled' ? `Dibatalkan · ${shiftName(item.current.shift)}` : `Belum ditugaskan · outlet utama ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'belum diatur'}`}</span></div><div class="review-actions"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'server')}>Gunakan jadwal terbaru</button><button class="btn btn-primary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'reapply')}>Terapkan kembali draft saya</button></div></article>{/each}</section>{/if}

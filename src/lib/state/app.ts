@@ -8,7 +8,7 @@ import { classifyAttendanceLateness, approvedArrivalForAttendance } from '../att
 import { duplicateLeave, findLeaveConflicts } from '../leave-validation';
 import { demoNotifications } from '../notifications';
 import { leaveAuditDetail } from '../leave-audit';
-import { assignmentFor, assertCashierAssignment, saveAssignmentInState, assertCorrectionInput, submitCorrectionInState, decideCorrectionInState } from '../cashier-workflows';
+import { assignmentFor, assertCashierAssignment, saveAssignmentInState, syncUnassignedRosterFollowups, assertCorrectionInput, submitCorrectionInState, decideCorrectionInState } from '../cashier-workflows';
 import { disableDevicePush } from '../device-push';
 import { followupCaseKey, operationalSignals, validateRosterBatch } from '../cashier-spv';
 import { rpcError } from '../rpc-error';
@@ -116,6 +116,14 @@ function commit(change: (state: AppState) => void, action?: string, entityId = '
   if (action) state.auditEntries.unshift({ id: id(), actorId: state.user?.id ?? '', action, entityId, at: new Date().toISOString(), detail });
   if (state.user) state.user = state.employees.find(e => e.id === state.user?.id) ?? null;
   persist(state); app.set(state);
+}
+function auditDemoFollowupContextChanges(state: AppState, before: SpvFollowup[], actorId: string) {
+  const previous = new Map(before.map(row => [row.id, row]));
+  for (const followup of state.spvFollowups ?? []) {
+    if (previous.get(followup.id)?.outletId === followup.outletId) continue;
+    state.auditEntries.unshift({ id: id(), actorId, action: 'spv_followup_context_refreshed', entityId: followup.id,
+      at: followup.updatedAt, detail: 'Outlet konteks kasus mengikuti penempatan kasir.' });
+  }
 }
 function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini hanya untuk Admin HR.'); }
 function fail(error: unknown): never { throw new Error(error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error ? String(error.message) : 'Permintaan belum berhasil. Coba kembali.'); }
@@ -260,6 +268,7 @@ async function refreshNow() {
   let revision = authRevision;
   try {
     const { data: { session } } = await supabase.auth.getSession();
+    if (revision !== authRevision) return;
     const nextAuthUserId = session?.user.id ?? null;
     if (nextAuthUserId !== liveAuthUserId) {
       liveAuthUserId = nextAuthUserId;
@@ -395,8 +404,11 @@ export const actions = {
       await refresh(); return;
     }
     const employeeId = input.id ?? id(); commit(state => {
+      const previousFollowups = structuredClone(state.spvFollowups ?? []);
       const employee: Employee = { ...initialDemo().employees[0], ...input, id: employeeId, roles: [...new Set<Role>(['employee', ...(input.roles ?? [])])], employeeNumber: before?.employeeNumber ?? `RK${String(Math.max(0, ...state.employees.map(e => Number(e.employeeNumber.slice(2)))) + 1).padStart(6, '0')}`, accountStatus: input.status === 'inactive' ? 'disabled' : before?.accountStatus ?? 'not_invited' };
       const index = state.employees.findIndex(e => e.id === employeeId); if (index < 0) state.employees.push(employee); else state.employees[index] = employee;
+      syncUnassignedRosterFollowups(state, employeeId, null, state.user?.id ?? '');
+      auditDemoFollowupContextChanges(state, previousFollowups, state.user?.id ?? '');
     }, 'employee_saved', employeeId, 'Perubahan data karyawan');
     if (input.status === 'inactive') {
       const links = JSON.parse(localStorage.getItem('rk-demo-links') ?? '{}');
@@ -568,7 +580,11 @@ export const actions = {
     requireAdmin(); assertCashierAssignment(get(app),input);
     if (configured) { const row = await rpc('cashier_assignment_save',{ p_employee_id: input.employeeId, p_work_date: input.workDate,
       p_outlet_id: input.outletId, p_shift: input.shift, p_reason: input.reason, p_id: input.id ?? null, p_cancel: input.cancel ?? false }); await refresh(); return row.id; }
-    let result = ''; commit(s => { result = saveAssignmentInState(s,input).id; },input.cancel ? 'assignment_cancelled' : 'assignment_saved', input.id ?? '', input.reason); return result;
+    let result = ''; commit(s => {
+      const previousFollowups = structuredClone(s.spvFollowups ?? []);
+      result = saveAssignmentInState(s,input).id;
+      auditDemoFollowupContextChanges(s, previousFollowups, s.user?.id ?? '');
+    },input.cancel ? 'assignment_cancelled' : 'assignment_saved', input.id ?? '', input.reason); return result;
   },
   async saveStaffingRequirement(input: StaffingRequirementInput) {
     requireAdmin();
@@ -604,6 +620,9 @@ export const actions = {
     const next = structuredClone(state), saved = changes.map(change => saveAssignmentInState(next, { ...change, reason: change.reason.trim() }));
     commit(s => {
       s.cashierAssignments = next.cashierAssignments;
+      const previousFollowups = structuredClone(s.spvFollowups ?? []);
+      s.spvFollowups = next.spvFollowups ?? [];
+      auditDemoFollowupContextChanges(s, previousFollowups, actor.id);
       for (const row of saved) s.auditEntries.unshift({ id: id(), actorId: actor.id, action: 'assignment_week_saved', entityId: row.id,
         at: new Date().toISOString(), detail: `${row.reason} · ${row.workDate} · ${row.shift}` });
     });
