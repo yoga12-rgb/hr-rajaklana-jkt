@@ -50,8 +50,8 @@ Rujukan semantik SDK: [Supabase signOut](https://supabase.com/docs/reference/jav
 | Q2 replay/reload/failure | Selesai; fingerprint asli dan storage failure tercakup. |
 | Q3 browser live-mock | **9/9 lulus**, termasuk dua regresi A22-01 melalui notifikasi asli. Server dan Edge di luar sandbox memakai backend REST mock lokal saja. |
 | Q4 isolasi sesi Auth | Selesai; targeted **14/14 lulus**, penolakan akun dan logout eksplisit dipertahankan. |
-| Q5 check/unit/build/integrasi | Hasil final dicatat di bawah. |
-| Q6 deployment Preview | Menunggu commit/push dan pemeriksaan source deployment final. |
+| Q5 check/unit/build/integrasi | Selesai; hasil final dicatat di bawah. |
+| Q6 deployment Preview | Commit implementasi `496ebe7732dff061ae33704bfa07fe202de7f8d6` sudah dipush dan deployment Git `dpl_MxjZ9NcBNwUG1AHFLwcq1jZhxZky` Ready pada alias Preview, branch/source SHA sesuai. |
 | Q7 hosted/perangkat | Belum diuji; terpisah dari status deployment/local. |
 
 Perintah live-mock eksplisit:
@@ -84,6 +84,16 @@ Server khusus live-mock dihentikan setelah suite selesai. Hambatan approval kuot
 | iPhone/iPad-PWA | Belum dijalankan. |
 
 `npm.cmd run check`, `npm.cmd test -- --maxWorkers=1`, `npm.cmd run test:database`, `npm.cmd run test:database:legacy`, `npm.cmd run build`, serta `git diff --check` lulus. Demo E2E dijalankan dengan `E2E_BASE_URL=http://127.0.0.1:5198 E2E_PWA=1 npx.cmd playwright test tests/demo.spec.ts --reporter=line`. Server build demo juga dihentikan setelah tes selesai.
+
+## Rilis Preview
+
+Commit implementasi `496ebe7732dff061ae33704bfa07fe202de7f8d6` tersedia pada `origin/codex/preview`. [CI GitHub 39725781978](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/39725781978) selesai **success** untuk SHA tersebut (check, unit, database, legacy dan build). CI ini tidak menjalankan browser; bukti 9 live-mock dan 20 demo/PWA berasal dari pengujian lokal di atas.
+
+Pada pemeriksaan rilis implementasi, deployment Vercel `dpl_MxjZ9NcBNwUG1AHFLwcq1jZhxZky` mempunyai source Git repo `yoga12-rgb/hr-rajaklana-jkt`, branch `codex/preview`, SHA implementasi tersebut, target Preview (`target: null`), state `READY`, dan tanpa alias error. Alias [Preview](https://hr-rajaklana-jkt-preview.vercel.app) menunjuk deployment ini; pengaturan domain juga memetakan `gitBranch: codex/preview`. Identitas tim/project cocok dengan baseline Q0. Pembaruan laporan setelah commit implementasi hanya mengubah dokumentasi. Tidak ada deploy/promote Production.
+
+Browser smoke tanpa autentikasi diarahkan ke `vercel.com/login`; timeout form aplikasi berasal dari Deployment Protection, bukan assertion alur aplikasi. Konektor fetch juga ditolak 403 pada `read_protection_bypass`. Sesi Vercel CLI resmi yang sudah tersedia berhasil membaca URL Preview penuh dengan `vercel curl /login --deployment https://hr-rajaklana-jkt-preview.vercel.app`: **HTTP 200**, shell 2.393 karakter, mempunyai `_app/immutable/entry/`, dan bukan halaman login Vercel. Opsi scope CLI sempat diteruskan keliru ke native curl; perintah yang berhasil memakai linked project `.vercel/project.json` yang identitasnya telah diverifikasi. Tidak ada kredensial dicetak/disimpan dalam source, pengaturan proteksi diubah, atau permintaan login pengguna baru.
+
+HTTP shell ini **bukan** bukti form ter-render pada browser terautentikasi, login aplikasi, atau workflow bisnis hosted. Pengujian tersebut tetap pending bersama uji iPhone/PWA. Approval eskalasi server/browser/Git berhasil pada pekerjaan patch; hambatan kuota approval historis tidak digunakan sebagai alasan melewati pengujian.
 
 ## Batas bukti yang tetap terbuka
 
