@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, serializeCashierRosterDraft } from './cashier-spv-drafts';
+import { describe, expect, it, vi } from 'vitest';
+import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, serializeCashierRosterDraft, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements } from './cashier-spv-drafts';
+import type { CashierRosterDraft } from './cashier-spv-drafts';
 
 const assignment = (overrides: Record<string, unknown> = {}) => ({
   id: 'assignment-1', updatedAt: '2026-10-20T03:00:00.000Z', status: 'active' as const, shift: 'morning' as const, outletId: 'outlet-a', ...overrides
@@ -35,6 +36,25 @@ describe('cashier roster draft persistence', () => {
       pendingAttempt: { fingerprint, idempotencyKey: '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1', weekStart: '2026-10-26', changes: attempted }
     };
     expect(parseCashierRosterDraft(serializeCashierRosterDraft(draft))).toEqual(draft);
+  });
+
+  it('retains the exact replay body, fingerprint and key across repeated persist and reload cycles', () => {
+    const changes = [change({ cancel: false }), {
+      reason: 'Libur bergilir', employeeId: 'cashier-2', shift: 'off' as const, workDate: '2026-10-27', outletId: 'outlet-a'
+    }];
+    const attempted = createCashierRosterAttempt('2026-10-26', changes, null, () => '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1');
+    const replayBody = JSON.stringify(attempted.changes);
+    let serialized = serializeCashierRosterDraft({ drafts: {}, reason: 'Rotasi jadwal disetujui', pendingAttempt: attempted, legacyAttemptNeedsReview: false });
+    for (let reload = 0; reload < 3; reload += 1) {
+      const restored = parseCashierRosterDraft(serialized);
+      expect(restored, `recovery payload after reload ${reload + 1}`).not.toBeNull();
+      expect(restored?.pendingAttempt?.idempotencyKey).toBe(attempted.idempotencyKey);
+      expect(restored?.pendingAttempt?.fingerprint).toBe(attempted.fingerprint);
+      expect(JSON.stringify(restored?.pendingAttempt?.changes)).toBe(replayBody);
+      expect(restored?.pendingAttempt?.changes[1]).not.toHaveProperty('id');
+      expect(restored?.pendingAttempt?.changes[1]).not.toHaveProperty('expectedUpdatedAt');
+      serialized = serializeCashierRosterDraft(restored!);
+    }
   });
 
   it('migrates v1 intent without inventing a baseline and preserves a reconstructable attempt', () => {
@@ -90,5 +110,192 @@ describe('cashier roster draft persistence', () => {
     JSON.stringify({ version: 2, drafts: { 'cashier-1:2026-10-20': { shift: 'unknown', outletId: 'outlet-a', baseline: null, needsReview: true } }, reason: '', pendingAttempt: null, legacyAttemptNeedsReview: false }),
   ])('rejects malformed saved payload %s', serialized => {
     expect(parseCashierRosterDraft(serialized)).toBeNull();
+  });
+});
+
+describe('cashier roster attempt settlement across planner scopes', () => {
+  const originKey = cashierRosterDraftStorageKey('admin-a', '2026-10-26');
+  const cellKey = 'cashier-1:2026-10-26';
+  function pendingDraft(): CashierRosterDraft {
+    return {
+      drafts: { [cellKey]: { shift: 'afternoon', outletId: 'outlet-b', baseline: cashierRosterBaseline(assignment(), 'outlet-a'), needsReview: false } },
+      reason: 'Rotasi jadwal disetujui',
+      pendingAttempt: createCashierRosterAttempt('2026-10-26', [change()], null, () => '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1'),
+      legacyAttemptNeedsReview: false
+    };
+  }
+  function draftStorage(initial: string | null) {
+    const records = new Map<string, string>(initial === null ? [] : [[originKey, initial]]);
+    const storage = {
+      getItem: vi.fn((key: string) => records.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => { records.set(key, value); }),
+      removeItem: vi.fn((key: string) => { records.delete(key); })
+    };
+    return { records, storage };
+  }
+
+  it('cleans only saved cells that still match the submitted value and baseline, retaining newer edits and reason', () => {
+    const current = pendingDraft(), attempt = current.pendingAttempt!;
+    const original = structuredClone(current);
+    current.drafts['cashier-2:2026-10-27'] = {
+      shift: 'middle', outletId: 'outlet-c', baseline: cashierRosterBaseline(undefined, 'outlet-c'), needsReview: false
+    };
+    current.reason = 'Alasan baru setelah pengiriman';
+    const resolved = resolveCashierRosterDraftAttempt(current, attempt, 'saved');
+
+    expect(resolved?.drafts).toEqual({ 'cashier-2:2026-10-27': current.drafts['cashier-2:2026-10-27'] });
+    expect(resolved?.reason).toBe('Alasan baru setelah pengiriman');
+    expect(resolved?.pendingAttempt).toBeNull();
+    expect(current.pendingAttempt).toEqual(original.pendingAttempt);
+    expect(current.drafts[cellKey]).toEqual(original.drafts[cellKey]);
+  });
+
+  it.each(['value', 'baseline', 'review'] as const)('preserves a submitted cell whose %s changed while the RPC was pending', changed => {
+    const current = pendingDraft(), attempt = current.pendingAttempt!;
+    if (changed === 'value') current.drafts[cellKey].shift = 'middle';
+    if (changed === 'baseline') current.drafts[cellKey].baseline!.updatedAt = '2026-10-21T03:00:00.000Z';
+    if (changed === 'review') current.drafts[cellKey].needsReview = true;
+    const expectedCell = structuredClone(current.drafts[cellKey]);
+
+    const resolved = resolveCashierRosterDraftAttempt(current, attempt, 'saved');
+
+    expect(resolved?.drafts[cellKey]).toEqual(expectedCell);
+    expect(resolved?.pendingAttempt).toBeNull();
+  });
+
+  it('settles a definite rejection while retaining every draft cell and its reason for review', () => {
+    const current = pendingDraft(), before = structuredClone(current);
+    const { storage, records } = draftStorage(serializeCashierRosterDraft(current));
+
+    expect(settleCashierRosterDraftAttempt(storage, originKey, current.pendingAttempt!, 'rejected', current)).toBe(true);
+
+    const persisted = parseCashierRosterDraft(records.get(originKey)!);
+    expect(persisted).toEqual({ ...before, pendingAttempt: null });
+    expect(storage.setItem).toHaveBeenCalledTimes(1);
+    expect(storage.removeItem).not.toHaveBeenCalled();
+    expect(current).toEqual(before);
+  });
+
+  it.each(['key', 'fingerprint'] as const)('refuses to settle another pending attempt when its %s differs', mismatch => {
+    const current = pendingDraft(), attempted = current.pendingAttempt!;
+    const other = mismatch === 'key'
+      ? { ...attempted, idempotencyKey: 'd131a6bb-a823-49ef-92c0-2b281d2b8c6f' }
+      : createCashierRosterAttempt('2026-10-26', [change({ outletId: 'outlet-c' })], null, () => attempted.idempotencyKey);
+    const raw = serializeCashierRosterDraft({ ...current, pendingAttempt: other });
+    const { storage, records } = draftStorage(raw);
+    const notified = vi.fn(), unsubscribe = subscribeCashierRosterDraftSettlements(notified);
+    try {
+      expect(settleCashierRosterDraftAttempt(storage, originKey, attempted, 'saved')).toBe(false);
+      expect(records.get(originKey)).toBe(raw);
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      expect(notified).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it.each([null, '{invalid json', '{"version":2,"reason":"broken"}'])('refuses missing or corrupted origin storage without rebuilding it from memory: %s', raw => {
+    const current = pendingDraft(), { storage, records } = draftStorage(raw);
+
+    expect(settleCashierRosterDraftAttempt(storage, originKey, current.pendingAttempt!, 'saved', current)).toBe(false);
+
+    expect(records.get(originKey) ?? null).toBe(raw);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
+    expect(current.pendingAttempt).not.toBeNull();
+  });
+
+  it.each(['getItem', 'setItem', 'removeItem'] as const)('retains the original pending record and sends no event when %s fails', operation => {
+    const current = pendingDraft(), before = structuredClone(current);
+    const raw = serializeCashierRosterDraft(current), { storage, records } = draftStorage(raw);
+    storage[operation].mockImplementationOnce(() => { throw new Error(`Storage ${operation} denied`); });
+    const notified = vi.fn(), unsubscribe = subscribeCashierRosterDraftSettlements(notified);
+    try {
+      // Rejection retains cells and uses setItem; a clean success uses removeItem.
+      const outcome = operation === 'setItem' ? 'rejected' : 'saved';
+      expect(settleCashierRosterDraftAttempt(storage, originKey, current.pendingAttempt!, outcome, current)).toBe(false);
+      expect(storage[operation]).toHaveBeenCalledTimes(1);
+      expect(records.get(originKey)).toBe(raw);
+      expect(current).toEqual(before);
+      expect(parseCashierRosterDraft(records.get(originKey)!)?.pendingAttempt).toEqual(before.pendingAttempt);
+      expect(notified).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it('reads the latest saved scope snapshot and preserves edits made by a remounted planner', () => {
+    const oldSnapshot = pendingDraft(), attempted = oldSnapshot.pendingAttempt!;
+    const { storage, records } = draftStorage(serializeCashierRosterDraft(oldSnapshot));
+    const latest = structuredClone(oldSnapshot);
+    latest.drafts[cellKey].shift = 'middle';
+    latest.drafts['cashier-2:2026-10-27'] = {
+      shift: 'off', outletId: 'outlet-a', baseline: cashierRosterBaseline(undefined, 'outlet-a'), needsReview: false
+    };
+    latest.reason = 'Perubahan dari planner yang dibuka kembali';
+    records.set(originKey, serializeCashierRosterDraft(latest));
+
+    expect(settleCashierRosterDraftAttempt(storage, originKey, attempted, 'saved')).toBe(true);
+
+    expect(parseCashierRosterDraft(records.get(originKey)!)).toEqual({ ...latest, pendingAttempt: null });
+    expect(oldSnapshot.pendingAttempt).toEqual(attempted);
+  });
+
+  it('refuses settlement when unpublished active edits differ from the current persisted scope', () => {
+    const persisted = pendingDraft(), active = structuredClone(persisted);
+    active.reason = 'Alasan yang belum berhasil disimpan';
+    active.drafts[cellKey].shift = 'middle';
+    const raw = serializeCashierRosterDraft(persisted), { storage, records } = draftStorage(raw);
+
+    expect(settleCashierRosterDraftAttempt(storage, originKey, persisted.pendingAttempt!, 'saved', active)).toBe(false);
+
+    expect(records.get(originKey)).toBe(raw);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
+    expect(active.reason).toBe('Alasan yang belum berhasil disimpan');
+    expect(active.pendingAttempt).toEqual(persisted.pendingAttempt);
+  });
+
+  it.each(['saved', 'rejected'] as const)('notifies remounted listeners only after the %s result is durable', outcome => {
+    const current = pendingDraft(), attempted = current.pendingAttempt!;
+    const { storage, records } = draftStorage(serializeCashierRosterDraft(current));
+    const sequence: string[] = [];
+    storage.setItem.mockImplementation((key, raw) => { records.set(key, raw); sequence.push('write'); });
+    storage.removeItem.mockImplementation(key => { records.delete(key); sequence.push('remove'); });
+    const listener = vi.fn((event: Parameters<Parameters<typeof subscribeCashierRosterDraftSettlements>[0]>[0]) => {
+      sequence.push('notify');
+      return { event, rawAtNotification: records.get(originKey) ?? null };
+    });
+    const unsubscribe = subscribeCashierRosterDraftSettlements(listener);
+    try {
+      expect(settleCashierRosterDraftAttempt(storage, originKey, attempted, outcome, structuredClone(current))).toBe(true);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(sequence).toEqual([outcome === 'saved' ? 'remove' : 'write', 'notify']);
+      // Assertions stay outside callbacks because observer exceptions are isolated.
+      const observed = listener.mock.results[0].value!;
+      expect(observed.event.storageKey).toBe(originKey);
+      expect(observed.event.attempt).toEqual(attempted);
+      expect(observed.event.outcome).toBe(outcome);
+      expect(observed.event.previousDraft).toEqual(current);
+      expect(observed.event.draft.pendingAttempt).toBeNull();
+      if (outcome === 'saved') expect(observed.rawAtNotification).toBeNull();
+      else expect(parseCashierRosterDraft(observed.rawAtNotification)).toEqual(observed.event.draft);
+    } finally { unsubscribe(); }
+    listener.mockClear();
+    const next = pendingDraft();
+    records.set(originKey, serializeCashierRosterDraft(next));
+    expect(settleCashierRosterDraftAttempt(storage, originKey, next.pendingAttempt!, 'rejected')).toBe(true);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('keeps a durable outcome successful and still notifies other remounts if one observer throws', () => {
+    const current = pendingDraft(), { storage, records } = draftStorage(serializeCashierRosterDraft(current));
+    const brokenListener = vi.fn(() => { throw new Error('Remounted observer failed'); });
+    const nextListener = vi.fn();
+    const unsubscribeBroken = subscribeCashierRosterDraftSettlements(brokenListener);
+    const unsubscribeNext = subscribeCashierRosterDraftSettlements(nextListener);
+    try {
+      expect(settleCashierRosterDraftAttempt(storage, originKey, current.pendingAttempt!, 'rejected', current)).toBe(true);
+      expect(parseCashierRosterDraft(records.get(originKey)!)?.pendingAttempt).toBeNull();
+      expect(brokenListener).toHaveBeenCalledTimes(1);
+      expect(nextListener).toHaveBeenCalledTimes(1);
+    } finally { unsubscribeBroken(); unsubscribeNext(); }
   });
 });

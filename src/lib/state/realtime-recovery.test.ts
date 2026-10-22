@@ -345,6 +345,86 @@ describe('live Realtime recovery', () => {
     expect(get(app).employees.map(employee => employee.id)).toEqual(['employee-cashier']);
   });
 
+  it.each(['missing', 'inactive'] as const)('denies a %s employee without changing the shared Auth session during background refresh', async condition => {
+    const originalEmployees = liveTables.employees;
+    liveTables.employees = condition === 'missing' ? [] : originalEmployees.map(employee => ({ ...employee, status: 'inactive' }));
+    try {
+      const { actions, app } = await openLiveApp();
+      expect(get(app).error).toBe('Akses akun tidak aktif. Hubungi Admin HR.');
+      expect(get(app).user).toBeNull();
+      expect(get(app).employees).toEqual([]);
+      expect(get(app).cashierAssignments).toEqual([]);
+      expect(channels).toHaveLength(0);
+      expect(currentSession?.user.id).toBe('auth-admin');
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+
+      await actions.refresh();
+      expect(get(app).user).toBeNull();
+      expect(get(app).error).toBe('Akses akun tidak aktif. Hubungi Admin HR.');
+      expect(currentSession?.user.id).toBe('auth-admin');
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+    } finally { liveTables.employees = originalEmployees; }
+  });
+
+  it('keeps a replacement account signed in after delayed validation denies the previous account', async () => {
+    const { actions, app } = await openLiveApp();
+    const originalEmployees = liveTables.employees;
+    let finishObsoleteSignOut: (() => void) | undefined;
+    // Mirror the SDK cleanup that used to run after the old logout request
+    // returned. Calling this during A's denial would later remove B's session.
+    mockSupabase.auth.signOut.mockImplementation(async () => {
+      await new Promise<void>(resolve => { finishObsoleteSignOut = resolve; });
+      currentSession = null;
+      authListener?.('SIGNED_OUT', null);
+      return { error: null };
+    });
+    let announceRead!: () => void;
+    const readStarted = new Promise<void>(resolve => { announceRead = resolve; });
+    employeeReadStarted = announceRead;
+    delayNextEmployeeRead = true;
+    let announceDenied!: () => void;
+    const denied = new Promise<void>(resolve => { announceDenied = resolve; });
+    const unsubscribe = app.subscribe(state => {
+      if (state.error === 'Akses akun tidak aktif. Hubungi Admin HR.') announceDenied();
+    });
+    try {
+      liveTables.employees = originalEmployees.map(employee => ({ ...employee, status: 'inactive' }));
+      const oldRefresh = actions.refresh();
+      await readStarted;
+      releaseDelayedEmployeeRead?.();
+      await denied;
+      expect(get(app).user).toBeNull();
+      expect(get(app).employees).toEqual([]);
+
+      const replacement = sessionFor('auth-cashier');
+      currentSession = replacement;
+      filterEmployeeRowsForSession = true;
+      authListener?.('SIGNED_IN', replacement);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      finishObsoleteSignOut?.();
+      await oldRefresh;
+      await actions.refresh();
+
+      expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+      expect(currentSession?.user.id).toBe('auth-cashier');
+      expect(get(app).user?.id).toBe('employee-cashier');
+      expect(get(app).employees.map(employee => employee.id)).toEqual(['employee-cashier']);
+      expect(get(app).error).toBeNull();
+    } finally {
+      finishObsoleteSignOut?.();
+      liveTables.employees = originalEmployees;
+      unsubscribe();
+    }
+  });
+
+  it('still signs out when the user explicitly requests logout', async () => {
+    const { actions, app } = await openLiveApp();
+    await actions.logout();
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(get(app).user).toBeNull();
+    expect(get(app).employees).toEqual([]);
+  });
+
   it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {
     const { app } = await openLiveApp();
     const firstChannel = channels[0];

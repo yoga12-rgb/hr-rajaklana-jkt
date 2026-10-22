@@ -90,9 +90,9 @@ function parseAttempt(fingerprint: unknown, idempotencyKey: unknown): CashierRos
         || typeof change.reason !== 'string' || !(change.id === undefined || change.id === null || typeof change.id === 'string')
         || !(change.expectedUpdatedAt === undefined || change.expectedUpdatedAt === null || typeof change.expectedUpdatedAt === 'string')
         || !(change.cancel === undefined || typeof change.cancel === 'boolean')) return null;
-      changes.push({ id: change.id as string | undefined, employeeId: change.employeeId, workDate: change.workDate,
-        outletId: change.outletId, shift: change.shift as CashierRosterChange['shift'], reason: change.reason,
-        expectedUpdatedAt: change.expectedUpdatedAt as string | null | undefined, cancel: change.cancel as boolean | undefined });
+      // Keep the validated original shape/property order. Rebuilding fields
+      // changes the fingerprint on the next persist/reload cycle.
+      changes.push(structuredClone(change) as unknown as CashierRosterChange);
     }
     return { fingerprint, idempotencyKey, weekStart: attempt.weekStart, changes };
   } catch { return null; }
@@ -165,4 +165,66 @@ export function createCashierRosterAttempt(
   const fingerprint = JSON.stringify({ weekStart, changes });
   if (previous?.fingerprint === fingerprint && uuid.test(previous.idempotencyKey)) return previous;
   return { fingerprint, idempotencyKey: createKey(), weekStart, changes: structuredClone([...changes]) };
+}
+
+export function cashierRosterAttemptsEqual(a: CashierRosterSaveAttempt | null, b: CashierRosterSaveAttempt): boolean {
+  return a?.idempotencyKey === b.idempotencyKey && a.fingerprint === b.fingerprint && a.weekStart === b.weekStart;
+}
+
+export type CashierRosterAttemptOutcome = 'saved' | 'rejected';
+
+/** Resolve only the original attempt, retaining edits made while it was in flight. */
+export function resolveCashierRosterDraftAttempt(
+  current: CashierRosterDraft | null, attempt: CashierRosterSaveAttempt, outcome: CashierRosterAttemptOutcome
+): CashierRosterDraft | null {
+  if (!current || !cashierRosterAttemptsEqual(current.pendingAttempt, attempt)) return null;
+  const drafts = { ...current.drafts };
+  let reason = current.reason;
+  if (outcome === 'saved') {
+    for (const change of attempt.changes) {
+      const key = `${change.employeeId}:${change.workDate}`, entry = drafts[key];
+      if (!entry) continue;
+      const valueMatches = change.cancel ? entry.shift === '' : entry.shift === change.shift && entry.outletId === change.outletId;
+      const baselineMatches = !!entry.baseline && entry.baseline.id === (change.id ?? null)
+        && entry.baseline.updatedAt === (change.expectedUpdatedAt ?? null);
+      if (valueMatches && baselineMatches && !entry.needsReview) delete drafts[key];
+    }
+    if (reason.trim() === (attempt.changes[0]?.reason ?? '').trim()) reason = '';
+  }
+  return { ...current, drafts, reason, pendingAttempt: null };
+}
+
+type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+export function writeCashierRosterDraft(storage: DraftStorage, key: string, draft: CashierRosterDraft): void {
+  if (!Object.keys(draft.drafts).length && !draft.reason.trim() && !draft.pendingAttempt && !draft.legacyAttemptNeedsReview) storage.removeItem(key);
+  else storage.setItem(key, serializeCashierRosterDraft(draft));
+}
+
+type DraftSettlement = { storageKey: string; attempt: CashierRosterSaveAttempt; outcome: CashierRosterAttemptOutcome; previousDraft: CashierRosterDraft; draft: CashierRosterDraft };
+const settlementListeners = new Set<(event: DraftSettlement) => void>();
+export function subscribeCashierRosterDraftSettlements(listener: (event: DraftSettlement) => void): () => void {
+  settlementListeners.add(listener);
+  return () => { settlementListeners.delete(listener); };
+}
+
+/** Compare the latest origin record before writing; never fall back to an old snapshot. */
+export function settleCashierRosterDraftAttempt(
+  storage: DraftStorage, storageKey: string, attempt: CashierRosterSaveAttempt,
+  outcome: CashierRosterAttemptOutcome, activeDraft?: CashierRosterDraft
+): boolean {
+  try {
+    const persisted = parseCashierRosterDraft(storage.getItem(storageKey));
+    if (!persisted || !cashierRosterAttemptsEqual(persisted.pendingAttempt, attempt)) return false;
+    // A changed record may belong to a remount or another tab. An unpublished
+    // in-memory edit must also survive; keep recovery until it is persisted.
+    if (activeDraft && serializeCashierRosterDraft(activeDraft) !== serializeCashierRosterDraft(persisted)) return false;
+    const draft = resolveCashierRosterDraftAttempt(persisted, attempt, outcome);
+    if (!draft) return false;
+    writeCashierRosterDraft(storage, storageKey, draft);
+    // A remounted planner in the same window does not receive a native storage event.
+    for (const listener of settlementListeners) {
+      try { listener({ storageKey, attempt, outcome, previousDraft: persisted, draft }); } catch { /* Durable settlement is already complete. */ }
+    }
+    return true;
+  } catch { return false; }
 }

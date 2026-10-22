@@ -32,7 +32,9 @@ async function respond(route: Route, data: unknown, status = 200) {
   });
 }
 
-async function openRosterMock(page: Page, loseResponse = false, failReconciliationRead = false, commitBeforeLoss = true) {
+async function openRosterMock(page: Page, loseResponse = false, failReconciliationRead = false, commitBeforeLoss = true, options: { weekNotification?: boolean } = {}) {
+  const weekStart = nextMonday();
+  const followingWeek = new Date(new Date(`${weekStart}T12:00:00Z`).getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
   const savedAssignments: Record<string, unknown>[] = [];
   const rpcPayloads: RosterRpcPayload[] = [];
   const committed = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
@@ -44,6 +46,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   let rejectNextReplay = false;
   let baselineConflictKey: string | null = null;
   let failRefreshAfterBaselineConflict = false;
+  let heldNextBatch: { received: () => void; gate: Promise<void>; outcome: 'success' | 'baseline-conflict' } | null = null;
   const now = new Date().toISOString();
   const authUser = {
     id: adminAuthId, aud: 'authenticated', role: 'authenticated', email: 'admin@example.test',
@@ -65,7 +68,10 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
       { id: 'position-cashier', name: 'Kasir', department_id: 'department-test', active: true, is_cashier: true }
     ],
     outlets: [{ id: outletId, code: 'UJI', name: 'Outlet Uji', address: 'Jakarta', active: true, production_location: false, latitude: -6.2, longitude: 106.8, radius_m: 500, opens_at: '07:00:00', closes_at: '23:00:00', morning_starts_at: '07:00:00', afternoon_starts_at: '15:00:00', late_tolerance_minutes: 5, max_accuracy_m: 100 }],
-    leave_requests: [], leave_adjustments: [], attendance: [], leave_ledger: [], notifications: [],
+    leave_requests: [], leave_adjustments: [], attendance: [], leave_ledger: [],
+    notifications: options.weekNotification ? [{ id: 'notification-week-b', employee_id: adminId,
+      title: 'Jadwal pekan kedua', body: 'Buka pemulihan jadwal pekan kedua', href: `/assignments?week=${followingWeek}`,
+      entity_id: 'batch-week-b', entity_type: 'assignment_week', created_at: now, read_at: null }] : [],
     attendance_correction_requests: [], staffing_requirements: [], spv_followups: [], audit_events: []
   };
 
@@ -78,6 +84,19 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     if (path === '/rest/v1/rpc/cashier_roster_batch_save') {
       const payload = route.request().postDataJSON() as RosterRpcPayload;
       rpcPayloads.push(structuredClone(payload));
+      const held = heldNextBatch;
+      heldNextBatch = null;
+      if (held) {
+        held.received();
+        await held.gate;
+        if (held.outcome === 'baseline-conflict') {
+          const updatedAt = new Date(Date.now() + 9000).toISOString();
+          savedAssignments.push({ id: 'assignment-from-other-spv', employee_id: cashierId, work_date: payload.p_week_start,
+            outlet_id: outletId, shift: 'afternoon', status: 'active', reason: 'Ditetapkan SPV lain', created_by: 'other-spv',
+            created_at: updatedAt, updated_at: updatedAt });
+          baselineConflictKey = payload.p_idempotency_key;
+        }
+      }
       const fingerprint = JSON.stringify({ weekStart: payload.p_week_start, changes: payload.p_changes });
       if (rejectNextReplay) {
         rejectNextReplay = false;
@@ -165,7 +184,6 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   await page.getByRole('button', { name: 'Mingguan', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
-  const weekStart = nextMonday();
   const shift = page.locator('select[aria-label^="Shift Kasir Uji,"]').first();
   await expect(shift).toBeVisible();
   return { weekStart, shift, savedAssignments, rpcPayloads, rejectNextReplay: () => { rejectNextReplay = true; },
@@ -178,6 +196,14 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     },
     failNextRefresh: () => { failRefreshAfterBaselineConflict = true; },
     recoverRefresh: () => { failAssignmentReads = false; },
+    holdNextBatch: (outcome: 'success' | 'baseline-conflict') => {
+      let release!: () => void;
+      let received!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const requestReceived = new Promise<void>(resolve => { received = resolve; });
+      heldNextBatch = { received, gate, outcome };
+      return { received: requestReceived, release };
+    },
     getSaveCalls: () => saveCalls, getCommitCount: () => commitCount };
 }
 
@@ -427,3 +453,95 @@ test('live UI shows conflict review as soon as a source store refresh arrives', 
   await expect(page.getByText('0 konflik harus ditinjau', { exact: true })).toBeHidden();
   expect(mock.getSaveCalls()).toBe(0);
 });
+
+for (const outcome of ['success', 'baseline-conflict'] as const) {
+  test(`live UI keeps another week's recovery unchanged after a delayed ${outcome} response`, async ({ page }) => {
+    const mock = await openRosterMock(page, true, true, false, { weekNotification: true });
+    const weekA = mock.weekStart;
+    const weekB = new Date(new Date(`${weekA}T12:00:00Z`).getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
+    const keyA = `rajaklana-hr-roster-draft-v1:${adminId}:${weekA}`;
+    const keyB = `rajaklana-hr-roster-draft-v1:${adminId}:${weekB}`;
+    const readStorage = (key: string) => page.evaluate(storageKey => localStorage.getItem(storageKey), key);
+
+    // B has a genuine uncommitted transport failure and its own persisted
+    // recovery before A starts. Neither navigation nor A's completion may
+    // rewrite B's key, payload, baseline, reason or draft cells.
+    await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
+    await mock.shift.selectOption('afternoon');
+    await page.getByLabel('Alasan perubahan batch').fill('Pemulihan pekan B harus tetap utuh');
+    await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+    await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+    const originalB = structuredClone(mock.rpcPayloads[0]);
+    const persistedB = await readStorage(keyB);
+    expect(JSON.parse(persistedB!).pendingAttempt).toMatchObject({
+      idempotencyKey: originalB.p_idempotency_key, weekStart: weekB
+    });
+    expect(mock.getCommitCount()).toBe(0);
+
+    await page.getByRole('button', { name: 'Minggu sebelumnya', exact: true }).click();
+    await mock.shift.selectOption('morning');
+    await page.getByLabel('Alasan perubahan batch').fill('Pekan A menunggu respons server');
+    const held = mock.holdNextBatch(outcome);
+    try {
+      await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+      await held.received;
+      const originalA = structuredClone(mock.rpcPayloads[1]);
+      expect(JSON.parse((await readStorage(keyA))!).pendingAttempt).toMatchObject({
+        idempotencyKey: originalA.p_idempotency_key, weekStart: weekA
+      });
+      expect(originalA.p_idempotency_key).not.toBe(originalB.p_idempotency_key);
+
+      // The planner's week buttons are disabled while saving, but a real
+      // notification can still navigate within the mounted assignments page.
+      await page.getByRole('button', { name: /Notifikasi, / }).click();
+      await page.getByRole('button', { name: /Jadwal pekan kedua/ }).click();
+      await expect(page).toHaveURL(new RegExp(`week=${weekB}`));
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+      expect(await readStorage(keyB)).toBe(persistedB);
+
+      const response = page.waitForResponse(value => value.url().endsWith('/rest/v1/rpc/cashier_roster_batch_save')
+        && value.request().postDataJSON().p_idempotency_key === originalA.p_idempotency_key);
+      held.release();
+      await (await response).finished();
+      await expect.poll(async () => {
+        const storedA = await readStorage(keyA);
+        return outcome === 'success' ? storedA === null : JSON.parse(storedA ?? '{}').pendingAttempt === null;
+      }).toBe(true);
+      expect(await readStorage(keyB)).toBe(persistedB);
+      await expect(page.getByLabel('Alasan perubahan batch')).toHaveValue('Pemulihan pekan B harus tetap utuh');
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+      await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeHidden();
+
+      // Reload checks both origin resolution and destination recovery instead
+      // of accepting an in-memory-only UI result.
+      await page.reload();
+      await reopenNextWeekAfterReload(page);
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeHidden();
+      await expect(mock.shift).toHaveValue('morning');
+      if (outcome === 'success') {
+        await expect(page.getByText('0 perubahan draft', { exact: true })).toBeVisible();
+        expect(await readStorage(keyA)).toBeNull();
+      } else {
+        await expect(page.getByLabel('Alasan perubahan batch')).toHaveValue('Pekan A menunggu respons server');
+        await expect(page.locator('.review-cell')).toContainText('Jadwal terbaru: Sore · Outlet Uji');
+        const rejectedA = JSON.parse((await readStorage(keyA))!);
+        expect(rejectedA.pendingAttempt).toBeNull();
+        expect(Object.keys(rejectedA.drafts)).toHaveLength(1);
+      }
+
+      await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
+      await expect(mock.shift).toHaveValue('afternoon');
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+      expect(await readStorage(keyB)).toBe(persistedB);
+      await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+      await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeVisible();
+      expect(mock.rpcPayloads).toHaveLength(3);
+      expect(mock.rpcPayloads[2]).toEqual(originalB);
+      expect(mock.getCommitCount()).toBe(outcome === 'success' ? 2 : 1);
+      expect(mock.savedAssignments.filter(row => row.work_date === weekB)).toHaveLength(1);
+      expect(await readStorage(keyB)).toBeNull();
+    } finally {
+      held.release();
+    }
+  });
+}

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { get } from 'svelte/store';
+  import { onDestroy } from 'svelte';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
-  import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, serializeCashierRosterDraft, type CashierRosterBaseline, type CashierRosterDraftCell, type CashierRosterDraftEntry, type CashierRosterSaveAttempt } from '#lib/cashier-spv-drafts';
+  import { cashierRosterAttemptsEqual, cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements, writeCashierRosterDraft, type CashierRosterAttemptOutcome, type CashierRosterBaseline, type CashierRosterDraft, type CashierRosterDraftCell, type CashierRosterDraftEntry, type CashierRosterSaveAttempt } from '#lib/cashier-spv-drafts';
   import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
   import { reconcileUncertainCashierRosterSave } from '../cashier-roster-reconcile';
   import { addWorkDays, isValidWorkDate, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
@@ -21,6 +22,28 @@
   let copyPreview: ReturnType<typeof previewPreviousWeekCopy> | null = null, copySkippedDrafts = 0;
   let pendingAttempt: CashierRosterSaveAttempt | null = null, legacyAttemptNeedsReview = false;
   let activeDraftStorageKey = '', draftStorageWarning = false;
+  let scopeGeneration = 0, accountGeneration = 0, destroyed = false, accountId: string | undefined;
+  type SaveOperation = { accountId: string; accountGeneration: number; storageKey: string; weekStart: string; generation: number };
+  let activeSave: SaveOperation | null = null;
+  const unsubscribeAccount = app.subscribe(state => {
+    if (accountId !== state.user?.id) { accountId = state.user?.id; accountGeneration++; }
+  });
+  const currentDraft = (): CashierRosterDraft => ({ drafts, reason, pendingAttempt, legacyAttemptNeedsReview });
+  function applyDraft(saved: CashierRosterDraft) {
+    drafts = saved.drafts; reason = saved.reason; pendingAttempt = saved.pendingAttempt; legacyAttemptNeedsReview = saved.legacyAttemptNeedsReview;
+  }
+  const unsubscribeSettlements = subscribeCashierRosterDraftSettlements(event => {
+    if (destroyed || activeDraftStorageKey !== event.storageKey || !get(app).user
+      || cashierRosterDraftStorageKey(get(app).user!.id, weekStart) !== event.storageKey) return;
+    const resolved = resolveCashierRosterDraftAttempt(currentDraft(), event.attempt, event.outcome);
+    if (!resolved) return;
+    try {
+      // Never replace unpublished edits or another tab's newer snapshot.
+      if (JSON.stringify(currentDraft()) !== JSON.stringify(event.previousDraft)) { draftStorageWarning = true; return; }
+      applyDraft(resolved); draftStorageWarning = false;
+    } catch { draftStorageWarning = true; }
+  });
+  onDestroy(() => { destroyed = true; unsubscribeAccount(); unsubscribeSettlements(); });
   let wantedDraftStorageKey = '';
   $: wantedDraftStorageKey = $app.user?.id ? cashierRosterDraftStorageKey($app.user.id, weekStart) : '';
   $: if (wantedDraftStorageKey !== activeDraftStorageKey) activateDraftKey(wantedDraftStorageKey);
@@ -28,8 +51,7 @@
   function persistDraft(storageKey = activeDraftStorageKey): boolean {
     if (!storageKey) { draftStorageWarning = true; return false; }
     try {
-      if (!Object.keys(drafts).length && !reason.trim() && !pendingAttempt && !legacyAttemptNeedsReview) localStorage.removeItem(storageKey);
-      else localStorage.setItem(storageKey, serializeCashierRosterDraft({ drafts, reason, pendingAttempt, legacyAttemptNeedsReview }));
+      writeCashierRosterDraft(localStorage, storageKey, currentDraft());
       draftStorageWarning = false;
       return true;
     } catch { draftStorageWarning = true; return false; }
@@ -37,6 +59,7 @@
   function activateDraftKey(nextKey: string) {
     persistDraft(activeDraftStorageKey);
     activeDraftStorageKey = nextKey;
+    scopeGeneration++; activeSave = null; saving = false; message = ''; failed = false;
     copyPreview = null; copySkippedDrafts = 0;
     if (!nextKey) { drafts = {}; reason = ''; pendingAttempt = null; legacyAttemptNeedsReview = false; draftStorageWarning = false; return; }
     try {
@@ -141,23 +164,26 @@
     }
     drafts = next; copySkippedDrafts = skipped; persistDraft();
   }
-  function clearAttemptedDrafts(attempt: CashierRosterSaveAttempt) {
-    const next = { ...drafts };
-    for (const change of attempt.changes) {
-      const draftKey = key(change.employeeId, change.workDate), entry = next[draftKey];
-      if (!entry) continue;
-      const valueMatches = change.cancel ? entry.shift === '' : entry.shift === change.shift && entry.outletId === change.outletId;
-      const baselineMatches = !entry.baseline || entry.baseline.id === (change.id ?? null)
-        && entry.baseline.updatedAt === (change.expectedUpdatedAt ?? null);
-      if (valueMatches && baselineMatches) delete next[draftKey];
-    }
-    drafts = next;
-    if (reason.trim() === (attempt.changes[0]?.reason ?? '').trim()) reason = '';
-    pendingAttempt = null;
-    persistDraft();
+  const sameAccount = (operation: SaveOperation) => !destroyed && get(app).user?.id === operation.accountId && accountGeneration === operation.accountGeneration;
+  const sameOrigin = (operation: SaveOperation) => !destroyed && get(app).user?.id === operation.accountId
+    && activeDraftStorageKey === operation.storageKey && weekStart === operation.weekStart;
+  const canShowResult = (operation: SaveOperation) => sameAccount(operation) && sameOrigin(operation)
+    && scopeGeneration === operation.generation && activeSave === operation;
+  function settleOperation(operation: SaveOperation, attempt: CashierRosterSaveAttempt, outcome: CashierRosterAttemptOutcome): boolean | null {
+    const activeOrigin = sameOrigin(operation);
+    // A concurrent replay may already have resolved this attempt, or the
+    // planner may now hold a replacement. Neither is a storage failure.
+    if (activeOrigin && !cashierRosterAttemptsEqual(pendingAttempt, attempt)) return null;
+    const settled = settleCashierRosterDraftAttempt(localStorage, operation.storageKey, attempt, outcome, activeOrigin ? currentDraft() : undefined);
+    if (activeOrigin && !settled) draftStorageWarning = true;
+    return settled && (!activeOrigin || !cashierRosterAttemptsEqual(pendingAttempt, attempt));
   }
   async function save() {
     if (saving || legacyAttemptNeedsReview || (!pendingAttempt && (!changes.length || conflicts.length))) return;
+    const actorId = get(app).user?.id;
+    if (!actorId || activeDraftStorageKey !== cashierRosterDraftStorageKey(actorId, weekStart)) return;
+    const operation: SaveOperation = { accountId: actorId, accountGeneration, storageKey: activeDraftStorageKey, weekStart, generation: scopeGeneration };
+    activeSave = operation;
     saving = true; message = ''; failed = false;
     let attempt = pendingAttempt;
     const replayingPersistedAttempt = attempt !== null;
@@ -176,35 +202,44 @@
         }
       } else attemptedChanges = structuredClone(attempt.changes);
       const result = await actions.saveCashierRosterBatch(attempt.weekStart, attemptedChanges, attempt.idempotencyKey, replayingPersistedAttempt);
-      message = `${result.saved_count} perubahan jadwal tersimpan bersama.`; copyPreview = null;
-      clearAttemptedDrafts(attempt);
+      const settled = settleOperation(operation, attempt, 'saved');
+      if (canShowResult(operation) && settled !== null) {
+        message = settled ? `${result.saved_count} perubahan jadwal tersimpan bersama.` : 'Jadwal tersimpan di server, tetapi pemulihan perangkat belum dapat diselesaikan. Ulangi percobaan yang sama setelah penyimpanan tersedia.';
+        failed = !settled; copyPreview = null;
+      }
     } catch (error) {
-      failed = true; message = cashierRosterSaveErrorMessage(error);
-      if (await reconcileUncertainCashierRosterSave(error, attemptedChanges, actions.refresh, () => get(app).cashierAssignments ?? [])) {
-        if (attempt) clearAttemptedDrafts(attempt);
-        copyPreview = null;
-        failed = false; message = 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.';
+      if (attempt && sameOrigin(operation) && !cashierRosterAttemptsEqual(pendingAttempt, attempt)) return;
+      if (canShowResult(operation)) { failed = true; message = cashierRosterSaveErrorMessage(error); }
+      if (sameAccount(operation) && await reconcileUncertainCashierRosterSave(error, attemptedChanges,
+        async () => { if (sameAccount(operation)) await actions.refresh(); },
+        () => sameAccount(operation) ? get(app).cashierAssignments ?? [] : [])) {
+        const settled = attempt && settleOperation(operation, attempt, 'saved');
+        if (canShowResult(operation) && settled !== null) {
+          copyPreview = null; failed = !settled;
+          message = settled ? 'Semua perubahan sudah terlihat pada jadwal dan draft telah disinkronkan.' : 'Jadwal terlihat di server, tetapi catatan pemulihan perangkat belum dapat diselesaikan. Ulangi percobaan yang sama setelah penyimpanan tersedia.';
+        }
       } else if (attempt && cashierRosterSaveOutcomeIsDefiniteBaselineConflict(error)) {
+        if (!sameAccount(operation)) return;
         try { await actions.refresh(); } catch { /* Keep the original attempt until the latest source is available. */ }
+        if (!sameAccount(operation)) return;
         const refreshed = get(app);
         const sourceChanged = attempt.changes.some(change => {
           const current = (refreshed.cashierAssignments ?? []).find(row => row.employeeId === change.employeeId && row.workDate === change.workDate);
           return (current?.id ?? null) !== (change.id ?? null) || (current?.updatedAt ?? null) !== (change.expectedUpdatedAt ?? null);
         });
         if (!refreshed.error && sourceChanged) {
-          pendingAttempt = null;
-          if (persistDraft()) {
+          const settled = settleOperation(operation, attempt, 'rejected');
+          if (canShowResult(operation) && settled) {
             message = 'Server memastikan percobaan lama tidak tersimpan karena jadwal berubah. Draft Anda tetap ada; tinjau jadwal terbaru sebelum menyimpan lagi.';
-          } else {
-            pendingAttempt = attempt;
+          } else if (canShowResult(operation) && settled !== null) {
             message = 'Jadwal berubah dan server menolak percobaan lama. Status pemulihan belum tersimpan di perangkat, jadi percobaan lama tetap ditahan sampai penyimpanan tersedia.';
           }
-        } else {
+        } else if (canShowResult(operation)) {
           message = 'Server menolak percobaan karena jadwal berubah, tetapi jadwal terbaru belum dapat dipastikan. Percobaan lama tetap tersimpan; coba ulangi setelah koneksi pulih.';
         }
-      } else if (!replayingPersistedAttempt && (!attempt || !cashierRosterSaveOutcomeIsUncertain(error))) { pendingAttempt = null; persistDraft(); }
+      } else if (attempt && !replayingPersistedAttempt && !cashierRosterSaveOutcomeIsUncertain(error)) { settleOperation(operation, attempt, 'rejected'); }
     }
-    finally { saving = false; }
+    finally { if (activeSave === operation) { saving = false; activeSave = null; } }
   }
   async function retryPendingAttempt() { await save(); }
   function selectWeek(nextWeek: string) {

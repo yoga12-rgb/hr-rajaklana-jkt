@@ -284,7 +284,12 @@ async function refreshNow() {
     const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
-    if (!current || current.status !== 'active') { if (revision === authRevision) { clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.'); await supabase.auth.signOut(); } return; }
+    if (!current || current.status !== 'active') {
+      // Background validation denies access without mutating the shared Auth
+      // session: an awaited signOut for A could otherwise clear a newer login B.
+      if (revision === authRevision) clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.');
+      return;
+    }
     const [staffingRows, followupRows] = isAdmin(current)
       ? await Promise.all([readAll('staffing_requirements'), readAll('spv_followups')])
       : [[], []];
