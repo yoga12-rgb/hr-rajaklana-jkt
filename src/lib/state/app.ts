@@ -168,8 +168,11 @@ async function refresh() {
   refreshPromise = (async () => { do { refreshRequested = false; await refreshNow(); } while (refreshRequested); })();
   try { await refreshPromise; } finally { refreshPromise = null; }
 }
-function clearLiveState(error: string | null = null) {
-  app.set({ ...initialDemo(), mode: 'live', initialized: true, loading: false, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
+function clearLiveState(error: string | null = null, validatingSession = false) {
+  // A known Auth session still needs employee/RLS validation. Keep protected
+  // routes loading while clearing old account data, rather than briefly
+  // presenting that pending validation as a completed signed-out state.
+  app.set({ ...initialDemo(), mode: 'live', initialized: !validatingSession, loading: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
   if (timer) clearTimeout(timer);
   timer = undefined;
   clearRealtimeRetry(true);
@@ -277,7 +280,7 @@ async function refreshNow() {
       liveAuthUserId = nextAuthUserId;
       authRevision += 1;
       revision = authRevision;
-      clearLiveState();
+      clearLiveState(null, nextAuthUserId !== null);
     }
     if (!session) { if (revision === authRevision) clearLiveState(); return; }
     const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
@@ -382,7 +385,7 @@ export const actions = {
         // Register once, before getSession() or any user-scoped table fetch.
         supabase!.auth.onAuthStateChange((_event, session) => {
           const nextAuthUserId = session?.user.id ?? null;
-          if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(); }
+          if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(null, nextAuthUserId !== null); }
           setTimeout(() => void refresh(), 0);
         });
         await refresh();

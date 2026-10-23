@@ -140,6 +140,60 @@ describe('live Realtime recovery', () => {
 
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
+  it.each([false, true])('keeps a restored session pending during delayed employee validation (INITIAL_SESSION callback: %s)', async emitInitialSession => {
+    let announceEmployeeRead!: () => void;
+    const employeeRead = new Promise<void>(resolve => { announceEmployeeRead = resolve; });
+    employeeReadStarted = announceEmployeeRead;
+    delayNextEmployeeRead = true;
+    let announceSessionRead!: () => void;
+    const sessionRead = new Promise<void>(resolve => { announceSessionRead = resolve; });
+    if (emitInitialSession) {
+      getSessionStarted = announceSessionRead;
+      delayNextGetSession = true;
+    }
+    const { actions, app } = await import('./app');
+    const snapshots: { initialized: boolean; userId: string | null }[] = [];
+    const unsubscribe = app.subscribe(state => snapshots.push({ initialized: state.initialized, userId: state.user?.id ?? null }));
+    try {
+      const initialization = actions.init();
+      if (emitInitialSession) {
+        await sessionRead;
+        authListener?.('INITIAL_SESSION', currentSession);
+        expect(get(app)).toMatchObject({ initialized: false, loading: true, user: null, employees: [] });
+        releaseDelayedGetSession?.();
+      }
+      await employeeRead;
+      expect(get(app)).toMatchObject({ initialized: false, loading: true, user: null, employees: [] });
+      expect(snapshots.some(state => state.initialized && state.userId === null)).toBe(false);
+      releaseDelayedEmployeeRead?.();
+      await initialization;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(get(app)).toMatchObject({ initialized: true, loading: false, user: { id: 'employee-admin' } });
+      expect(snapshots.some(state => state.initialized && state.userId === null)).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
+  it('finishes an absent session and a real SIGNED_OUT event as unauthenticated', async () => {
+    currentSession = null;
+    const { actions, app } = await import('./app');
+    await actions.init();
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: null, employees: [] });
+
+    currentSession = sessionFor('auth-admin');
+    authListener?.('SIGNED_IN', currentSession);
+    expect(get(app)).toMatchObject({ initialized: false, loading: true, user: null });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await actions.refresh();
+    expect(get(app).user?.id).toBe('employee-admin');
+
+    currentSession = null;
+    authListener?.('SIGNED_OUT', null);
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: null, employees: [] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await actions.refresh();
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: null });
+  });
+
   it('replaces a terminal CLOSED channel with a new instance when the browser reports online', async () => {
     const { app } = await openLiveApp();
     const first = channels[0];
@@ -263,6 +317,7 @@ describe('live Realtime recovery', () => {
     failEmployeeReadForUser = 'auth-cashier';
     vi.stubGlobal('navigator', { onLine: false });
     authListener?.('SIGNED_IN', sessionB); // Account switch without SIGNED_OUT.
+    expect(get(app)).toMatchObject({ initialized: false, loading: true });
     expect(get(app).user).toBeNull();
     expect(get(app).employees).toEqual([]);
     expect(get(app).cashierAssignments).toEqual([]);
@@ -351,6 +406,7 @@ describe('live Realtime recovery', () => {
     try {
       const { actions, app } = await openLiveApp();
       expect(get(app).error).toBe('Akses akun tidak aktif. Hubungi Admin HR.');
+      expect(get(app)).toMatchObject({ initialized: true, loading: false });
       expect(get(app).user).toBeNull();
       expect(get(app).employees).toEqual([]);
       expect(get(app).cashierAssignments).toEqual([]);

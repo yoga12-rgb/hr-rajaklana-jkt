@@ -48,6 +48,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   let approvedLeaveConflictKey: string | null = null;
   let failRefreshAfterBaselineConflict = false;
   let heldNextBatch: { received: () => void; gate: Promise<void>; outcome: 'success' | 'baseline-conflict' } | null = null;
+  let heldNextEmployeeRead: { received: () => void; gate: Promise<void> } | null = null;
   const now = new Date().toISOString();
   const authUser = {
     id: adminAuthId, aud: 'authenticated', role: 'authenticated', email: 'admin@example.test',
@@ -165,6 +166,12 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     }
     if (path.startsWith('/rest/v1/')) {
       const table = path.slice('/rest/v1/'.length);
+      if (table === 'employees' && heldNextEmployeeRead) {
+        const held = heldNextEmployeeRead;
+        heldNextEmployeeRead = null;
+        held.received();
+        await held.gate;
+      }
       if (table === 'cashier_assignments' && failAssignmentReads) {
         await respond(route, { code: 'MOCK_REFRESH_FAILED', message: 'Simulasi refresh gagal setelah konflik baseline.' }, 503);
         return;
@@ -204,6 +211,14 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     failNextRefresh: () => { failRefreshAfterBaselineConflict = true; },
     rejectPendingWithApprovedLeave: () => { approvedLeaveConflictKey = rpcPayloads.at(-1)?.p_idempotency_key ?? null; },
     recoverRefresh: () => { failAssignmentReads = false; },
+    holdNextEmployeeRead: () => {
+      let release!: () => void;
+      let received!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const requestReceived = new Promise<void>(resolve => { received = resolve; });
+      heldNextEmployeeRead = { received, gate };
+      return { received: requestReceived, release };
+    },
     holdNextBatch: (outcome: 'success' | 'baseline-conflict') => {
       let release!: () => void;
       let received!: () => void;
@@ -215,18 +230,32 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     getSaveCalls: () => saveCalls, getCommitCount: () => commitCount };
 }
 
-async function reopenNextWeekAfterReload(page: Page) {
-  // Auth is preserved, while a hard reload restarts the SPA on its dashboard.
-  // Reopen the same next-week planner through the real navigation so the
-  // account-scoped local draft is restored from storage.
-  await expect(page.getByRole('heading', { name: /Halo, Admin/ })).toBeVisible();
-  await page.getByRole('link', { name: 'Penugasan harian', exact: true }).click();
+async function expectRosterWeekAfterReload(page: Page, weekStart = nextMonday()) {
+  // A hard reload preserves both the protected route and selected week. Do not
+  // navigate again: that would switch the recovery scope away from its draft.
+  await expect(page).toHaveURL(new RegExp(`/assignments\\?week=${weekStart}$`));
   await expect(page.getByRole('heading', { name: 'Jadwal kasir', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
 }
 
 test.skip(!process.env.E2E_LIVE_SUPABASE_MOCK, 'Requires the isolated Vite server configured for the Supabase mock.');
+
+test('live UI preserves a cold protected path and query across delayed session validation and reload', async ({ page }) => {
+  const mock = await openRosterMock(page);
+  const target = '/employees?probe=preserve-path';
+  for (const reload of [false, true]) {
+    const validation = mock.holdNextEmployeeRead();
+    try {
+      if (reload) await page.reload();
+      else await page.goto(target);
+      await validation.received;
+      await expect(page.getByText('Menyiapkan ruang kerja Anda…', { exact: true })).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`${target.replace('?', '\\?')}$`));
+    } finally { validation.release(); }
+    await expect(page.getByRole('heading', { name: 'Data karyawan', exact: true })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${target.replace('?', '\\?')}$`));
+  }
+});
 
 test('live UI reconciles a committed weekly roster when the save response is lost', async ({ page }) => {
   const mock = await openRosterMock(page, true, false);
@@ -258,7 +287,7 @@ test('live UI persists and replays the original payload/key after reload when re
   expect(mock.savedAssignments).toHaveLength(1);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   await expect(mock.shift).toHaveValue('morning');
   await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
 
@@ -321,7 +350,7 @@ test('live UI retries an uncommitted ambiguous attempt once with its persisted o
   const originalRequest = structuredClone(mock.rpcPayloads[0]);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
 
@@ -343,7 +372,7 @@ test('live UI resolves a definitely rejected stale replay through source review 
   const originalRequest = structuredClone(mock.rpcPayloads[0]);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   mock.changeSourceAndRejectReplay();
   mock.failNextRefresh();
   await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
@@ -364,7 +393,7 @@ test('live UI resolves a definitely rejected stale replay through source review 
   expect(mock.rpcPayloads[2]).toEqual(originalRequest);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeHidden();
   await expect(page.locator('.review-cell')).toContainText('Jadwal terbaru: Sore · Outlet Uji');
   await page.getByRole('button', { name: 'Terapkan kembali draft saya', exact: true }).click();
@@ -393,7 +422,7 @@ test('live UI keeps the original attempt when replay is rejected before the idem
   expect(mock.getCommitCount()).toBe(1);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   mock.rejectNextReplay();
   await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
   await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
@@ -429,7 +458,7 @@ test('live UI refuses a new roster save when local recovery persistence fails, t
   expect(mock.getCommitCount()).toBe(0);
 
   await page.reload();
-  await reopenNextWeekAfterReload(page);
+  await expectRosterWeekAfterReload(page);
   await expect(mock.shift).toHaveValue('morning');
   await expect(page.getByLabel('Alasan perubahan batch')).toHaveValue('Draft dipulihkan setelah storage tersedia');
   await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
@@ -551,7 +580,11 @@ for (const outcome of ['success', 'baseline-conflict'] as const) {
       // Reload checks both origin resolution and destination recovery instead
       // of accepting an in-memory-only UI result.
       await page.reload();
-      await reopenNextWeekAfterReload(page);
+      await expectRosterWeekAfterReload(page, weekB);
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+      expect(await readStorage(keyB)).toBe(persistedB);
+      await page.getByRole('button', { name: 'Minggu sebelumnya', exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`week=${weekA}$`));
       await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeHidden();
       await expect(mock.shift).toHaveValue('morning');
       if (outcome === 'success') {
