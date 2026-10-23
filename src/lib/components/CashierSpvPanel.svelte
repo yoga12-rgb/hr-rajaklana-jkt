@@ -3,6 +3,7 @@
   import { app, actions, displayName, shiftLabel } from '#lib/state/app';
   import { cashierDayStatuses, operationalSignals, staffingCoverage } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
+  import { clearSavedFollowupDraft } from '#lib/spv-followup-drafts';
   import Feedback from './Feedback.svelte';
   let date = todayJakarta(), outletFilter = '', busy = '', message = '', failed = false, now = Date.now();
   let ownerDraft: Record<string, string> = {}, noteDraft: Record<string, string> = {}, resolutionDraft: Record<string, string> = {};
@@ -29,10 +30,18 @@
   }
   async function update(id: string, status: 'new' | 'in_progress' | 'completed') {
     const item = storedCases.find(row => row.id === id); if (!item || busy) return;
+    const submitted = { ownerId: ownerDraft[id] ?? item.ownerId, note: noteDraft[id] ?? item.note,
+      resolutionNote: resolutionDraft[id] ?? item.resolutionNote };
     busy = id; message = ''; failed = false;
     try {
-      await actions.updateSpvFollowup({ id, status, ownerId: ownerDraft[id] ?? item.ownerId,
-        note: noteDraft[id] ?? item.note, resolutionNote: resolutionDraft[id] ?? item.resolutionNote });
+      await actions.updateSpvFollowup({ id, status, ...submitted });
+      // A later Realtime row becomes the source of truth after this save. Clear
+      // only the values we sent, so edits typed while the request was pending survive.
+      ownerDraft = clearSavedFollowupDraft(ownerDraft, id, submitted.ownerId);
+      noteDraft = clearSavedFollowupDraft(noteDraft, id, submitted.note);
+      // In-progress updates intentionally keep resolution_note empty on the
+      // server. Keep that unfinished resolution until completion saves it.
+      resolutionDraft = clearSavedFollowupDraft(resolutionDraft, id, submitted.resolutionNote, status === 'completed');
       message = status === 'completed' ? 'Tindak lanjut selesai. Riwayat kehadiran tetap utuh.' : 'Tindak lanjut diperbarui.';
     } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Tindak lanjut belum tersimpan.'; }
     finally { busy = ''; }

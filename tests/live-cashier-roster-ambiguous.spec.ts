@@ -45,6 +45,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   let failAssignmentReads = false;
   let rejectNextReplay = false;
   let baselineConflictKey: string | null = null;
+  let approvedLeaveConflictKey: string | null = null;
   let failRefreshAfterBaselineConflict = false;
   let heldNextBatch: { received: () => void; gate: Promise<void>; outcome: 'success' | 'baseline-conflict' } | null = null;
   const now = new Date().toISOString();
@@ -109,6 +110,11 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
           failAssignmentReads = true;
         }
         await respond(route, { code: 'P0001', message: 'Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik' }, 400);
+        return;
+      }
+      if (payload.p_idempotency_key === approvedLeaveConflictKey) {
+        approvedLeaveConflictKey = null;
+        await respond(route, { code: 'P0001', message: 'Penugasan kerja berbenturan dengan cuti sehari penuh yang disetujui' }, 400);
         return;
       }
       const previous = committed.get(payload.p_idempotency_key);
@@ -181,7 +187,8 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   await expect(page).toHaveURL(/\/dashboard$/);
   await page.getByRole('link', { name: 'Penugasan harian', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Jadwal kasir', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Mingguan', exact: true }).click();
+  const weeklyMode = page.getByRole('button', { name: 'Mingguan', exact: true });
+  if (!(await weeklyMode.getAttribute('class'))?.includes('active')) await weeklyMode.click();
   await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
   const shift = page.locator('select[aria-label^="Shift Kasir Uji,"]').first();
@@ -195,6 +202,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
       baselineConflictKey = rpcPayloads[0]?.p_idempotency_key ?? null;
     },
     failNextRefresh: () => { failRefreshAfterBaselineConflict = true; },
+    rejectPendingWithApprovedLeave: () => { approvedLeaveConflictKey = rpcPayloads.at(-1)?.p_idempotency_key ?? null; },
     recoverRefresh: () => { failAssignmentReads = false; },
     holdNextBatch: (outcome: 'success' | 'baseline-conflict') => {
       let release!: () => void;
@@ -272,6 +280,34 @@ test('live UI persists and replays the original payload/key after reload when re
   expect(mock.savedAssignments).toHaveLength(1);
   expect(mock.savedAssignments[0].shift).toBe('middle');
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
+});
+
+test('live UI releases only a definitely rejected leave-conflicting replay and saves the reviewed draft with a new key', async ({ page }) => {
+  const mock = await openRosterMock(page, true, true, false);
+  await mock.shift.selectOption('morning');
+  await page.getByLabel('Alasan perubahan batch').fill('Simulasi cuti penuh disetujui setelah percobaan');
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+  const originalKey = mock.rpcPayloads[0].p_idempotency_key;
+  mock.rejectPendingWithApprovedLeave();
+
+  await mock.shift.selectOption('off');
+  await page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true }).click();
+  await expect(page.getByText('Server memastikan jadwal lama tidak tersimpan karena cuti sehari penuh sudah disetujui. Draft Anda tetap ada; ubah shift yang berbenturan lalu simpan sebagai percobaan baru.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Tidak ada percobaan simpan sebelumnya yang belum dipastikan')).toHaveCount(0);
+  await expect(mock.shift).toHaveValue('off');
+  await expect(page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
+  await expect(page.getByText('1 perubahan jadwal tersimpan bersama.', { exact: true })).toBeVisible();
+  expect(mock.rpcPayloads).toHaveLength(3);
+  expect(mock.rpcPayloads[0].p_idempotency_key).toBe(originalKey);
+  expect(mock.rpcPayloads[1].p_idempotency_key).toBe(originalKey);
+  expect(mock.rpcPayloads[1].p_changes).toEqual(mock.rpcPayloads[0].p_changes);
+  expect(mock.rpcPayloads[2].p_idempotency_key).not.toBe(originalKey);
+  expect(mock.rpcPayloads[2].p_changes[0].shift).toBe('off');
+  expect(mock.getCommitCount()).toBe(1);
+  expect(mock.savedAssignments[0]).toMatchObject({ shift: 'off', status: 'active' });
 });
 
 test('live UI retries an uncommitted ambiguous attempt once with its persisted original key and payload', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsUncertain } from './cashier-roster-save-error';
+import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsDefiniteLeaveConflict, cashierRosterSaveOutcomeIsUncertain } from './cashier-roster-save-error';
 
 describe('cashier roster save errors', () => {
   it.each([
@@ -28,6 +28,14 @@ describe('cashier roster save errors', () => {
     expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(Object.assign(new Error('Kunci batch sudah dipakai untuk perubahan jadwal lain'), { code: 'P0001', status: 400 }))).toBe(false);
     expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(Object.assign(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik'), { code: 'P0001', status: 401 }))).toBe(false);
     expect(cashierRosterSaveOutcomeIsDefiniteBaselineConflict(new Error('Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik'))).toBe(false);
+  });
+
+  it('releases only the exact full-day-leave rejection after the idempotency lookup', () => {
+    const leaveConflict = Object.assign(new Error('Penugasan kerja berbenturan dengan cuti sehari penuh yang disetujui'), { code: 'P0001', status: 400 });
+    expect(cashierRosterSaveOutcomeIsDefiniteLeaveConflict(leaveConflict)).toBe(true);
+    expect(cashierRosterSaveOutcomeIsDefiniteLeaveConflict(Object.assign(new Error('Akses Admin HR diperlukan'), { code: 'P0001', status: 400 }))).toBe(false);
+    expect(cashierRosterSaveOutcomeIsDefiniteLeaveConflict(Object.assign(new Error(leaveConflict.message), { code: 'P0001', status: 401 }))).toBe(false);
+    expect(cashierRosterSaveOutcomeIsDefiniteLeaveConflict(new Error(leaveConflict.message))).toBe(false);
   });
 
   it('preserves other server messages when the browser is online', () => {

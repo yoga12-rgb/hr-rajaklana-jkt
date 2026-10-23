@@ -222,6 +222,42 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByLabel(/Shift Sari Lestari,/).first()).toHaveValue('morning');
   });
 
+  test('an older roster tab syncs and preserves another tab pending replay while changing weeks', async ({ page }) => {
+    await login(page);
+    const weekStart = '2026-10-26';
+    await page.goto(`/assignments?week=${weekStart}`);
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+
+    const secondTab = await page.context().newPage();
+    try {
+      await secondTab.goto(new URL(`/assignments?week=${weekStart}`, page.url()).href);
+      await expect(secondTab.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+
+      const idempotencyKey = 'd131a6bb-a823-49ef-92c0-2b281d2b8c6f';
+      const changes = [{ employeeId: 'employee-4', workDate: weekStart, outletId: 'outlet-a', shift: 'morning', reason: 'Pemulihan lintas tab' }];
+      const record = {
+        version: 2,
+        drafts: {},
+        reason: 'Pemulihan lintas tab',
+        pendingAttempt: { fingerprint: JSON.stringify({ weekStart, changes }), idempotencyKey, weekStart, changes },
+        legacyAttemptNeedsReview: false
+      };
+      const storageKey = `rajaklana-hr-roster-draft-v1:employee-1:${weekStart}`;
+      await secondTab.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: storageKey, value: record });
+
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
+      await expect(page.locator('.planner-heading')).toContainText('2026-11-02 – 2026-11-08');
+
+      const persisted = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null'), storageKey);
+      expect(persisted?.pendingAttempt?.idempotencyKey).toBe(idempotencyKey);
+      await page.getByRole('button', { name: 'Minggu sebelumnya', exact: true }).click();
+      await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
+    } finally {
+      await secondTab.close();
+    }
+  });
+
   test('weekly roster opens the requested week from a direct URL', async ({ page }) => {
     await login(page);
     await page.goto('/assignments?week=2026-10-26');
@@ -392,6 +428,49 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await page.getByRole('dialog').getByLabel('Outlet aktif', { exact: true }).uncheck();
     await page.getByRole('dialog').getByRole('button', { name: 'Simpan perubahan', exact: true }).click();
     await expect(outlet.getByText('Nonaktif', { exact: true })).toBeVisible();
+  });
+
+  test('a delayed GPS response cannot replace the coordinates of a different outlet form', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
+        getCurrentPosition(success: PositionCallback) {
+          (window as unknown as { resolveGps: PositionCallback }).resolveGps = success;
+        }
+      } });
+    });
+    await login(page);
+    await page.goto('/organization');
+    const cards = page.locator('.outlet-card');
+    await cards.nth(0).getByRole('button', { name: 'Kelola', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Gunakan lokasi saya', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Mencari lokasi…', exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Batal', exact: true }).click();
+
+    const outletB = cards.nth(1);
+    const outletBName = (await outletB.locator('h2').textContent())!.trim();
+    await outletB.getByRole('button', { name: 'Kelola', exact: true }).click();
+    const secondDialog = page.getByRole('dialog');
+    const latitude = secondDialog.getByLabel('Latitude', { exact: true });
+    const longitude = secondDialog.getByLabel('Longitude', { exact: true });
+    await latitude.fill('-6.25');
+    await longitude.fill('106.8');
+    const latitudeBefore = await latitude.inputValue();
+    const longitudeBefore = await longitude.inputValue();
+    await page.evaluate(() => {
+      const resolveGps = (window as unknown as { resolveGps: PositionCallback }).resolveGps;
+      resolveGps({ coords: { latitude: -6.20123, longitude: 106.80123, accuracy: 8, altitude: null, altitudeAccuracy: null, heading: null, speed: null }, timestamp: Date.now() } as unknown as GeolocationPosition);
+    });
+    await expect(latitude).toHaveValue(latitudeBefore);
+    await expect(longitude).toHaveValue(longitudeBefore);
+    await secondDialog.getByRole('button', { name: 'Simpan perubahan', exact: true }).click();
+    await expect(secondDialog).toBeHidden();
+    const savedOutlet = await page.evaluate(name => {
+      const state = JSON.parse(localStorage.getItem('rajaklana-hr-demo-v1') ?? '{}');
+      return state.outlets.find((outlet: { name: string }) => outlet.name === name);
+    }, outletBName);
+    expect(savedOutlet.latitude).toBe(-6.25);
+    expect(savedOutlet.longitude).toBe(106.8);
   });
 
   test('leave approval, date change and cancellation adjust balance only after decisions', async ({ page }) => {

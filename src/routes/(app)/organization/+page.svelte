@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { app, actions, isAdmin } from '#lib/state/app';
   import type { Outlet, Department, Position } from '#lib/types';
   import PageHeading from '#lib/components/PageHeading.svelte';
@@ -7,17 +8,33 @@
   import EmptyState from '#lib/components/EmptyState.svelte';
   import Modal from '#lib/components/Modal.svelte';
   import Feedback from '#lib/components/Feedback.svelte';
+  import { isCurrentOutletLocationRequest } from '#lib/outlet-location-request';
   let tab: 'outlets' | 'departments' | 'positions' = 'outlets';
   let editing = false, saving = false, locating = false, message = '', failed = false;
+  let gpsGeneration = 0;
+  onDestroy(() => { gpsGeneration++; locating = false; });
   let outlet: Partial<Outlet> = {}, department: Partial<Department> = {}, position: Partial<Position> = {};
   $: admin = isAdmin($app.user ?? undefined);
   const departmentName = (id: string) => $app.departments.find((d) => d.id === id)?.name ?? '—';
-  function editOutlet(value?: Outlet) { outlet = value ? { ...value } : { name: '', address: '', active: true, isProduction: false, latitude: null, longitude: null, radiusMeters: 100, opensAt: '07:00', closesAt: '23:00', morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0 }; editing = true; message = ''; }
-  function editDepartment(value?: Department) { department = value ? { ...value } : { name: '', code: '', active: true }; editing = true; message = ''; }
-  function editPosition(value?: Position) { position = value ? { ...value } : { name: '', departmentId: '', active: true, isCashier: false }; editing = true; message = ''; }
+  function editOutlet(value?: Outlet) { gpsGeneration++; locating = false; outlet = value ? { ...value } : { name: '', address: '', active: true, isProduction: false, latitude: null, longitude: null, radiusMeters: 100, opensAt: '07:00', closesAt: '23:00', morningStart: '07:00', afternoonStart: '15:00', lateToleranceMinutes: 0 }; editing = true; message = ''; }
+  function editDepartment(value?: Department) { gpsGeneration++; locating = false; department = value ? { ...value } : { name: '', code: '', active: true }; editing = true; message = ''; }
+  function editPosition(value?: Position) { gpsGeneration++; locating = false; position = value ? { ...value } : { name: '', departmentId: '', active: true, isCashier: false }; editing = true; message = ''; }
+  function closeEditor() { gpsGeneration++; locating = false; editing = false; }
   function add() { if (tab === 'outlets') editOutlet(); else if (tab === 'departments') editDepartment(); else editPosition(); }
-  async function save() { saving = true; message = ''; try { if (tab === 'outlets') { if (outlet.latitude === null || outlet.latitude === undefined || outlet.longitude === null || outlet.longitude === undefined) throw new Error('Isi titik lokasi outlet. Lokasi diperlukan untuk validasi absensi.'); if (outlet.latitude < -90 || outlet.latitude > 90 || outlet.longitude < -180 || outlet.longitude > 180) throw new Error('Koordinat lokasi tidak valid.'); await actions.saveOutlet(outlet); } else if (tab === 'departments') await actions.saveDepartment(department); else await actions.savePosition(position); editing = false; failed = false; message = 'Perubahan berhasil disimpan.'; } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Perubahan belum berhasil disimpan.'; } finally { saving = false; } }
-  function useCurrentLocation() { if (!navigator.geolocation) { failed = true; message = 'Perangkat ini tidak mendukung pengambilan lokasi.'; return; } locating = true; navigator.geolocation.getCurrentPosition((location) => { outlet = { ...outlet, latitude: Number(location.coords.latitude.toFixed(7)), longitude: Number(location.coords.longitude.toFixed(7)) }; locating = false; failed = false; message = `Lokasi diambil dari perangkat (akurasi ±${Math.round(location.coords.accuracy)} meter). Pastikan Anda berada di outlet yang benar.`; }, (error) => { locating = false; failed = true; message = error.code === 1 ? 'Izinkan akses lokasi di pengaturan browser, lalu coba lagi.' : 'Lokasi tidak dapat diambil. Coba di area dengan sinyal lebih baik.'; }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); }
+  async function save() { if (locating) return; saving = true; message = ''; try { if (tab === 'outlets') { if (outlet.latitude === null || outlet.latitude === undefined || outlet.longitude === null || outlet.longitude === undefined) throw new Error('Isi titik lokasi outlet. Lokasi diperlukan untuk validasi absensi.'); if (outlet.latitude < -90 || outlet.latitude > 90 || outlet.longitude < -180 || outlet.longitude > 180) throw new Error('Koordinat lokasi tidak valid.'); await actions.saveOutlet(outlet); } else if (tab === 'departments') await actions.saveDepartment(department); else await actions.savePosition(position); closeEditor(); failed = false; message = 'Perubahan berhasil disimpan.'; } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Perubahan belum berhasil disimpan.'; } finally { saving = false; } }
+  function useCurrentLocation() {
+    if (!navigator.geolocation) { failed = true; message = 'Perangkat ini tidak mendukung pengambilan lokasi.'; return; }
+    const request = ++gpsGeneration, targetId = outlet.id;
+    locating = true; failed = false; message = '';
+    navigator.geolocation.getCurrentPosition((location) => {
+      if (!isCurrentOutletLocationRequest({ requestGeneration: request, currentGeneration: gpsGeneration, requestOutletId: targetId, currentOutletId: outlet.id, editing, activeTab: tab })) return;
+      outlet = { ...outlet, latitude: Number(location.coords.latitude.toFixed(7)), longitude: Number(location.coords.longitude.toFixed(7)) };
+      locating = false; failed = false; message = `Lokasi diambil dari perangkat (akurasi ±${Math.round(location.coords.accuracy)} meter). Pastikan Anda berada di outlet yang benar.`;
+    }, (error) => {
+      if (!isCurrentOutletLocationRequest({ requestGeneration: request, currentGeneration: gpsGeneration, requestOutletId: targetId, currentOutletId: outlet.id, editing, activeTab: tab })) return;
+      locating = false; failed = true; message = error.code === 1 ? 'Izinkan akses lokasi di pengaturan browser, lalu coba lagi.' : 'Lokasi tidak dapat diambil. Coba di area dengan sinyal lebih baik.';
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
 </script>
 
 <PageHeading eyebrow="PENGATURAN TIM" title="Organisasi & outlet" description="Kelola tempat kerja dan struktur tim Jabodetabek dari aplikasi.">{#if admin}<button class="btn btn-primary" on:click={add}><Icon name="plus" size={18}/>Tambah {tab === 'outlets' ? 'outlet' : tab === 'departments' ? 'departemen' : 'jabatan'}</button>{/if}</PageHeading>
@@ -30,7 +47,7 @@
   <p class="footnote"><Icon name="info" size={15}/>Data yang sudah digunakan cukup dinonaktifkan agar riwayat tetap tersimpan.</p>
 {/if}
 
-<Modal open={editing} title={tab === 'outlets' ? outlet.id ? 'Kelola outlet' : 'Tambah outlet' : tab === 'departments' ? department.id ? 'Edit departemen' : 'Tambah departemen' : position.id ? 'Edit jabatan' : 'Tambah jabatan'} onclose={() => editing = false}>
+<Modal open={editing} title={tab === 'outlets' ? outlet.id ? 'Kelola outlet' : 'Tambah outlet' : tab === 'departments' ? department.id ? 'Edit departemen' : 'Tambah departemen' : position.id ? 'Edit jabatan' : 'Tambah jabatan'} onclose={closeEditor}>
   <form on:submit|preventDefault={save}>
     {#if tab === 'outlets'}
       <div class="form-grid"><label class="field span">Nama outlet<input class="input" bind:value={outlet.name} required/></label><label class="field span">Alamat<textarea class="textarea" bind:value={outlet.address} rows="2"></textarea></label><label class="field">Jam buka<input class="input" type="time" bind:value={outlet.opensAt} required/></label><label class="field">Jam tutup<input class="input" type="time" bind:value={outlet.closesAt} required/></label></div>
@@ -39,7 +56,7 @@
       <label class="check"><input type="checkbox" bind:checked={outlet.isProduction}/>Outlet ini juga menjadi tempat produksi</label><label class="check"><input type="checkbox" bind:checked={outlet.active}/>Outlet aktif</label>
     {:else if tab === 'departments'}<div class="form-grid"><label class="field span">Nama departemen<input class="input" bind:value={department.name} required/></label><label class="field span">Kode departemen<input class="input" bind:value={department.code} required maxlength="12" placeholder="Contoh: PRD"/></label></div><label class="check"><input type="checkbox" bind:checked={department.active}/>Departemen aktif</label>
     {:else}<div class="form-grid"><label class="field span">Nama jabatan<input class="input" bind:value={position.name} required/></label><label class="field span">Departemen<select class="select" bind:value={position.departmentId} required><option value="">Pilih departemen</option>{#each $app.departments.filter((d) => d.active || d.id === position.departmentId) as d}<option value={d.id}>{d.name}</option>{/each}</select></label></div><label class="check"><input type="checkbox" bind:checked={position.isCashier}/>Jabatan kasir — menggunakan clock in/out</label><label class="check"><input type="checkbox" bind:checked={position.active}/>Jabatan aktif</label>{/if}
-    <Feedback {message} error={failed}/><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={() => editing = false}>Batal</button><button class="btn btn-primary" type="submit" disabled={saving || locating}>{saving ? 'Menyimpan…' : 'Simpan perubahan'}</button></div>
+    <Feedback {message} error={failed}/><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={closeEditor}>Batal</button><button class="btn btn-primary" type="submit" disabled={saving || locating}>{saving ? 'Menyimpan…' : 'Simpan perubahan'}</button></div>
   </form>
 </Modal>
 

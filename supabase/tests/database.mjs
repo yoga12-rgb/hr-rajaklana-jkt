@@ -80,7 +80,7 @@ const scalar = async (sql, params=[]) => (await db.query(sql,params)).rows[0];
 // FOR UPDATE here permits reciprocal HR applicants to deadlock each other.
 const employeeMutexFunctions = [
   'private.check_leave_duplicate', 'private.set_deductions',
-  'public.hr_save_employee', 'public.hr_set_roles', 'public.issue_account_token',
+  'public.hr_save_employee', 'public.hr_set_roles', 'public.hr_save_employee_with_roles', 'public.issue_account_token',
   'public.claim_account_token', 'public.attendance_clock_in',
   'public.attendance_clock_out', 'public.attendance_correct',
   'public.attendance_record_manual', 'public.cashier_assignment_save',
@@ -1088,12 +1088,18 @@ await expectError('select public.finish_account_token($1,$2,$3)',[expiredClaim.t
 const abandonedClaim=(await scalar('select public.claim_account_token($1,$2) as token',['e'.repeat(64),claimId])).token;
 await db.exec('reset role');
 await db.query("update public.account_tokens set claimed_at=now()-interval '6 minutes' where id=$1",[abandonedClaim.token_id]);
+await asUser('', 'service_role');
+const resumedPreview=(await scalar('select public.inspect_account_token($1) as token',['e'.repeat(64)])).token;
+assert.equal(resumedPreview.purpose,'reset','an abandoned claim can be reopened through the page inspection step');
+const takeoverClaim=(await scalar('select public.claim_account_token($1,$2) as token',['e'.repeat(64),'30000000-0000-0000-8000-000000000002'])).token;
+assert.equal(takeoverClaim.token_id,abandonedClaim.token_id,'retry takes over the same token rather than issuing a new one');
+await db.query('select public.release_account_token($1,$2)',[takeoverClaim.token_id,'30000000-0000-0000-8000-000000000002']);
 await asUser(adminAuth);
 await db.query(`select public.issue_account_token($1,'reset',$2)`,[invitationEmployee.id,'f'.repeat(64)]);
 await asUser('', 'service_role');
 await expectError('select public.finish_account_token($1,$2,$3)',[abandonedClaim.token_id,claimId,linkedAuth],'no rows');
 assert.equal((await scalar('select public.inspect_account_token($1) as token',['f'.repeat(64)])).token.purpose,'reset');
-console.log('Tokens OK: replace/revoke,preview,exclusiveclaim,singleuse,Authidentity,idempotentfinish,expiry,abandonedrecovery,hashprivacy');
+console.log('Tokens OK: replace/revoke,preview,exclusiveclaim,singleuse,Authidentity,idempotentfinish,expiry,abandonedpage-retry,hashprivacy');
 
 // Service-owned fixtures check three calendar months and inclusiveeligiblemonth.
 await db.exec('reset role');
@@ -1110,5 +1116,48 @@ assert.equal((await db.query('select * from public.employees')).rows.length,0,'d
 await expectError('select public.leave_balance()',[],'tidak aktif');
 await expectError('select * from public.employee_directory()',[],'tidak aktif');
 console.log('RLS OK: disabledsession revoked at datalayer');
+
+await db.exec('reset role');
+const bakerBeforeLifecycle=await scalar('select id,auth_user_id,employee_number,full_name from public.employees where id=$1',[bakerId]);
+await db.exec(`create function core_contract_tests.reject_baker_role_write() returns trigger language plpgsql as $$
+  begin if new.employee_id='${bakerId}'::uuid then raise exception 'simulated role write failure'; end if; return new; end;
+$$;
+create trigger reject_baker_role_write before insert on public.employee_roles
+for each row execute function core_contract_tests.reject_baker_role_write();`);
+await asUser(adminAuth);
+const deactivatePayload=JSON.stringify({full_name:'Nama yang harus di-rollback',status:'inactive',ends_on:clock.today,exit_reason:'Uji transaksi akun'});
+await expectError(`select public.hr_save_employee_with_roles($1::jsonb,$2,array['employee']::text[],'Uji rollback peran')`,
+  [deactivatePayload,bakerId],'simulated role write failure');
+await db.exec('reset role');
+await db.exec('drop trigger reject_baker_role_write on public.employee_roles; drop function core_contract_tests.reject_baker_role_write();');
+const rolledBack=await scalar('select status,account_status,full_name from public.employees where id=$1',[bakerId]);
+assert.deepEqual(rolledBack,{status:'active',account_status:'active',full_name:bakerBeforeLifecycle.full_name},
+  'employee data and status roll back when role replacement fails');
+
+await asUser(adminAuth);
+const deactivatedPayload=JSON.stringify({status:'inactive',ends_on:clock.today,exit_reason:'Uji perubahan peran atomik'});
+await db.query(`select public.hr_save_employee_with_roles($1::jsonb,$2,array['employee']::text[],'Uji penonaktifan atomik')`,
+  [deactivatedPayload,bakerId]);
+await db.exec('reset role');
+assert.deepEqual(await scalar('select status,account_status from public.employees where id=$1',[bakerId]),
+  {status:'inactive',account_status:'disabled'},'employee deactivation and account closure commit together');
+assert.deepEqual((await db.query('select role from public.employee_roles where employee_id=$1 order by role',[bakerId])).rows,
+  [{role:'employee'}],'role removal commits with deactivation');
+
+await asUser(adminAuth);
+const reactivatePayload=JSON.stringify({status:'active',ends_on:null,exit_reason:null});
+await db.query(`select public.hr_save_employee_with_roles($1::jsonb,$2,array['employee']::text[],'Uji reaktivasi')`,
+  [reactivatePayload,bakerId]);
+await expectError(`select public.issue_account_token($1,'activation',$2)`,[bakerId,'9'.repeat(64)],'Akun sudah diaktifkan');
+await db.query(`select public.issue_account_token($1,'reset',$2)`,[bakerId,'8'.repeat(64)]);
+await db.exec('reset role');
+const reactivated=await scalar('select status,account_status,auth_user_id,employee_number from public.employees where id=$1',[bakerId]);
+assert.deepEqual(reactivated,{status:'active',account_status:'active',auth_user_id:bakerBeforeLifecycle.auth_user_id,
+  employee_number:bakerBeforeLifecycle.employee_number},'reactivation restores the linked login without changing employee identity');
+await asUser(bakerAuth);
+assert.equal((await db.query('select id from public.employee_directory() where id=$1',[bakerId])).rows.length,1,
+  'the same account can read its employee record after reactivation');
+await db.exec('reset role');
+console.log('Employee lifecycle OK: atomic data+roles rollback, disable, same-identity reactivation, reset recovery');
 await db.close();
 console.log('All database checks passed. Hosted Supabase Auth/Storage integration still requires deployment testing.');

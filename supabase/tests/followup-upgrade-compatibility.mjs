@@ -74,12 +74,12 @@ const setupHistory = async (db, sourceShift='off') => {
     activeCase:activeCase.id,completedCase:completedCase.id,rosterCase:rosterCase.id,completedRoster:completedRoster.id};
 };
 
-// Preview-style upgrade: the known 15-migration baseline is upgraded through
-// both forward corrections. Existing open and completed cases are present.
+// Preview-style upgrade: the known 17-migration baseline receives the new
+// account lifecycle migration. Existing SPV case history is present.
 {
   const db = await createDb();
   try {
-    assert.equal(idx('20261020060913'),14,'Preview baseline must contain exactly 15 migrations');
+    assert.equal(idx('20261021154511'),16,'Preview baseline must contain exactly 17 migrations');
     await apply(db,0,14);
     const ids=await setupHistory(db,'morning');
     let open = await scalar(db,'select id,status,shift,outlet_id,owner_id,note,resolution_note from public.spv_followups where id=$1',[ids.activeCase]);
@@ -120,7 +120,40 @@ const setupHistory = async (db, sourceShift='off') => {
       'Preview upgrade does not rewrite a completed roster snapshot');
     assert.equal((await scalar(db,"select count(*)::int as count from private.spv_followup_context_repair_log where migration_key='20261020081916_cashier_followup_context_consistency'")).count,1,
       'Preview upgrade records one private before/after repair');
-    console.log('Preview 15→17 upgrade OK: open/off case, completed snapshot, roster outlet repair and locked audit snapshots');
+
+    const employeeAuth='10000000-0000-4000-8000-000000000098';
+    await db.query('insert into auth.users(id,email) values($1,$2)',[employeeAuth,'rk-upgrade-fixture@login.rajaklana.internal']);
+    await db.query('update public.employees set auth_user_id=$1,account_status=\'active\' where id=$2',[employeeAuth,ids.employee]);
+    await db.query("insert into public.employee_roles(employee_id,role) values($1,'head_baker')",[ids.employee]);
+    await apply(db,17,17);
+    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await db.exec('set role authenticated');
+    await db.query(`select public.hr_save_employee_with_roles(
+      jsonb_build_object('status','inactive','ends_on','2026-10-15'::date,'exit_reason','Uji upgrade lifecycle'),
+      $1,array['employee']::text[],'Uji nonaktif atomik')`,[ids.employee]);
+    await db.query(`select public.hr_save_employee_with_roles(
+      jsonb_build_object('status','active','ends_on',null,'exit_reason',null),
+      $1,array['employee']::text[],'Uji reaktivasi atomik')`,[ids.employee]);
+    await db.exec('reset role');
+    const reactivated=await scalar(db,'select status,account_status,auth_user_id from public.employees where id=$1',[ids.employee]);
+    assert.deepEqual(reactivated,{status:'active',account_status:'active',auth_user_id:employeeAuth},
+      'the new Preview migration reactivates an existing linked account');
+    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await db.exec('set role authenticated');
+    const issued=(await scalar(db,`select public.issue_account_token($1,'reset',$2) as token`,[ids.employee,'a'.repeat(64)])).token;
+    await db.exec('reset role');
+    await db.query(`select set_config('request.jwt.claim.sub','',false),set_config('request.jwt.claim.role','service_role',false)`);
+    await db.exec('set role service_role');
+    const firstClaim=(await scalar(db,'select public.claim_account_token($1,$2) as token',['a'.repeat(64),'30000000-0000-4000-8000-000000000091'])).token;
+    await db.exec('reset role');
+    await db.query("update public.account_tokens set claimed_at=now()-interval '6 minutes' where id=$1",[issued.id]);
+    await db.query(`select set_config('request.jwt.claim.sub','',false),set_config('request.jwt.claim.role','service_role',false)`);
+    await db.exec('set role service_role');
+    assert.equal((await scalar(db,'select public.inspect_account_token($1) as token',['a'.repeat(64)])).token.purpose,'reset',
+      'the activation page preflight accepts a safely abandoned claim');
+    const retry=(await scalar(db,'select public.claim_account_token($1,$2) as token',['a'.repeat(64),'30000000-0000-4000-8000-000000000092'])).token;
+    assert.equal(retry.token_id,firstClaim.token_id,'retry reclaims the original Preview token');
+    console.log('Preview 17→18 upgrade OK: SPV history retained, linked account reactivated, abandoned reset link inspected and reclaimed');
   } finally { await db.close(); }
 }
 
@@ -166,6 +199,6 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('rollback');
     assert.equal((await scalar(db,'select shift from public.spv_followups where id=$1',[ids.activeCase])).shift,'off',
       'refusing an out-of-scope preflight does not change the migrated case');
-    console.log('Historical 13→17 upgrade OK: preflight absence reproduced; bounded preflight applied twice; migrations 14–17 completed');
+    console.log('Historical 13→18 upgrade OK: preflight absence reproduced; bounded preflight applied twice; migrations 14–18 completed');
   } finally { await db.close(); }
 }

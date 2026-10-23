@@ -54,7 +54,7 @@ function mount(storage: Map<string, string>, rpc = deferred<{ saved_count: numbe
   const context: Record<string, any> = {
     ...drafts, ...errors, ...reconciliation, structuredClone, URLSearchParams, URL, Date,
     $app: state, app: { subscribe(listener: (value: typeof state) => void) { listeners.add(listener); listener(state); return () => listeners.delete(listener); } },
-    get: () => state, isCashier: () => true, onDestroy: (callback: () => void) => { destroyed = callback; },
+    get: () => state, isCashier: () => true, onDestroy: (callback: () => void) => { destroyed = callback; }, onMount: () => {},
     page: { url: new URL(`http://localhost/assignments?week=${weekA}`), state: {} },
     window: { location: { search: `?week=${weekA}`, href: `http://localhost/assignments?week=${weekA}` } },
     localStorage: {

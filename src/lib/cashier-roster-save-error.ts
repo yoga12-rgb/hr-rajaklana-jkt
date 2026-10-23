@@ -1,5 +1,6 @@
 const retryGuidance = 'Belum ada konfirmasi dari server. Draft tetap tersimpan. Periksa koneksi, lalu tekan Simpan jadwal mingguan lagi; permintaan yang sama memakai kunci yang sama agar jadwal tidak dibuat dua kali.';
 const baselineConflictMessage = 'Jadwal berubah sejak pratinjau. Muat ulang dan periksa konflik';
+const approvedLeaveConflictMessage = 'Penugasan kerja berbenturan dengan cuti sehari penuh yang disetujui';
 
 /**
  * This exact database error is raised only after the RPC has checked its
@@ -9,6 +10,12 @@ const baselineConflictMessage = 'Jadwal berubah sejak pratinjau. Muat ulang dan 
 export function cashierRosterSaveOutcomeIsDefiniteBaselineConflict(error: unknown): boolean {
   const details = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown; status?: unknown } : null;
   return details?.code === 'P0001' && details?.status === 400 && details?.message === baselineConflictMessage;
+}
+
+/** The batch RPC checks idempotency before this exact full-day-leave rejection. */
+export function cashierRosterSaveOutcomeIsDefiniteLeaveConflict(error: unknown): boolean {
+  const details = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown; status?: unknown } : null;
+  return details?.code === 'P0001' && details?.status === 400 && details?.message === approvedLeaveConflictMessage;
 }
 
 export function cashierRosterSaveOutcomeIsUncertain(error: unknown): boolean {

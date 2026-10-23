@@ -5,9 +5,11 @@
   import Feedback from '#lib/components/Feedback.svelte';
   import SelfieGuide from '#lib/components/SelfieGuide.svelte';
   import Icon from '#lib/components/Icon.svelte';
+  import { keepMediaStreamForRequest, stopMediaStream } from '#lib/media-stream-lease';
   import { dateLabel, timeLabel } from '#lib/components/format';
   type Reference={id:string;employee_id:string;status:string;created_at:string;review_note:string|null;name?:string;employeeNumber?:string;imageUrl?:string|null};
-  let own:Reference[]=[],pending:Reference[]=[],message='',error=false,busy=false,consent=false,video:HTMLVideoElement,stream:MediaStream|null=null,preview='',capturedAt='',image='',cameraOpen=false;
+  let own:Reference[]=[],pending:Reference[]=[],message='',error=false,busy=false,consent=false,video:HTMLVideoElement,stream:MediaStream|null=null,preview='',capturedAt='',image='',cameraOpen=false,cameraOpening=false;
+  let cameraRevision=0,cameraDestroyed=false;
   let notes:Record<string,string>={};
   const labels:Record<string,string>={pending:'Menunggu tinjauan HR',approved:'Disetujui',rejected:'Perlu foto baru',revoked:'Dicabut'};
   async function api(input:Record<string,unknown>){
@@ -17,14 +19,29 @@
     const response=await fetch('/api/biometric',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${session.access_token}`},body:JSON.stringify(input)});
     const result=await response.json();if(!response.ok)throw new Error(result.error??'Layanan belum dapat dihubungi.');return result;
   }
-  function stopCamera(){stream?.getTracks().forEach(track=>track.stop());stream=null;cameraOpen=false;}
+  function stopTracks(value:MediaStream|null){stopMediaStream(value);}
+  function stopCamera(){cameraRevision++;cameraOpening=false;const current=stream;stream=null;cameraOpen=false;if(video&&video.srcObject===current)video.srcObject=null;stopTracks(current);}
   async function refresh(){if($app.mode!=='live')return;try{const result=await api({action:'status'});own=result.own;pending=result.pending;}catch(e){error=true;message=e instanceof Error?e.message:'Data belum dapat dimuat.';}}
-  async function startCamera(){message='';error=false;try{stopCamera();image='';preview='';stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:960},height:{ideal:960}},audio:false});cameraOpen=true;await tick();video.srcObject=stream;await video.play();}catch{error=true;message='Kamera belum dapat dibuka. Periksa izin kamera browser atau hubungi HR.';stopCamera();}}
+  async function startCamera(){
+    if(cameraOpening||cameraOpen||cameraDestroyed)return;
+    const revision=++cameraRevision;cameraOpening=true;message='';error=false;image='';preview='';
+    let candidate:MediaStream|null=null;
+    try{
+      candidate=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:960},height:{ideal:960}},audio:false});
+      if(!keepMediaStreamForRequest(candidate,revision,cameraRevision,cameraDestroyed))return;
+      stream=candidate;cameraOpening=false;cameraOpen=true;await tick();
+      if(!keepMediaStreamForRequest(candidate,revision,cameraRevision,cameraDestroyed)||stream!==candidate||!video){if(stream===candidate)stopCamera();return;}
+      video.srcObject=candidate;await video.play();
+    }catch{
+      if(candidate&&stream!==candidate)stopTracks(candidate);
+      if(revision===cameraRevision&&!cameraDestroyed){error=true;message='Kamera belum dapat dibuka. Periksa izin kamera browser atau hubungi HR.';stopCamera();}
+    }finally{if(revision===cameraRevision&&!cameraOpen)cameraOpening=false;}
+  }
   function capture(){if(!video?.videoWidth)return;const canvas=document.createElement('canvas');const scale=Math.min(1,960/Math.max(video.videoWidth,video.videoHeight));canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const context=canvas.getContext('2d');if(!context)return;context.drawImage(video,0,0,canvas.width,canvas.height);preview=canvas.toDataURL('image/jpeg',0.9);image=preview.split(',')[1];capturedAt=new Date().toISOString();stopCamera();}
   async function enroll(){busy=true;message='';error=false;try{await api({action:'enroll',consent,image,capturedAt});image='';preview='';consent=false;message='Foto dikirim. HR lain perlu memeriksa kecocokan identitas sebelum absensi wajah dapat digunakan.';await refresh();}catch(e){error=true;message=e instanceof Error?e.message:'Foto belum dapat dikirim.';}finally{busy=false;}}
   async function review(reference:Reference,decision:string){busy=true;message='';error=false;try{await api({action:'review',referenceId:reference.id,decision,reason:notes[reference.id]??''});message='Tinjauan referensi tersimpan.';await refresh();}catch(e){error=true;message=e instanceof Error?e.message:'Tinjauan belum tersimpan.';}finally{busy=false;}}
   async function withdraw(){busy=true;message='';error=false;try{await api({action:'withdraw'});stopCamera();preview='';image='';consent=false;message='Persetujuan dicabut dan ciri wajah dihapus. Penghapusan foto diproses segera dan dicoba ulang jika koneksi penyimpanan bermasalah. Hubungi HR untuk pencatatan manual bila diperlukan.';await refresh();}catch(e){error=true;message=e instanceof Error?e.message:'Pencabutan belum tersimpan.';}finally{busy=false;}}
-  onMount(()=>{void refresh();const channel=supabase?.channel(`biometric-reference-${$app.user?.id}`).on('postgres_changes',{event:'*',schema:'public',table:'biometric_references'},()=>{void refresh();}).subscribe();return()=>{if(channel&&supabase)void supabase.removeChannel(channel);};});onDestroy(stopCamera);
+  onMount(()=>{cameraDestroyed=false;void refresh();const channel=supabase?.channel(`biometric-reference-${$app.user?.id}`).on('postgres_changes',{event:'*',schema:'public',table:'biometric_references'},()=>{void refresh();}).subscribe();return()=>{if(channel&&supabase)void supabase.removeChannel(channel);};});onDestroy(()=>{cameraDestroyed=true;stopCamera();});
 </script>
 
 <svelte:head><title>Verifikasi wajah · HR Rajaklana</title></svelte:head>
@@ -40,7 +57,7 @@
     <label class="consent"><input type="checkbox" bind:checked={consent} disabled={busy||$app.mode!=='live'}/><span>Saya menyetujui penggunaan foto referensi dan ciri wajah untuk verifikasi absensi sesuai penjelasan di atas.</span></label>
     {#if cameraOpen}<div class="camera"><video bind:this={video} autoplay playsinline muted aria-label="Kamera foto referensi"></video><SelfieGuide/></div><p class="subtle">Hadapkan wajah ke kamera. Pastikan hanya satu wajah, cahaya cukup, dan kepala tegak.</p><div class="buttons"><button class="btn btn-primary" on:click={capture}>Ambil foto</button><button class="btn btn-secondary" on:click={stopCamera}>Tutup kamera</button></div>
     {:else if preview}<img class="preview" src={preview} alt="Pratinjau foto referensi Anda"/><div class="buttons"><button class="btn btn-primary" disabled={busy||!consent} on:click={enroll}>{busy?'Memeriksa foto…':'Kirim untuk ditinjau'}</button><button class="btn btn-secondary" disabled={busy} on:click={startCamera}>Foto ulang</button></div>
-    {:else}<button class="btn btn-primary" disabled={busy||!consent||own.some(r=>r.status==='pending')||$app.mode!=='live'} on:click={startCamera}><Icon name="camera" size={18}/> Buka kamera depan</button>{/if}
+      {:else}<button class="btn btn-primary" disabled={busy||cameraOpening||!consent||own.some(r=>r.status==='pending')||$app.mode!=='live'} on:click={startCamera}><Icon name="camera" size={18}/> {cameraOpening?'Membuka kamera…':'Buka kamera depan'}</button>{/if}
     {#if own.some(r=>['pending','approved'].includes(r.status))}<button class="btn btn-secondary withdraw" disabled={busy} on:click={withdraw}>Cabut persetujuan dan hapus referensi</button>{/if}
   </section>
   <section class="panel"><h2>Cara menggunakan</h2><ol><li>Centang persetujuan dan ambil foto dari kamera depan.</li><li>HR lain memeriksa foto dengan identitas karyawan.</li><li>Setelah disetujui, selfie clock in dibandingkan dengan referensi di server.</li><li>Jika wajah tidak terdeteksi atau belum cocok, ambil ulang dengan pencahayaan cukup. Hubungi HR jika kendala berlanjut.</li></ol><p class="subtle">Jam hadir tetap dicatat oleh server saat clock in berhasil. Wajah, GPS, shift, dan selfie harus lolos pemeriksaan; tautan verifikasi berlaku singkat dan hanya dapat digunakan sekali.</p></section>

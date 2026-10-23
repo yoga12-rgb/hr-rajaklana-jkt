@@ -195,9 +195,20 @@ export function resolveCashierRosterDraftAttempt(
 }
 
 type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-export function writeCashierRosterDraft(storage: DraftStorage, key: string, draft: CashierRosterDraft): void {
-  if (!Object.keys(draft.drafts).length && !draft.reason.trim() && !draft.pendingAttempt && !draft.legacyAttemptNeedsReview) storage.removeItem(key);
-  else storage.setItem(key, serializeCashierRosterDraft(draft));
+export function cashierRosterDraftStorageSnapshot(draft: CashierRosterDraft): string | null {
+  const empty = !Object.keys(draft.drafts).length && !draft.reason.trim() && !draft.pendingAttempt && !draft.legacyAttemptNeedsReview;
+  return empty ? null : serializeCashierRosterDraft(draft);
+}
+
+export function writeCashierRosterDraft(storage: DraftStorage, key: string, draft: CashierRosterDraft, expected: string | null): boolean {
+  // localStorage has no compare-and-swap operation. Comparing the last value
+  // observed by this tab before a write prevents the common stale-tab overwrite
+  // and delete case. The caller retains the latest record when this check fails.
+  if (storage.getItem(key) !== expected) return false;
+  const expectedAfterWrite = cashierRosterDraftStorageSnapshot(draft);
+  if (expectedAfterWrite === null) storage.removeItem(key);
+  else storage.setItem(key, expectedAfterWrite);
+  return storage.getItem(key) === expectedAfterWrite;
 }
 
 type DraftSettlement = { storageKey: string; attempt: CashierRosterSaveAttempt; outcome: CashierRosterAttemptOutcome; previousDraft: CashierRosterDraft; draft: CashierRosterDraft };
@@ -213,14 +224,15 @@ export function settleCashierRosterDraftAttempt(
   outcome: CashierRosterAttemptOutcome, activeDraft?: CashierRosterDraft
 ): boolean {
   try {
-    const persisted = parseCashierRosterDraft(storage.getItem(storageKey));
+    const persistedSnapshot = storage.getItem(storageKey);
+    const persisted = parseCashierRosterDraft(persistedSnapshot);
     if (!persisted || !cashierRosterAttemptsEqual(persisted.pendingAttempt, attempt)) return false;
     // A changed record may belong to a remount or another tab. An unpublished
     // in-memory edit must also survive; keep recovery until it is persisted.
     if (activeDraft && serializeCashierRosterDraft(activeDraft) !== serializeCashierRosterDraft(persisted)) return false;
     const draft = resolveCashierRosterDraftAttempt(persisted, attempt, outcome);
     if (!draft) return false;
-    writeCashierRosterDraft(storage, storageKey, draft);
+    if (!writeCashierRosterDraft(storage, storageKey, draft, persistedSnapshot)) return false;
     // A remounted planner in the same window does not receive a native storage event.
     for (const listener of settlementListeners) {
       try { listener({ storageKey, attempt, outcome, previousDraft: persisted, draft }); } catch { /* Durable settlement is already complete. */ }

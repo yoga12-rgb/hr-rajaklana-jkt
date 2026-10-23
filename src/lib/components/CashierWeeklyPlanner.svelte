@@ -1,12 +1,12 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { app, actions, isCashier } from '#lib/state/app';
   import type { CashierRosterChange } from '#lib/types';
-  import { cashierRosterAttemptsEqual, cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements, writeCashierRosterDraft, type CashierRosterAttemptOutcome, type CashierRosterBaseline, type CashierRosterDraft, type CashierRosterDraftCell, type CashierRosterDraftEntry, type CashierRosterSaveAttempt } from '#lib/cashier-spv-drafts';
-  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
+  import { cashierRosterAttemptsEqual, cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, cashierRosterDraftStorageSnapshot, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, serializeCashierRosterDraft, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements, writeCashierRosterDraft, type CashierRosterAttemptOutcome, type CashierRosterBaseline, type CashierRosterDraft, type CashierRosterDraftCell, type CashierRosterDraftEntry, type CashierRosterSaveAttempt } from '#lib/cashier-spv-drafts';
+  import { cashierRosterSaveErrorMessage, cashierRosterSaveOutcomeIsDefiniteBaselineConflict, cashierRosterSaveOutcomeIsDefiniteLeaveConflict, cashierRosterSaveOutcomeIsUncertain } from '../cashier-roster-save-error';
   import { reconcileUncertainCashierRosterSave } from '../cashier-roster-reconcile';
   import { addWorkDays, isValidWorkDate, previewPreviousWeekCopy, startOfWorkWeek, validateRosterBatch, workWeekDates, workWeekLabel } from '#lib/cashier-spv';
   import { todayJakarta, dateLabel } from './format';
@@ -21,7 +21,8 @@
   let weekStart = requestedWeekFromSearch(page.url.search) ?? startOfWorkWeek(todayJakarta()), drafts: Record<string, Draft> = {}, reason = '', message = '', failed = false, saving = false;
   let copyPreview: ReturnType<typeof previewPreviousWeekCopy> | null = null, copySkippedDrafts = 0;
   let pendingAttempt: CashierRosterSaveAttempt | null = null, legacyAttemptNeedsReview = false;
-  let activeDraftStorageKey = '', draftStorageWarning = false;
+  let activeDraftStorageKey = '', draftStorageWarning = false, draftStorageConflict = false;
+  let observedDraftStorageKey = '', observedDraftSnapshot: string | null = null;
   let scopeGeneration = 0, accountGeneration = 0, destroyed = false, accountId: string | undefined;
   type SaveOperation = { accountId: string; accountGeneration: number; storageKey: string; weekStart: string; generation: number };
   let activeSave: SaveOperation | null = null;
@@ -40,10 +41,28 @@
     try {
       // Never replace unpublished edits or another tab's newer snapshot.
       if (JSON.stringify(currentDraft()) !== JSON.stringify(event.previousDraft)) { draftStorageWarning = true; return; }
-      applyDraft(resolved); draftStorageWarning = false;
+      applyDraft(resolved);
+      observedDraftStorageKey = event.storageKey;
+      observedDraftSnapshot = cashierRosterDraftStorageSnapshot(resolved);
+      draftStorageWarning = false; draftStorageConflict = false;
     } catch { draftStorageWarning = true; }
   });
   onDestroy(() => { destroyed = true; unsubscribeAccount(); unsubscribeSettlements(); });
+  function emptyDraft(): CashierRosterDraft { return { drafts: {}, reason: '', pendingAttempt: null, legacyAttemptNeedsReview: false }; }
+  function matchesSnapshot(snapshot: string | null): boolean {
+    const saved = parseCashierRosterDraft(snapshot);
+    return serializeCashierRosterDraft(currentDraft()) === serializeCashierRosterDraft(saved ?? emptyDraft());
+  }
+  function onDraftStorage(event: StorageEvent) {
+    if (event.key !== activeDraftStorageKey || !activeDraftStorageKey || observedDraftStorageKey !== activeDraftStorageKey) return;
+    if (!matchesSnapshot(event.oldValue)) { draftStorageConflict = true; draftStorageWarning = true; return; }
+    const latest = parseCashierRosterDraft(event.newValue);
+    if (event.newValue && !latest) { draftStorageConflict = true; draftStorageWarning = true; return; }
+    applyDraft(latest ?? emptyDraft());
+    observedDraftSnapshot = event.newValue;
+    draftStorageConflict = false; draftStorageWarning = false;
+  }
+  onMount(() => { window.addEventListener('storage', onDraftStorage); return () => window.removeEventListener('storage', onDraftStorage); });
   let wantedDraftStorageKey = '';
   $: wantedDraftStorageKey = $app.user?.id ? cashierRosterDraftStorageKey($app.user.id, weekStart) : '';
   $: if (wantedDraftStorageKey !== activeDraftStorageKey) activateDraftKey(wantedDraftStorageKey);
@@ -51,8 +70,15 @@
   function persistDraft(storageKey = activeDraftStorageKey): boolean {
     if (!storageKey) { draftStorageWarning = true; return false; }
     try {
-      writeCashierRosterDraft(localStorage, storageKey, currentDraft());
+      const expected = storageKey === observedDraftStorageKey ? observedDraftSnapshot : null;
+      const draft = currentDraft(), writtenSnapshot = cashierRosterDraftStorageSnapshot(draft);
+      if (!writeCashierRosterDraft(localStorage, storageKey, draft, expected)) {
+        draftStorageWarning = true; draftStorageConflict = true; return false;
+      }
+      observedDraftStorageKey = storageKey;
+      observedDraftSnapshot = writtenSnapshot;
       draftStorageWarning = false;
+      draftStorageConflict = false;
       return true;
     } catch { draftStorageWarning = true; return false; }
   }
@@ -61,17 +87,24 @@
     activeDraftStorageKey = nextKey;
     scopeGeneration++; activeSave = null; saving = false; message = ''; failed = false;
     copyPreview = null; copySkippedDrafts = 0;
-    if (!nextKey) { drafts = {}; reason = ''; pendingAttempt = null; legacyAttemptNeedsReview = false; draftStorageWarning = false; return; }
+    if (!nextKey) { drafts = {}; reason = ''; pendingAttempt = null; legacyAttemptNeedsReview = false; observedDraftStorageKey = ''; observedDraftSnapshot = null; draftStorageWarning = false; draftStorageConflict = false; return; }
     try {
-      const saved = parseCashierRosterDraft(localStorage.getItem(nextKey));
-      drafts = saved?.drafts ?? {}; reason = saved?.reason ?? '';
-      pendingAttempt = saved?.pendingAttempt ?? null; legacyAttemptNeedsReview = saved?.legacyAttemptNeedsReview ?? false;
-      draftStorageWarning = false;
+      const raw = localStorage.getItem(nextKey), saved = parseCashierRosterDraft(raw);
+      observedDraftStorageKey = nextKey; observedDraftSnapshot = raw;
+      applyDraft(saved ?? emptyDraft());
+      draftStorageWarning = false; draftStorageConflict = false;
     } catch { drafts = {}; reason = ''; pendingAttempt = null; legacyAttemptNeedsReview = false; draftStorageWarning = true; }
   }
   afterNavigate(() => {
     const nextWeek = requestedWeekFromSearch(window.location.search);
-    if (nextWeek && nextWeek !== weekStart) { persistDraft(); weekStart = nextWeek; copyPreview = null; }
+    if (nextWeek && nextWeek !== weekStart) {
+      if (!persistDraft()) {
+        const url = new URL(window.location.href); url.searchParams.set('week', weekStart);
+        void goto(url, { state: page.state, shallow: true, replace: true });
+        return;
+      }
+      weekStart = nextWeek; copyPreview = null;
+    }
   });
   $: days = workWeekDates(weekStart);
   $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
@@ -237,13 +270,22 @@
         } else if (canShowResult(operation)) {
           message = 'Server menolak percobaan karena jadwal berubah, tetapi jadwal terbaru belum dapat dipastikan. Percobaan lama tetap tersimpan; coba ulangi setelah koneksi pulih.';
         }
+      } else if (attempt && cashierRosterSaveOutcomeIsDefiniteLeaveConflict(error)) {
+        if (!sameAccount(operation)) return;
+        const settled = settleOperation(operation, attempt, 'rejected');
+        if (canShowResult(operation) && settled) {
+          message = 'Server memastikan jadwal lama tidak tersimpan karena cuti sehari penuh sudah disetujui. Draft Anda tetap ada; ubah shift yang berbenturan lalu simpan sebagai percobaan baru.';
+        } else if (canShowResult(operation) && settled === false) {
+          message = 'Server memastikan jadwal lama tidak tersimpan, tetapi catatan pemulihan perangkat belum dapat diperbarui. Percobaan lama tetap ditahan sampai penyimpanan perangkat tersedia.';
+        }
       } else if (attempt && !replayingPersistedAttempt && !cashierRosterSaveOutcomeIsUncertain(error)) { settleOperation(operation, attempt, 'rejected'); }
     }
     finally { if (activeSave === operation) { saving = false; activeSave = null; } }
   }
   async function retryPendingAttempt() { await save(); }
   function selectWeek(nextWeek: string) {
-    persistDraft(); weekStart = nextWeek;
+    if (!persistDraft()) return;
+    weekStart = nextWeek;
     const url = new URL(window.location.href); url.searchParams.set('week', nextWeek);
     void goto(url, { state: page.state, shallow: true, replace: true });
   }
@@ -255,9 +297,9 @@
   <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
   <Feedback {message} error={failed}/>
   <p class="notice">Jadwal lampau hanya dapat dilihat. Libur tetap adalah saran; jadwal tidak dibuat otomatis. Perubahan berbenturan, jadwal usang, atau tanggal dengan absensi akan ditolak sebelum disimpan.</p>
-  {#if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft dan kunci pemulihan. Jadwal tidak dikirim sampai penyimpanan perangkat kembali tersedia.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
+  {#if draftStorageConflict}<p class="draft-status draft-warning" role="alert">Draft minggu ini berubah di tab lain. Tab ini tidak menimpa data yang lebih baru dan perpindahan minggu ditahan. Muat ulang halaman untuk membuka draft tersimpan terbaru; perubahan tab ini yang belum tersimpan tetap tampil sampai dimuat ulang.</p>{:else if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft dan kunci pemulihan. Jadwal tidak dikirim sampai penyimpanan perangkat kembali tersedia.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
   {#if legacyAttemptNeedsReview}<section class="draft-review" role="alert"><strong>Draft lama membawa percobaan simpan yang tidak dapat dipastikan.</strong><p>Periksa jadwal terbaru dan bandingkan dengan draft sebelum mengizinkan penyimpanan baru. Kunci percobaan lama tidak dapat dipulihkan secara aman.</p><button class="btn btn-secondary" type="button" disabled={saving} on:click={acknowledgeLegacyAttemptAfterReview}>Saya sudah memeriksa status jadwal di server</button></section>{/if}
-  {#if pendingAttempt}<section class="pending-attempt" role="status"><strong>Ada percobaan simpan sebelumnya yang belum dipastikan</strong><p>{pendingAttempt.changes.length} perubahan dari minggu {dateLabel(pendingAttempt.weekStart)} akan dikirim ulang dengan payload dan kunci yang sama. Draft baru tetap tersimpan lokal sampai percobaan ini selesai.</p><button class="btn btn-secondary" type="button" disabled={saving} on:click={retryPendingAttempt}>{saving ? 'Memeriksa hasil…' : 'Ulangi percobaan simpan sebelumnya'}</button></section>{/if}
+  {#if pendingAttempt}<section class="pending-attempt" role="status"><strong>Ada percobaan simpan sebelumnya yang belum dipastikan</strong><p>{pendingAttempt.changes.length} perubahan dari minggu {dateLabel(pendingAttempt.weekStart)} akan dikirim ulang dengan payload dan kunci yang sama. Draft baru tetap tersimpan lokal sampai percobaan ini selesai.</p><button class="btn btn-secondary" type="button" disabled={saving || draftStorageWarning} on:click={retryPendingAttempt}>{saving ? 'Memeriksa hasil…' : 'Ulangi percobaan simpan sebelumnya'}</button></section>{/if}
   {#if reviewEntries.length}<section class="draft-review" aria-labelledby="draft-review-title"><strong id="draft-review-title">Tinjau {reviewEntries.length} sel sebelum menyimpan</strong><p>Perubahan dari sesi lain atau draft lama perlu ditinjau satu per satu. Menyentuh sel lain tidak menghapus konflik.</p>{#each reviewEntries as item (item.key)}{@const employee = cashiers.find(person => person.id === item.employeeId)}<article class="review-cell"><div><strong>{employee?.fullName ?? 'Kasir'} · {dateLabel(item.workDate)}</strong><span>Draft Anda: {item.draft.shift ? `${shiftName(item.draft.shift)} · ${$app.outlets.find(outlet => outlet.id === item.draft.outletId)?.name ?? 'Outlet tidak dikenal'}` : 'Belum ditugaskan'}</span><span>Jadwal terbaru: {item.current.status === 'active' ? `${shiftName(item.current.shift)} · ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'Outlet tidak dikenal'}` : item.current.status === 'cancelled' ? `Dibatalkan · ${shiftName(item.current.shift)}` : `Belum ditugaskan · outlet utama ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'belum diatur'}`}</span></div><div class="review-actions"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'server')}>Gunakan jadwal terbaru</button><button class="btn btn-primary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'reapply')}>Terapkan kembali draft saya</button></div></article>{/each}</section>{/if}
   <div class="copy-tools"><button class="btn btn-secondary" type="button" disabled={saving} on:click={showCopyPreview}>Pratinjau salin minggu sebelumnya</button>{#if copyPreview}<div class="copy-summary"><strong>Salin {copyPreview.sourceWeek} → {copyPreview.targetWeek}</strong><span>{copyPreview.changes.length} sel baru · {copyPreview.skipped} target sudah terisi{copyPreview.conflicts.length ? ` · ${copyPreview.conflicts.length} perlu diperiksa` : ''}{copySkippedDrafts ? ` · ${copySkippedDrafts} draft lokal dilewati` : ''}</span>{#if copyPreview.conflicts.length}<ul>{#each copyPreview.conflicts.slice(0,5) as conflict}<li>{conflict}</li>{/each}</ul>{/if}{#if copyPreview.changes.length}<button class="btn btn-primary" type="button" disabled={saving} on:click={applyCopyPreview}>Terapkan sel kosong ke grid</button>{/if}</div>{/if}</div>
   {#if cashiers.length}
@@ -271,7 +313,7 @@
       </td>{/each}</tr>{/each}
     </tbody></table></div>
   {:else}<p class="empty">Belum ada kasir aktif untuk dijadwalkan.</p>{/if}
-  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} disabled={saving} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan draft</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus ditinjau</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}{#if !pendingAttempt}<button class="btn btn-primary" type="button" disabled={saving || !changes.length || reason.trim().length < 5 || conflicts.length > 0 || legacyAttemptNeedsReview} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button>{/if}</div></div>
+  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} disabled={saving} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan draft</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus ditinjau</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}{#if !pendingAttempt}<button class="btn btn-primary" type="button" disabled={saving || draftStorageWarning || !changes.length || reason.trim().length < 5 || conflicts.length > 0 || legacyAttemptNeedsReview} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button>{/if}</div></div>
   {#if reason.trim().length > 0 && reason.trim().length < 5}<p class="validation-hint">Alasan perubahan minimal 5 karakter.</p>{/if}
   {#if warnings.length}<ul class="warnings">{#each [...new Set(warnings)].slice(0,6) as warning}<li>{warning}</li>{/each}</ul>{/if}
 

@@ -423,14 +423,24 @@ export const actions = {
     if (input.id === user().id && JSON.stringify([...(input.roles ?? [])].sort()) !== JSON.stringify([...user().roles].sort())) throw new Error('Perubahan hak akses sendiri harus dilakukan admin lain.');
     if (configured) {
       const row = { full_name: input.fullName.trim(), whatsapp: input.phone, department_id: input.departmentId, position_id: input.positionId, outlet_id: input.outletId, approver_employee_id: input.managerId || null, starts_on: input.joinDate, approval_mode: input.approvalMode, status: input.status, can_middle_shift: input.canMiddleShift, can_clock: s.positions.find(p => p.id === input.positionId)?.isCashier ?? false, weekly_off_days: input.weeklyOffDays ?? [], birthday: input.birthDate || null, gender: input.gender || 'unspecified', address: input.address ?? '', emergency_name: input.emergencyName ?? '', emergency_phone: input.emergencyPhone ?? '', ends_on: input.exitDate || null, exit_reason: input.exitReason || null };
-      const saved = await rpc('hr_save_employee', { p_id: input.id ?? null, p_employee: row, p_reason: input.exitReason || 'Pembaruan data karyawan' });
       const roles = [...new Set(['employee', ...(input.roles ?? [])])];
-      if (!before || JSON.stringify([...before.roles].sort()) !== JSON.stringify([...roles].sort())) await rpc('hr_set_roles', { p_employee_id: saved.id, p_roles: roles });
+      await rpc('hr_save_employee_with_roles', { p_id: input.id ?? null, p_employee: row, p_roles: roles,
+        p_reason: input.exitReason || 'Pembaruan data karyawan' });
       await refresh(); return;
     }
-    const employeeId = input.id ?? id(); commit(state => {
+    const employeeId = input.id ?? id();
+    const establishedDemoAccounts: Record<string, boolean> = JSON.parse(localStorage.getItem('rk-demo-established-accounts') ?? '{}');
+    const reactivatingDemoAccount = before?.status === 'inactive' && input.status === 'active'
+      && (establishedDemoAccounts[employeeId] === true || !!before.authUserId);
+    // Persist established identity first so a reload after deactivation can still
+    // recover seeded accounts without changing their Auth/draft namespace.
+    if (input.status === 'inactive' && (before?.accountStatus === 'active' || before?.authUserId)) {
+      establishedDemoAccounts[employeeId] = true;
+      localStorage.setItem('rk-demo-established-accounts', JSON.stringify(establishedDemoAccounts));
+    }
+    commit(state => {
       const previousFollowups = structuredClone(state.spvFollowups ?? []);
-      const employee: Employee = { ...initialDemo().employees[0], ...input, id: employeeId, roles: [...new Set<Role>(['employee', ...(input.roles ?? [])])], employeeNumber: before?.employeeNumber ?? `RK${String(Math.max(0, ...state.employees.map(e => Number(e.employeeNumber.slice(2)))) + 1).padStart(6, '0')}`, accountStatus: input.status === 'inactive' ? 'disabled' : before?.accountStatus ?? 'not_invited' };
+      const employee: Employee = { ...initialDemo().employees[0], ...input, id: employeeId, roles: [...new Set<Role>(['employee', ...(input.roles ?? [])])], employeeNumber: before?.employeeNumber ?? `RK${String(Math.max(0, ...state.employees.map(e => Number(e.employeeNumber.slice(2)))) + 1).padStart(6, '0')}`, accountStatus: input.status === 'inactive' ? 'disabled' : reactivatingDemoAccount ? 'active' : before?.accountStatus ?? 'not_invited' };
       const index = state.employees.findIndex(e => e.id === employeeId); if (index < 0) state.employees.push(employee); else state.employees[index] = employee;
       syncUnassignedRosterFollowups(state, employeeId, null, state.user?.id ?? '');
       auditDemoFollowupContextChanges(state, previousFollowups, state.user?.id ?? '');

@@ -93,11 +93,12 @@ describe('Undangan dan aktivasi akun demo lokal', () => {
     expect(account()).toMatchObject({ status: 'inactive', accountStatus: 'disabled' });
     await expect(actions.inspectToken(oldToken)).rejects.toThrow();
     await actions.saveEmployee({ ...account(), status: 'active' });
-    expect(account()).toMatchObject({ status: 'active', accountStatus: 'disabled' });
+    const reactivatedStatus = purpose === 'reset' ? 'active' : 'disabled';
+    expect(account()).toMatchObject({ status: 'active', accountStatus: reactivatedStatus });
 
     await expect(actions.inspectToken(oldToken)).rejects.toThrow('Tautan tidak berlaku');
     await expect(actions.activate(oldToken, 'KataSandiLamaTidakBoleh123!', purpose)).rejects.toThrow('Tautan tidak berlaku');
-    expect(account().accountStatus).toBe('disabled');
+    expect(account().accountStatus).toBe(reactivatedStatus);
     expect(localStorage.getItem('rk-demo-passwords')).toBe(previousPasswords);
     expect(await actions.inspectToken(otherToken)).toMatchObject({ purpose: 'reset', employee_number: 'RK000006' });
 
@@ -108,6 +109,48 @@ describe('Undangan dan aktivasi akun demo lokal', () => {
     await actions.logout();
     await actions.login('RK000004', 'KataSandiBaru123!');
     expect(get(app).user?.id).toBe(employeeId);
+  });
+
+  it('memulihkan akun aktif dengan identitas dan hak akses yang sama setelah nonaktif, reload, lalu reaktivasi', async () => {
+    const activation = tokenFrom((await actions.issueLink(employeeId, 'activate')).url);
+    await actions.activate(activation, password);
+    app.update(state => ({ ...state, employees: state.employees.map(employee => employee.id === employeeId
+      ? { ...employee, authUserId: 'auth-demo-existing', roles: ['employee', 'head_baker'] } : employee) }));
+    const before = structuredClone(account());
+    const previousPasswords = localStorage.getItem('rk-demo-passwords');
+    const oldReset = tokenFrom((await actions.issueLink(employeeId, 'reset')).url);
+
+    await actions.saveEmployee({ ...account(), status: 'inactive', exitDate: '2026-10-23', exitReason: 'Uji pemulihan akun' });
+    await expect(actions.login(before.employeeNumber, password)).rejects.toThrow('Nomor karyawan atau kata sandi tidak sesuai');
+    app.set(JSON.parse(localStorage.getItem('rajaklana-hr-demo-v1')!));
+    await actions.saveEmployee({ ...account(), status: 'active', exitDate: '', exitReason: '' });
+
+    expect(account()).toMatchObject({ id: before.id, employeeNumber: before.employeeNumber, authUserId: before.authUserId,
+      status: 'active', accountStatus: 'active', roles: before.roles });
+    expect(localStorage.getItem('rk-demo-passwords')).toBe(previousPasswords);
+    await expect(actions.inspectToken(oldReset)).rejects.toThrow('Tautan tidak berlaku');
+    const reset = tokenFrom((await actions.issueLink(employeeId, 'reset')).url);
+    expect(await actions.inspectToken(reset)).toMatchObject({ purpose: 'reset', employee_number: before.employeeNumber });
+    await actions.activate(reset, 'PulihDenganIdentitasSama123!', 'reset');
+    await actions.logout();
+    await actions.login(before.employeeNumber, 'PulihDenganIdentitasSama123!');
+    expect(get(app).user).toMatchObject({ id: before.id, authUserId: before.authUserId, roles: before.roles });
+  });
+
+  it('memulihkan akun contoh yang pernah aktif tanpa membuat identitas Auth baru atau membuka akun yang belum aktif', async () => {
+    const seeded = get(app).employees.find(employee => employee.id === 'employee-6')!;
+    await actions.saveEmployee({ ...seeded, status: 'inactive', exitDate: '2026-10-23', exitReason: 'Uji akun contoh' });
+    app.set(JSON.parse(localStorage.getItem('rajaklana-hr-demo-v1')!));
+    const inactive = get(app).employees.find(employee => employee.id === seeded.id)!;
+    await actions.saveEmployee({ ...inactive, status: 'active', exitDate: '', exitReason: '' });
+    const restored = get(app).employees.find(employee => employee.id === seeded.id)!;
+    expect(restored).toMatchObject({ id: seeded.id, employeeNumber: seeded.employeeNumber, accountStatus: 'active', roles: seeded.roles });
+    expect(restored.authUserId).toBeUndefined();
+    await actions.logout();
+    await actions.login(seeded.employeeNumber, 'DemoRajaklana123!');
+    expect(get(app).user?.id).toBe(seeded.id);
+    expect(account().accountStatus).toBe('not_invited');
+    await expect(actions.login(account().employeeNumber, 'DemoRajaklana123!')).rejects.toThrow('Nomor karyawan atau kata sandi tidak sesuai');
   });
 
   it('menolak tautan yang merujuk karyawan yang tidak lagi tersedia', async () => {

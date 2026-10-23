@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, serializeCashierRosterDraft, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements } from './cashier-spv-drafts';
+import { cashierRosterBaseline, cashierRosterBaselinesEqual, cashierRosterDraftStorageKey, cashierRosterDraftStorageSnapshot, createCashierRosterAttempt, parseCashierRosterDraft, resolveCashierRosterDraftAttempt, serializeCashierRosterDraft, settleCashierRosterDraftAttempt, subscribeCashierRosterDraftSettlements, writeCashierRosterDraft } from './cashier-spv-drafts';
 import type { CashierRosterDraft } from './cashier-spv-drafts';
 
 const assignment = (overrides: Record<string, unknown> = {}) => ({
@@ -103,6 +103,48 @@ describe('cashier roster draft persistence', () => {
     expect(first.changes[0].expectedUpdatedAt).toBe('2026-10-20T03:00:00.000Z');
   });
 
+  it('refuses a stale tab write or delete when another tab has published a pending replay', () => {
+    const key = cashierRosterDraftStorageKey('admin-a', '2026-10-26');
+    const records = new Map<string, string>();
+    const storage = {
+      getItem: (name: string) => records.get(name) ?? null,
+      setItem: (name: string, value: string) => { records.set(name, value); },
+      removeItem: (name: string) => { records.delete(name); }
+    };
+    const staleTabSnapshot = storage.getItem(key);
+    const pending = createCashierRosterAttempt('2026-10-26', [change()], null, () => '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1');
+    const published = { drafts: {}, reason: 'Rotasi jadwal disetujui', pendingAttempt: pending, legacyAttemptNeedsReview: false };
+    expect(writeCashierRosterDraft(storage, key, published, null)).toBe(true);
+    const afterTabA = storage.getItem(key);
+
+    expect(writeCashierRosterDraft(storage, key, emptyRosterDraft(), staleTabSnapshot)).toBe(false);
+    expect(storage.getItem(key)).toBe(afterTabA);
+    expect(parseCashierRosterDraft(storage.getItem(key))?.pendingAttempt).toEqual(pending);
+  });
+
+  it('acknowledges only the exact written snapshot when another tab publishes before the next persist', () => {
+    const key = cashierRosterDraftStorageKey('admin-a', '2026-10-26');
+    const records = new Map<string, string>();
+    const storage = {
+      getItem: (name: string) => records.get(name) ?? null,
+      setItem: (name: string, value: string) => { records.set(name, value); },
+      removeItem: (name: string) => { records.delete(name); }
+    };
+    expect(cashierRosterDraftStorageSnapshot(emptyRosterDraft())).toBeNull();
+    const writtenDraft = { ...emptyRosterDraft(), reason: 'Alasan tab A' };
+    const acknowledgedSnapshot = cashierRosterDraftStorageSnapshot(writtenDraft);
+    expect(writeCashierRosterDraft(storage, key, writtenDraft, null)).toBe(true);
+    expect(records.get(key)).toBe(acknowledgedSnapshot);
+
+    const latest = { ...emptyRosterDraft(), reason: 'Alasan tab B',
+      pendingAttempt: createCashierRosterAttempt('2026-10-26', [change()], null, () => '1d1b5a7e-4dbf-4c93-9fc8-a015ae8440b1') };
+    const latestSnapshot = cashierRosterDraftStorageSnapshot(latest)!;
+    records.set(key, latestSnapshot);
+
+    expect(writeCashierRosterDraft(storage, key, emptyRosterDraft(), acknowledgedSnapshot)).toBe(false);
+    expect(records.get(key)).toBe(latestSnapshot);
+  });
+
   it.each([
     '{bad json',
     JSON.stringify({ version: 3, drafts: {}, reason: '', pendingAttempt: null, legacyAttemptNeedsReview: false }),
@@ -112,6 +154,10 @@ describe('cashier roster draft persistence', () => {
     expect(parseCashierRosterDraft(serialized)).toBeNull();
   });
 });
+
+function emptyRosterDraft(): CashierRosterDraft {
+  return { drafts: {}, reason: '', pendingAttempt: null, legacyAttemptNeedsReview: false };
+}
 
 describe('cashier roster attempt settlement across planner scopes', () => {
   const originKey = cashierRosterDraftStorageKey('admin-a', '2026-10-26');
@@ -251,6 +297,36 @@ describe('cashier roster attempt settlement across planner scopes', () => {
     expect(storage.removeItem).not.toHaveBeenCalled();
     expect(active.reason).toBe('Alasan yang belum berhasil disimpan');
     expect(active.pendingAttempt).toEqual(persisted.pendingAttempt);
+  });
+
+  it.each(['edits', 'pending'] as const)('does not authorize an older settlement with a newer %s snapshot read during the write guard', changed => {
+    const current = pendingDraft(), attempted = current.pendingAttempt!;
+    const latest = structuredClone(current);
+    if (changed === 'edits') {
+      latest.reason = 'Perubahan tab lain sesudah settlement membaca storage';
+      latest.drafts[cellKey].shift = 'middle';
+    } else {
+      latest.pendingAttempt = createCashierRosterAttempt('2026-10-26', [change({ shift: 'middle' })], null,
+        () => 'd131a6bb-a823-49ef-92c0-2b281d2b8c6f');
+    }
+    const raw = serializeCashierRosterDraft(current), latestRaw = serializeCashierRosterDraft(latest);
+    const { storage, records } = draftStorage(raw);
+    let reads = 0;
+    storage.getItem.mockImplementation(key => {
+      // Another renderer publishes after the snapshot used to calculate the
+      // outcome, but before the compare-before-write guard reads storage.
+      if (++reads === 2) records.set(originKey, latestRaw);
+      return records.get(key) ?? null;
+    });
+    const notified = vi.fn(), unsubscribe = subscribeCashierRosterDraftSettlements(notified);
+    try {
+      expect(settleCashierRosterDraftAttempt(storage, originKey, attempted, 'saved', current)).toBe(false);
+      expect(records.get(originKey)).toBe(latestRaw);
+      expect(parseCashierRosterDraft(records.get(originKey)!)).toEqual(latest);
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      expect(notified).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
   });
 
   it.each(['saved', 'rejected'] as const)('notifies remounted listeners only after the %s result is durable', outcome => {
