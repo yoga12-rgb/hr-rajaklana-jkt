@@ -75,7 +75,7 @@ Langkah berikutnya: SPV-01 sampai SPV-03 sebagai checkpoint Tahap A, lalu suite 
 
 ## Checkpoint implementasi 25 Oktober 2026 — m23 dan verifikasi lokal terbatas
 
-Status: **Database/static lokal dan deployment database Preview lulus untuk m23; Vercel/frontend, browser live E2E, hosted workflow, dan perangkat belum dibuktikan.**
+Status: **Database/static lokal, database Preview, serta deployment/HTTP smoke Vercel Preview lulus untuk m23; browser live E2E, workflow pengguna hosted, dan perangkat belum dibuktikan.**
 
 Checkpoint ini mencakup lima migration baru yang semuanya forward-only dan belum mengganti migration lama:
 
@@ -105,11 +105,14 @@ Checkpoint ini mencakup lima migration baru yang semuanya forward-only dan belum
 | Pemeriksaan | Hasil tercatat | Batas bukti |
 | --- | --- | --- |
 | `npm.cmd run check` | Lulus, 0 error/0 warning. | Pemeriksaan lokal; bukan deployment atau workflow hosted. |
+| `npm.cmd test -- --maxWorkers=1 --reporter=dot` | Lulus di luar sandbox Windows: **33 file, 433 tes**. | Sandbox awal menolak rename cache Vite (`EPERM`) sebelum test dimulai; hasil di luar sandbox adalah hasil valid. Bukan browser/hosted. |
+| `npm.cmd run build` | Lulus; build SSR, client, dan service worker selesai. | Artefak lokal, bukan bukti controller/offline atau deployment. |
 | `npm.cmd run test:database` | Lulus sampai m23, mencakup RLS/RPC/audit, revision/receipt konfigurasi, validasi recipient target, dan kelayakan replacement. | PGlite lokal; tidak menjalankan DDL/ubah data hosted. |
 | `node supabase/tests/followup-upgrade-compatibility.mjs` | Lulus untuk upgrade Preview **18→23** dan historis **13→23** dengan preflight historis sebelum migration lama. | Fixture lokal, bukan bukti target hosted. |
 | `preflight-supervisor-operational-hardening.sql` melalui harness upgrade | Duplikat pengajuan aktif direproduksi dan ditolak tanpa mutasi; setelah fixture bersih, preflight berulang lulus lalu m22 diterapkan. | Preflight m22 berbeda dari preflight historis 13-migration. |
 | `node supabase/deployment/verify-readiness-preview.test.mjs` | Lulus: probe dua kali, rollback equality, dan fail-closed fixture; probe sudah menargetkan migration 23. | Harness PGlite; bukan `db push` atau workflow pengguna Preview. |
-| Browser live E2E | **Belum dijalankan/dibuktikan untuk checkpoint m23.** | Jangan menggunakan bukti live-mock historis sebagai kelulusan m23; data/server yang diperlukan tidak tersedia pada checkpoint ini. |
+| Live-mock browser Operations/Planning | **2/2 lulus**: response-loss → reload → retry key/payload asli menghasilkan satu commit; conflict refresh eksternal mempertahankan edit lokal. | Browser lokal + REST mock; bukan Supabase/Vercel hosted, Realtime dua akun, atau perangkat. |
+| Browser live E2E hosted | **Belum dijalankan/dibuktikan untuk checkpoint m23.** | Bukti live-mock lokal di atas tidak dapat menggantikannya. |
 
 Gate database/static untuk m23 telah ditutup oleh suite di atas. Deployment database Preview di bawah menambah bukti schema/RPC hosted, tetapi bukan kelulusan frontend/browser: hasil `Ready` deployment atau tes yang di-skip tidak dapat menggantikan live E2E, alur login/action/Realtime hosted, atau pengujian perangkat.
 
@@ -132,12 +135,21 @@ Migration diterapkan secara forward-only dari history 18 ke 23. Connector manage
 - Semua perubahan tetap additive/forward-only. Tidak ada reset dan tidak ada data operasional atau riwayat audit yang dihapus untuk membuat deployment atau probe lulus.
 - Bukti ini hanya mencakup database target dan probe; **bukan** deploy Vercel/frontend, login browser, workflow hosted, Realtime dua sesi, atau perangkat/PWA.
 
+### Deployment Vercel Preview dan HTTP smoke — 25 Oktober 2026
+
+- Branch **`codex/preview`** pada commit **`3278545e00f06e4c9f2fb113ca8b195e998389e8`** telah dipush.
+- Target Vercel diverifikasi sebagai project **`hr-rajaklana/hr-rajaklana-jkt`** dengan project ID **`prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`**.
+- Deployment **`dpl_GimwcHFk2qAccs7bHnXfHDkL6Riq`** berstatus **READY**, target Preview, pada <https://hr-rajaklana-dtpbnload-hr-rajaklana.vercel.app>. Alias <https://hr-rajaklana-jkt-preview.vercel.app> dan alias Git `git-codex-preview` mengarah ke deployment Preview tersebut.
+- `vercel curl` yang terautentikasi menerima **HTTP 200** untuk `/login` dan `/service-worker.js`.
+
+Ini adalah bukti deploy/source dan HTTP smoke saja. HTTP 200 untuk script worker tidak membuktikan browser berhasil mendaftarkan worker, memperoleh controller setelah reload, bekerja offline, atau menangani update lintas versi. Bukti ini juga bukan login aplikasi, workflow pengguna, Realtime, atau uji perangkat.
+
 ### Risiko/limit yang masih terbuka
 
 - Browser live E2E untuk Operations/Planning/konfigurasi m23 belum tersedia sebagai bukti checkpoint ini; persist/reload/retry UI dan konflik dua tab tidak dinyatakan lulus dari hasil database.
-- Database Supabase Preview sudah berada pada history 18→23 yang tercatat di atas. Vercel/frontend, branch/source SHA, CI, dan alias belum diverifikasi untuk rilis ini.
-- Workflow hosted dua akun, source SHA/CI/deployment ID, dan alur Realtime hosted belum dibuktikan.
-- PVR-02/offline dan iPhone/iPad tetap **terbuka atas penundaan pengguna**. Tidak ada bukti perangkat nyata yang diklaim oleh checkpoint lokal ini.
+- Database Supabase Preview sudah berada pada history 18→23 dan deployment/HTTP smoke Vercel Preview telah tercatat di atas. CI serta alur aplikasi sesudah deployment belum menjadi bukti checkpoint ini.
+- Workflow login dua akun, tindakan aplikasi, Realtime hosted, dan browser live E2E belum dibuktikan.
+- PVR-02/offline, controller service worker, update lintas versi, dan iPhone/iPad tetap **terbuka**. HTTP 200 worker dari `vercel curl` tidak menutupnya.
 
 ## Status milestone
 
@@ -153,17 +165,17 @@ Migration diterapkan secara forward-only dari history 18 ke 23. Connector manage
 | SPV-07 | Lokal database/static lulus | Tukar/pengganti, cancel/expiry, replacement eligibility, dan replay diuji database; browser E2E belum dibuktikan. |
 | SPV-08 | Lokal database/static lulus | Interval/snapshot Middle/cakupan serta recovery tersedia; browser E2E belum dibuktikan. |
 | SPV-09 | Lokal terbatas | Ringkasan/drill-down tersedia; cross-period browser/hosted verification belum dilakukan. |
-| SPV-10 | Database Preview lulus terbatas | Upgrade/preflight/readiness m23 lulus secara lokal dan pada database Preview; browser E2E belum dibuktikan. |
-| SPV-11 | Dikerjakan | Migration database Preview selesai; Vercel/frontend, workflow hosted, dan handoff rilis belum dilakukan. |
+| SPV-10 | Preview terbatas lulus | Upgrade/preflight/readiness database serta Vercel deploy/HTTP smoke m23 lulus; browser E2E belum dibuktikan. |
+| SPV-11 | Dikerjakan | Database dan Vercel Preview selesai untuk deployment/smoke; workflow pengguna, Realtime, dan handoff rilis belum dilakukan. |
 | PVR-02/perangkat | Menunggu interaksi | Pengguna menunda uji offline/perangkat; status tetap terbuka. |
 
 ## Matriks bukti
 
 | Milestone | Implementasi lokal | Deployment Preview | Workflow hosted | Perangkat/PWA |
 | --- | --- | --- | --- | --- |
-| SPV-00 | Lulus: baseline dan suite awal di atas | Database 18→23 pada target terverifikasi | Belum dilakukan | Tertunda; PVR-02 terbuka |
-| SPV-01–03 | Database/static terbatas; browser E2E belum dibuktikan | Database migration saja; frontend belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
-| SPV-04–07 | Database/static lulus; browser E2E belum dibuktikan | Database migration saja; frontend belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
-| SPV-08–09 | Database/static terbatas; browser E2E belum dibuktikan | Database migration saja; frontend belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
-| SPV-10 | Database/static lulus: upgrade, preflight, dan readiness m23; browser E2E belum dibuktikan | Database 18→23 + preflight/readiness PASS; bukan Vercel deploy | Belum dilakukan | Tertunda; PVR-02 terbuka |
-| SPV-11 | Implementasi lokal belum lengkap | Database migration selesai; Vercel/frontend belum dilakukan | Belum dilakukan | Tertunda sampai pengguna tersedia |
+| SPV-00 | Lulus: baseline dan suite awal di atas | Database 18→23 dan Vercel deployment/HTTP smoke terverifikasi | Belum dilakukan | Tertunda; PVR-02 terbuka |
+| SPV-01–03 | Database/static terbatas; browser E2E belum dibuktikan | Database + deploy/HTTP smoke; frontend workflow belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
+| SPV-04–07 | Database/static lulus; browser E2E belum dibuktikan | Database + deploy/HTTP smoke; frontend workflow belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
+| SPV-08–09 | Database/static terbatas; browser E2E belum dibuktikan | Database + deploy/HTTP smoke; frontend workflow belum diverifikasi | Belum dilakukan | Tertunda; bukan gate lokal |
+| SPV-10 | Database/static lulus: upgrade, preflight, dan readiness m23; browser E2E belum dibuktikan | Database 18→23 + Vercel deployment/HTTP smoke; bukan workflow | Belum dilakukan | Tertunda; PVR-02 terbuka |
+| SPV-11 | Implementasi lokal belum lengkap | Database + Vercel deployment/HTTP smoke selesai; workflow belum dilakukan | Belum dilakukan | Tertunda sampai pengguna tersedia |
