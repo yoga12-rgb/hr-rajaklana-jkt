@@ -144,6 +144,18 @@ Migration diterapkan secara forward-only dari history 18 ke 23. Connector manage
 
 Ini adalah bukti deploy/source dan HTTP smoke saja. HTTP 200 untuk script worker tidak membuktikan browser berhasil mendaftarkan worker, memperoleh controller setelah reload, bekerja offline, atau menangani update lintas versi. Bukti ini juga bukan login aplikasi, workflow pengguna, Realtime, atau uji perangkat.
 
+### Penguatan dependency dan verifikasi PWA — 25 Oktober 2026
+
+Status: **lokal lulus; PWA hosted dan perangkat nyata tetap terbuka.**
+
+- Audit dependency menemukan pembaruan patch yang kompatibel lalu menaikkan `vite` dari `8.3.2` ke `8.3.5` serta `vitest` dari `4.1.11` ke `4.1.12` (termasuk `@vitest/mocker`). Tidak digunakan `npm audit fix --force` atau pembaruan mayor.
+- Sesudah pembaruan, `npm.cmd audit` dan `npm.cmd audit --omit=dev --audit-level=moderate` keduanya menghasilkan **0 kerentanan**.
+- Regresi lokal sesudah pembaruan lulus: `npm.cmd run check` (0 error/0 warning), `npm.cmd test -- --maxWorkers=1 --reporter=dot` (**33 file, 433 tes**), `npm.cmd run test:database` (fresh m1–m23, Preview 18→23, historis 13→23 dengan preflight), serta `npm.cmd run build` (SSR, client, dan service worker).
+- Uji browser pada build produksi lokal dengan `E2E_PWA=1` lulus **1/1**. Worker menjadi aktif/controller, manifest dan ikon diperiksa, cache hanya berisi shell publik (respons dinamis tidak ikut cache), dan navigasi tetap membuka shell saat koneksi disimulasikan offline. Percobaan awal dari sandbox terminal terisolasi berhenti sebelum request browser akibat localhost tidak dapat dijangkau lintas sandbox; rerun server preview dan browser pada konteks jaringan yang sama lulus. Ini bukan kegagalan assertion aplikasi.
+- Pemeriksaan browser hosted pada alias Preview memakai header OIDC sementara dari CLI dapat membuka `/login` dengan HTTP 200, tetapi bootstrap `navigator.serviceWorker.register('/service-worker.js', { type: 'module' })` ditolak dengan `SecurityError`; tidak ada registration atau controller. Header tersebut cukup untuk request halaman, tetapi tidak menjadi bukti bahwa fetch worker melewati Deployment Protection. Tidak ada token, kata sandi, atau data akun disimpan/dicetak.
+
+Dengan demikian, build dan kontrak PWA lokal tervalidasi, tetapi **PVR-02 tidak ditutup**: belum ada bukti worker/controller pada sesi browser pengguna hosted, offline/update lintas versi hosted, atau iPhone/iPad/PWA terpasang. Mengubah Deployment Protection atau membuka bypass publik tidak dilakukan karena itu keputusan keamanan di luar cakupan rilis ini.
+
 ### Risiko/limit yang masih terbuka
 
 - Browser live E2E untuk Operations/Planning/konfigurasi m23 belum tersedia sebagai bukti checkpoint ini; persist/reload/retry UI dan konflik dua tab tidak dinyatakan lulus dari hasil database.
@@ -167,7 +179,7 @@ Ini adalah bukti deploy/source dan HTTP smoke saja. HTTP 200 untuk script worker
 | SPV-09 | Lokal terbatas | Ringkasan/drill-down tersedia; cross-period browser/hosted verification belum dilakukan. |
 | SPV-10 | Preview terbatas lulus | Upgrade/preflight/readiness database serta Vercel deploy/HTTP smoke m23 lulus; browser E2E belum dibuktikan. |
 | SPV-11 | Dikerjakan | Database dan Vercel Preview selesai untuk deployment/smoke; workflow pengguna, Realtime, dan handoff rilis belum dilakukan. |
-| PVR-02/perangkat | Menunggu interaksi | Pengguna menunda uji offline/perangkat; status tetap terbuka. |
+| PVR-02/perangkat | Lokal browser lulus; hosted/perangkat terbuka | Build produksi lokal membuktikan worker, cache shell, dan offline. Browser hosted ber-header OIDC menerima `SecurityError` saat registrasi worker; pengguna masih menunda uji offline/perangkat nyata. |
 
 ## Matriks bukti
 
