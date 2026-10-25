@@ -34,7 +34,8 @@
       resolutionNote: resolutionDraft[id] ?? item.resolutionNote };
     busy = id; message = ''; failed = false;
     try {
-      await actions.updateSpvFollowup({ id, status, ...submitted });
+      await actions.updateSpvFollowup({ id, expectedRevision: item.revision, idempotencyKey: crypto.randomUUID(), status, ...submitted,
+        dueAt: item.dueAt, reason: submitted.ownerId !== item.ownerId ? 'Penetapan PIC melalui panel harian' : '' });
       // A later Realtime row becomes the source of truth after this save. Clear
       // only the values we sent, so edits typed while the request was pending survive.
       ownerDraft = clearSavedFollowupDraft(ownerDraft, id, submitted.ownerId);

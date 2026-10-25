@@ -29,6 +29,7 @@ export function syncUnassignedRosterFollowups(state: AppState, employeeId: strin
     followup.outletId = outletId;
     followup.updatedBy = actorId;
     followup.updatedAt = updatedAt;
+    followup.revision += 1;
     changed.push(followup);
   }
   return changed;
@@ -46,6 +47,7 @@ export function syncAssignmentFollowups(state: AppState, assignment: CashierAssi
     followup.shift = assignment.shift;
     followup.updatedBy = actorId;
     followup.updatedAt = updatedAt;
+    followup.revision += 1;
     changed.push(followup);
   }
   return changed;

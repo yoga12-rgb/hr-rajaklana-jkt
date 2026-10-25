@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { initialDemo } from './state/demo';
-import { cashierDayStatuses, operationalSignals, previewPreviousWeekCopy, staffingCoverage, startOfWorkWeek, validateRosterBatch, workWeekDates } from './cashier-spv';
+import { cashierDayStatuses, operationalSignals, previewPreviousWeekCopy, staffingCoverage, startOfWorkWeek, supervisorActionQueue, validateRosterBatch, workWeekDates } from './cashier-spv';
 
 const monday = '2027-01-04';
 const assignment = (id: string, employeeId: string, workDate: string, outletId: string, shift: 'morning' | 'afternoon' | 'middle' | 'off' = 'morning') => ({
@@ -123,5 +123,16 @@ describe('cashier SPV domain', () => {
     expect(statuses.find(row => row.employee.id === 'employee-3')?.status).toBe('off');
     expect(statuses.find(row => row.employee.id === 'employee-5')?.status).toBe('completed');
     expect(statuses.find(row => row.employee.id === 'employee-4')?.detail).toContain('Belum ada clock in');
+  });
+
+  it('puts an overdue case from yesterday ahead of today signals without duplicating its source', () => {
+    const state=initialDemo(),day='2026-10-18',created='2026-10-17T01:00:00.000Z';
+    state.cashierAssignments=[assignment('source','employee-4','2026-10-17','outlet-a')];
+    state.spvFollowups=[{id:'case-old',caseKey:'missing_clockin:source',issueType:'missing_clockin',sourceType:'assignment',sourceId:'source',
+      workDate:'2026-10-17',outletId:'outlet-a',employeeId:'employee-4',shift:'morning',ownerId:'employee-1',status:'in_progress',note:'Hubungi kasir',
+      resolutionNote:'',createdBy:'employee-1',updatedBy:'employee-1',createdAt:created,updatedAt:created,reopenedCount:0,revision:2,dueAt:'2026-10-17T03:00:00.000Z'}];
+    const queue=supervisorActionQueue(state,day,Date.parse('2026-10-18T12:00:00+07:00'));
+    expect(queue[0]).toMatchObject({key:'case:case-old',priority:0,persisted:true,workDate:'2026-10-17'});
+    expect(queue.filter(item=>item.key==='signal:missing_clockin:source')).toHaveLength(0);
   });
 });

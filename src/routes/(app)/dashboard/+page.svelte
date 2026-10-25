@@ -9,6 +9,7 @@
   import EmptyState from '#lib/components/EmptyState.svelte';
   import TeamReadiness from '#lib/components/TeamReadiness.svelte';
   import CashierSpvPanel from '#lib/components/CashierSpvPanel.svelte';
+  import { supervisorActionQueue } from '#lib/cashier-spv';
   import { dateLabel, timeLabel, initials, leaveTypeLabel } from '#lib/components/format';
   let now = Date.now();
   $: today = jakartaDate(new Date(now).toISOString());
@@ -20,6 +21,7 @@
   });
   const jakartaDate = (value: string) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
   $: admin = isAdmin($app.user ?? undefined);
+  $: supervisorActions = admin ? supervisorActionQueue($app,today,now) : [];
   $: cashier = isCashier($app.user ?? undefined);
   $: reviewer = isApprover($app.user);
   $: activeEmployees = $app.employees.filter((e) => e.status === 'active');
@@ -39,6 +41,8 @@
 </script>
 
 <PageHeading eyebrow="RAJAKLANA · JABODETABEK" title={`Halo, ${$app.user?.fullName.split(' ')[0] || 'tim'} 👋`} description="Hari yang baik dimulai dengan tim yang terhubung."><div class="today"><Icon name="calendar" size={17}/>{dateLabel(today, true)}</div></PageHeading>
+
+{#if admin}<section class="panel action-first" aria-labelledby="action-first-title"><div class="section-heading"><div><span class="action-eyebrow">TINDAKAN BERIKUTNYA</span><h2 id="action-first-title">Prioritas supervisor</h2><p>Kasus tersimpan lintas tanggal dipisahkan dari sinyal hari ini.</p></div><a href="/supervisor">Buka semua {supervisorActions.length}<Icon name="arrow-right" size={14}/></a></div>{#if supervisorActions.length}<div class="action-grid">{#each supervisorActions.slice(0,6) as item (item.key)}<a href={item.href} class="action-item" data-priority={item.priority}><span class="action-reason">{item.reason}</span><strong>{item.title.replaceAll('_',' ')}</strong><p>{item.detail}</p><small>{item.persisted ? `Kasus tersimpan · tanggal kerja ${dateLabel(item.workDate)}` : `Sinyal ${dateLabel(item.workDate)}`}</small></a>{/each}</div>{:else}<EmptyState icon="check" title="Tidak ada tindakan tersimpan" description="Periksa tanggal dan koneksi sebelum menyimpulkan semua kondisi aman."/>{/if}</section>{/if}
 
 <section class="welcome"><div class="welcome-content"><span class="welcome-label">{admin ? 'RUANG KERJA HR' : 'RUANG KERJA ANDA'}</span><h2>{admin ? 'Tim terkelola.\nOperasional lebih tenang.' : activeSession ? 'Terima kasih sudah hadir.\nSemangat bekerja hari ini.' : 'Semua kebutuhan kerja,\ndalam satu tempat.'}</h2><p>{admin ? 'Pantau kehadiran kasir, tangani pengajuan, dan jaga informasi tim tetap rapi.' : 'Catat kehadiran, ajukan cuti atau izin, dan pantau pembaruan tanpa repot.'}</p><a class="welcome-link" href={admin ? '/employees' : cashier ? '/attendance' : '/leave'}>{admin ? 'Kelola tim' : cashier ? activeSession || completedToday ? 'Lihat kehadiran Anda' : 'Mulai clock in' : 'Ajukan cuti atau izin'}<Icon name="arrow-right" size={17}/></a></div><div class="welcome-visual" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="visual-card visual-card-one"><span class="small-icon"><Icon name="check" size={16}/></span><div><strong>{admin ? `${activeEmployees.length} anggota tim` : 'Hari ini, lebih teratur'}</strong><small>Terhubung dalam satu ruang</small></div></div><div class="visual-card visual-card-two"><span class="small-icon"><Icon name="calendar" size={19}/></span><span>{admin ? `${pending.length} pengajuan untuk ditinjau` : `${$app.user ? leaveBalance($app.user.id) : 0} hari saldo cuti`}</span></div><div class="leaf leaf-one"></div><div class="leaf leaf-two"></div><div class="leaf leaf-three"></div></div></section>
 
@@ -78,4 +82,5 @@
   .chart-key span { background: var(--accent); }
   .chart-lines span { border-color: #eae1c1; }
 .session-reminder{display:flex;gap:.8rem;padding:1rem 1.2rem;margin-bottom:1.2rem;border:1px solid #d9b76e;border-radius:16px;background:#fff2d3;color:var(--ink)}.session-reminder :global(svg){flex-shrink:0;margin-top:.1rem}.session-reminder strong{font-size:.82rem}.session-reminder p{font-size:.73rem;line-height:1.7;margin:.4rem 0;color:var(--muted)}.session-reminder a{font-size:.74rem;color:var(--accent)}.attendance-status{display:flex;flex-direction:column;align-items:flex-end;gap:.35rem}.attendance-status small{font-size:.62rem;line-height:1.5;text-align:right}.admin-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}@media(max-width:1200px){.admin-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:800px){.admin-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .action-first{padding:0;overflow:hidden;margin-bottom:1.2rem}.action-eyebrow{display:block;font-size:.58rem;letter-spacing:.12em;color:var(--accent);font-weight:700;margin-bottom:.35rem}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem;padding:1rem}.action-item{display:flex;flex-direction:column;min-height:132px;padding:.85rem;border:1px solid var(--panel-border);border-radius:14px;background:var(--surface);box-shadow:var(--raised-sm);color:var(--muted)}.action-item[data-priority="0"]{border-color:#cf9e4b;background:#fff2cf}.action-reason{font-size:.57rem;color:#78541c;text-transform:uppercase;letter-spacing:.05em}.action-item strong{margin-top:.55rem;font-size:.76rem;color:var(--ink);text-transform:capitalize}.action-item p{font-size:.64rem;line-height:1.5;margin:.4rem 0}.action-item small{margin-top:auto;font-size:.59rem;color:var(--muted)}@media(max-width:900px){.action-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.action-grid{grid-template-columns:1fr}.action-item{min-height:112px}}
 </style>

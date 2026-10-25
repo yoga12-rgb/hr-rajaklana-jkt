@@ -8,13 +8,14 @@
     { id: 'pengajuan', label: 'Cuti & izin' },
     { id: 'kehadiran', label: 'Absensi kasir' },
     { id: 'hr', label: 'Atasan & HR' },
+    { id: 'supervisor', label: 'Operasi supervisor' },
     { id: 'ketentuan', label: 'Ketentuan cuti' },
     { id: 'bantuan', label: 'PWA & kendala' }
   ];
 </script>
 
 <svelte:head>
-  <meta name="description" content="Panduan akun, absensi kasir, cuti, izin, persetujuan, dan ketentuan penggunaan Rajaklana HR Jabodetabek."/>
+  <meta name="description" content="Panduan akun, absensi kasir, cuti, izin, operasi supervisor, persetujuan, dan ketentuan penggunaan Rajaklana HR Jabodetabek."/>
 </svelte:head>
 
 <PageHeading eyebrow="PUSAT BANTUAN" title="Panduan penggunaan & ketentuan" description="Langkah penggunaan dan aturan kerja Rajaklana HR untuk tim Jabodetabek.">
@@ -108,8 +109,21 @@
       <p class="rule">Pengajuan SPV Penjualan & SDM diputuskan Bos/Manager Pusat di luar aplikasi, lalu dicatat Admin HR lain dengan nama pemberi keputusan. Pengguna tidak boleh menyetujui pengajuan, membuat catatan manual, atau mengoreksi absensi dirinya sendiri.</p>
     </section>
 
+    <section class="panel guide-section" id="supervisor">
+      <div class="section-title"><span>05</span><h2>Operasi supervisor</h2></div>
+      <ul>
+        <li><strong>Kendala outlet:</strong> buka <a href="/operations">Operasi outlet</a>, pilih kategori, outlet, urgensi, dan uraian singkat. Foto pendukung bersifat opsional dan hanya dapat dilihat akun yang berwenang. Kasir dapat mengikuti laporan yang ia buat; PIC menangani laporan sesuai hak dan cakupan yang diberikan HR.</li>
+        <li><strong>Status kendala:</strong> laporan bergerak dari <strong>Baru</strong>, <strong>Ditugaskan</strong>, <strong>Diproses</strong>, hingga <strong>Selesai</strong>. Isi catatan penyelesaian saat menutup laporan. Jika PIC atau tenggat berubah, masukkan alasan agar riwayatnya dapat ditinjau.</li>
+        <li><strong>Serah terima:</strong> pengirim menyimpan draft lalu mengirim catatan pekerjaan tertunda dan kondisi outlet kepada kasir penerima. Penerima dapat menerima atau meminta perbaikan. Penerimaan catatan tidak menggantikan clock in atau clock out.</li>
+        <li><strong>Tukar atau pengganti shift:</strong> kasir mengajukan untuk jadwal yang masih sah, rekan merespons, lalu Admin HR yang bukan peserta memberi keputusan. Jadwal tidak berubah sebelum keputusan tersebut tersimpan. Jangan memakai fitur ini untuk mengubah absensi yang sudah terjadi.</li>
+        <li><strong>Perencanaan:</strong> Admin HR membuka <a href="/planning">Perencanaan & ringkasan</a> untuk mengatur kebutuhan kasir per interval, menetapkan jam rencana Middle tepat 8 jam, dan membuat rekap maksimal 63 hari. Middle tanpa jam rencana ditandai perlu konfirmasi, bukan dianggap cukup.</li>
+        <li><strong>Konflik atau koneksi terputus:</strong> jangan mengirim formulir baru bila aplikasi menyatakan hasil belum pasti. Gunakan <strong>Coba lagi</strong> agar isi dan key yang sama diperiksa server. Jika versi berubah, tinjau data terbaru sebelum menyimpan perubahan baru.</li>
+      </ul>
+      <p class="rule">Hak operasi ditetapkan Admin HR menurut kategori dan outlet. Akses laporan kendala tidak memberi akses ke alasan cuti, dokumen pribadi, selfie, atau data HR lain. Hubungi Admin HR bila kategori atau penerima laporan belum tersedia.</p>
+    </section>
+
     <section class="panel guide-section" id="ketentuan">
-      <div class="section-title"><span>05</span><h2>Ketentuan cuti dan perubahan</h2></div>
+      <div class="section-title"><span>06</span><h2>Ketentuan cuti dan perubahan</h2></div>
       <dl class="leave-rules">
         <div><dt>Hak tahunan</dt><dd><strong>12 hari</strong>, mulai setelah bekerja <strong>3 bulan kalender</strong>. Pada tahun hak mulai berlaku, jatah prorata 1 hari per sisa bulan, termasuk bulan hak dimulai. Contoh masuk 15 Juli → berhak 15 Oktober → jatah 3 hari. Tahun berikutnya 12 hari.</dd></div>
         <div><dt>Masa berlaku</dt><dd>Mengikuti tahun kalender. Sisa saldo <strong>hangus setiap 31 Desember</strong> dan tidak dibawa ke tahun berikutnya.</dd></div>
@@ -122,7 +136,7 @@
     </section>
 
     <section class="panel guide-section" id="bantuan">
-      <div class="section-title"><span>06</span><h2>Pemasangan, pembaruan, dan kendala</h2></div>
+      <div class="section-title"><span>07</span><h2>Pemasangan, pembaruan, dan kendala</h2></div>
       <ul>
         <li>Pasang sebagai PWA melalui tombol <strong>Pasang aplikasi</strong> jika tersedia, atau menu pemasangan pada browser yang mendukung.</li>
         <li>Jika muncul <strong>Versi baru sudah tersedia</strong>, selesaikan formulir atau selfie terlebih dahulu, kemudian pilih <strong>Gunakan versi terbaru</strong>.</li>

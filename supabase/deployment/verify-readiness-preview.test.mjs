@@ -19,14 +19,14 @@ await db.exec(`
   create function storage.foldername(name text) returns text[] language sql immutable as $$ select string_to_array(name,'/'); $$;
   create publication supabase_realtime;
   create schema supabase_migrations;
-  create table supabase_migrations.schema_migrations(version text primary key);
+  create table supabase_migrations.schema_migrations(version text primary key,name text);
 `);
 const migrations = (await readdir(new URL('supabase/migrations/', root))).filter(file=>file.endsWith('.sql')).sort();
 for (const name of migrations) {
   let sql = await readFile(new URL(`supabase/migrations/${name}`, root),'utf8');
   sql = sql.replace('create extension if not exists pgcrypto with schema extensions;', '');
   await db.exec(sql);
-  await db.query('insert into supabase_migrations.schema_migrations(version) values($1)',[name.slice(0,name.indexOf('_'))]);
+  await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)',[name.slice(0,name.indexOf('_')),name.slice(name.indexOf('_')+1,-4)]);
 }
 await db.exec(`
   insert into auth.users(id,email) values('10000000-0000-4000-8000-000000000001','admin-fixture@example.invalid'),('10000000-0000-4000-8000-000000000002','subject-fixture@example.invalid');

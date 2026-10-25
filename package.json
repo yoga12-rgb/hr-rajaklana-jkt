@@ -10,6 +10,8 @@
     "#lib/cashier-spv": "./src/lib/cashier-spv.ts",
     "#lib/cashier-spv-drafts": "./src/lib/cashier-spv-drafts.ts",
     "#lib/spv-followup-drafts": "./src/lib/spv-followup-drafts.ts",
+    "#lib/spv-followup-recovery": "./src/lib/spv-followup-recovery.ts",
+    "#lib/supervisor-planning-recovery": "./src/lib/supervisor-planning-recovery.ts",
     "#lib/outlet-location-request": "./src/lib/outlet-location-request.ts",
     "#lib/media-stream-lease": "./src/lib/media-stream-lease.ts",
     "#lib/selfie": "./src/lib/selfie.ts",

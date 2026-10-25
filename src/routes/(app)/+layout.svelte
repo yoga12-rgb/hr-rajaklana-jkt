@@ -19,11 +19,13 @@
     { href:'/dashboard',label:'Beranda',icon:'home' },
     ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }, { href:'/assignments',label:'Penugasan harian',icon:'calendar' }] : []),
     { href:'/leave',label:'Cuti & izin',icon:'calendar' },
-    ...(admin ? [{ href:'/employees',label:'Karyawan',icon:'users' },{ href:'/organization',label:'Organisasi',icon:'building' },{ href:'/reports',label:'Rekap & riwayat',icon:'chart' }] : []),
+    { href:'/operations',label:'Operasi outlet',icon:'alert' },
+    { href:'/planning',label:'Perencanaan',icon:'chart' },
+    ...(admin ? [{ href:'/supervisor',label:'Tindak lanjut',icon:'alert' },{ href:'/employees',label:'Karyawan',icon:'users' },{ href:'/organization',label:'Organisasi',icon:'building' },{ href:'/reports',label:'Rekap & riwayat',icon:'chart' }] : []),
     { href:'/profile',label:'Profil saya',icon:'user' },
     { href:'/guide',label:'Panduan',icon:'file' }
   ];
-  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments'].includes(n.href));
+  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments','/employees','/supervisor','/planning'].includes(n.href));
   $: if ($app.initialized && !$app.user) void goto('/login', { replace:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };

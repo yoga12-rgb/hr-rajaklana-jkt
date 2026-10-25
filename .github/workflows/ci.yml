@@ -50,5 +50,15 @@ jobs:
       - name: Check guarded legacy replacement
         run: npm run test:database:legacy
 
+      # This harness executes the read-only Preview readiness probe against a
+      # freshly migrated fixture. It catches drift in the expected upgrade
+      # boundary, RPC grants, RLS, and the mandatory rollback contract before
+      # a Preview release is considered for deployment.
+      - name: Verify Preview readiness probe contract
+        run: node supabase/deployment/verify-readiness-preview.test.mjs
+
+      - name: Check patch whitespace
+        run: git diff --check
+
       - name: Build SPA and PWA
         run: npm run build

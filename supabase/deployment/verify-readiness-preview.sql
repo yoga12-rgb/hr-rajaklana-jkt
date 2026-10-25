@@ -1,4 +1,7 @@
--- Preview-only verification for migration 18 (20261022170000).
+-- Preview-only verification after the forward supervisor upgrade through
+-- migration 23 (20261024233053). The deployed Preview baseline is migration
+-- 18; this probe must run only after 18→23 succeeds, never as a shortcut for
+-- the distinct historical 13-migration preflight path.
 -- The caller MUST independently verify project ref lypsqrwjzrmuyqtdcegr before
 -- executing this file. SQL cannot establish the Supabase project identity.
 -- Run as the SQL editor/migration owner, never through an application session.
@@ -24,15 +27,50 @@ declare
   v_before_sub text := nullif(current_setting('request.jwt.claim.sub', true), '');
   v_before_role text := nullif(current_setting('request.jwt.claim.role', true), '');
   v_before_claims text := nullif(current_setting('request.jwt.claims', true), '');
+  v_history text[];
+  v_migration_names text[];
+  v_has_migration_names boolean;
   v_inspect text;
   v_claim text;
   v_message text;
   v_rolled_back boolean := false;
 begin
-  if (select count(*) from supabase_migrations.schema_migrations) <> 18
-    or (select max(version) from supabase_migrations.schema_migrations) <> '20261022170000'
-    or not exists(select 1 from supabase_migrations.schema_migrations where version='20261021154511') then
-    raise exception 'Expected exact Preview baseline 17 plus readiness migration 18; stop and inspect migration history';
+  if to_regclass('supabase_migrations.schema_migrations') is null
+    or (select count(*) from supabase_migrations.schema_migrations) <> 23 then
+    raise exception 'Expected exact Preview baseline 18 plus supervisor migrations 19–23; stop and inspect migration history';
+  end if;
+  select exists(
+    select 1 from pg_attribute
+    where attrelid='supabase_migrations.schema_migrations'::regclass
+      and attname='name' and not attisdropped
+  ) into v_has_migration_names;
+  if v_has_migration_names then
+    execute 'select array_agg(name order by version) from supabase_migrations.schema_migrations' into v_migration_names;
+    if v_migration_names is distinct from array[
+      'hr_foundation','auth_support','private_files','directory_manual_attendance',
+      'attendance_correction_overlap','attendance_selfie_metadata','hr_api_service_role_reads',
+      'hr_leave_workflows','hr_notifications','cashier_operational_workflows',
+      'biometric_push_verification','push_subscription_status','cashier_spv_weekly_roster',
+      'cashier_spv_audit_repairs','cashier_spv_followup_repair_log_index',
+      'cashier_followup_context_consistency','cashier_followup_context_locking',
+      'close_readiness_audit_findings','supervisor_followup_queue',
+      'supervisor_operations','supervisor_planning_reports','supervisor_operational_hardening',
+      'supervisor_configuration_concurrency'
+    ]::text[] then
+      raise exception 'Preview migration names are not the ordered 18→23 supervisor upgrade; stop and inspect history';
+    end if;
+  else
+    select array_agg(version order by version) into v_history from supabase_migrations.schema_migrations;
+    if v_history is distinct from array[
+      '202610030001','202610030002','202610030003','202610040004',
+      '202610120005','202610120006','20261012094903','20261016063305',
+      '20261016063418','20261018045749','20261018045909','20261018162525',
+      '20261019061522','20261020060745','20261020060913','20261020092014',
+      '20261021154511','20261022170000','20261023080451','20261023181824',
+      '20261023183130','20261024110000','20261024233053'
+    ]::text[] then
+      raise exception 'Preview migration versions are not the ordered 18→23 supervisor upgrade; stop and inspect history';
+    end if;
   end if;
 
   if to_regprocedure('public.hr_save_employee_with_roles(jsonb,uuid,text[],text)') is null then
@@ -49,6 +87,102 @@ begin
       and prosecdef and exists(select 1 from unnest(proconfig) as setting(value)
         where value in ('search_path=', 'search_path=""'))) then
     raise exception 'Employee RPC security-definer/search_path contract is absent';
+  end if;
+
+  -- These additive supervisor surfaces must stay behind authenticated RPC/RLS.
+  -- This checks the deployed contract without reading operational content.
+  if to_regprocedure('public.spv_followup_update_v2(uuid,bigint,uuid,text,uuid,text,text,timestamptz,text)') is null
+    or to_regprocedure('public.outlet_issue_submit(uuid,uuid,text,text,text,uuid,uuid)') is null
+    or to_regprocedure('public.shift_exchange_decide_v2(uuid,bigint,uuid,boolean,text)') is null
+    or to_regprocedure('public.staffing_interval_requirement_save_v2(uuid,bigint,uuid,uuid,integer,time,time,integer,date,date,text)') is null
+    or to_regprocedure('public.supervisor_interval_coverage(uuid,date)') is null
+    or to_regprocedure('public.supervisor_report_page(date,date,uuid,uuid)') is null
+    or to_regprocedure('public.shift_exchange_cancel_v2(uuid,bigint,uuid,text)') is null
+    or to_regprocedure('public.shift_exchange_expire_stale_v2(uuid)') is null
+    or to_regprocedure('public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)') is null
+    or to_regprocedure('public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)') is null
+    or to_regprocedure('public.supervisor_capability_save_v2(uuid,bigint,uuid,uuid,text,uuid,uuid,boolean)') is null then
+    raise exception 'Supervisor RPC contract is absent after migration 23';
+  end if;
+  if has_function_privilege('anon','public.spv_followup_update_v2(uuid,bigint,uuid,text,uuid,text,text,timestamptz,text)','EXECUTE')
+    or has_function_privilege('anon','public.outlet_issue_submit(uuid,uuid,text,text,text,uuid,uuid)','EXECUTE')
+    or has_function_privilege('anon','public.shift_exchange_decide_v2(uuid,bigint,uuid,boolean,text)','EXECUTE')
+    or has_function_privilege('anon','public.staffing_interval_requirement_save_v2(uuid,bigint,uuid,uuid,integer,time,time,integer,date,date,text)','EXECUTE')
+    or has_function_privilege('anon','public.supervisor_interval_coverage(uuid,date)','EXECUTE')
+    or has_function_privilege('anon','public.supervisor_report_page(date,date,uuid,uuid)','EXECUTE')
+    or has_function_privilege('anon','public.shift_exchange_cancel_v2(uuid,bigint,uuid,text)','EXECUTE')
+    or has_function_privilege('anon','public.shift_exchange_expire_stale_v2(uuid)','EXECUTE')
+    or has_function_privilege('anon','public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)','EXECUTE')
+    or has_function_privilege('anon','public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)','EXECUTE')
+    or has_function_privilege('anon','public.supervisor_capability_save_v2(uuid,bigint,uuid,uuid,text,uuid,uuid,boolean)','EXECUTE')
+    or not has_function_privilege('authenticated','public.spv_followup_update_v2(uuid,bigint,uuid,text,uuid,text,text,timestamptz,text)','EXECUTE')
+    or not has_function_privilege('authenticated','public.outlet_issue_submit(uuid,uuid,text,text,text,uuid,uuid)','EXECUTE')
+    or not has_function_privilege('authenticated','public.shift_exchange_decide_v2(uuid,bigint,uuid,boolean,text)','EXECUTE')
+    or not has_function_privilege('authenticated','public.staffing_interval_requirement_save_v2(uuid,bigint,uuid,uuid,integer,time,time,integer,date,date,text)','EXECUTE')
+    or not has_function_privilege('authenticated','public.supervisor_interval_coverage(uuid,date)','EXECUTE')
+    or not has_function_privilege('authenticated','public.supervisor_report_page(date,date,uuid,uuid)','EXECUTE')
+    or not has_function_privilege('authenticated','public.shift_exchange_cancel_v2(uuid,bigint,uuid,text)','EXECUTE')
+    or not has_function_privilege('authenticated','public.shift_exchange_expire_stale_v2(uuid)','EXECUTE')
+    or not has_function_privilege('authenticated','public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)','EXECUTE')
+    or not has_function_privilege('authenticated','public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)','EXECUTE')
+    or not has_function_privilege('authenticated','public.supervisor_capability_save_v2(uuid,bigint,uuid,uuid,text,uuid,uuid,boolean)','EXECUTE') then
+    raise exception 'Supervisor RPC execute grants differ from the intended authenticated-only contract';
+  end if;
+  if not exists(select 1 from pg_proc where oid='public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)'::regprocedure
+      and prosecdef and exists(select 1 from unnest(proconfig) as setting(value) where value in ('search_path=', 'search_path=""')))
+    or not exists(select 1 from pg_proc where oid='public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)'::regprocedure
+      and prosecdef and exists(select 1 from unnest(proconfig) as setting(value) where value in ('search_path=', 'search_path=""')))
+    or not exists(select 1 from pg_proc where oid='public.supervisor_capability_save_v2(uuid,bigint,uuid,uuid,text,uuid,uuid,boolean)'::regprocedure
+      and prosecdef and exists(select 1 from unnest(proconfig) as setting(value) where value in ('search_path=', 'search_path=""'))) then
+    raise exception 'Configuration v2 RPC security-definer/search_path contract is absent';
+  end if;
+  if exists(
+    select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='public' and c.relname in ('supervisor_capabilities','supervisor_issue_categories','supervisor_issue_routes',
+      'outlet_issues','outlet_issue_events','shift_handovers','shift_handover_versions','shift_handover_events',
+      'shift_exchange_requests','shift_exchange_events','staffing_interval_requirements') and c.relkind='r' and not c.relrowsecurity
+  ) then
+    raise exception 'At least one exposed supervisor table lacks RLS';
+  end if;
+  if to_regclass('private.supervisor_configuration_receipts') is null
+    or not exists(select 1 from pg_class where oid='private.supervisor_configuration_receipts'::regclass and relrowsecurity)
+    or has_table_privilege('anon','private.supervisor_configuration_receipts','SELECT')
+    or has_table_privilege('authenticated','private.supervisor_configuration_receipts','SELECT')
+    or has_table_privilege('service_role','private.supervisor_configuration_receipts','SELECT') then
+    raise exception 'Configuration receipt privacy/RLS contract is absent';
+  end if;
+  -- Keep the m23 target-recipient and replacement guards distinguishable from
+  -- the older baseline: an Admin caller must not lend their own scope to a
+  -- selected recipient, and a pending replacement must be rechecked before a
+  -- final decision. These are definition-only checks; no operational case is
+  -- created or modified by the readiness probe.
+  if to_regprocedure('private.supervisor_target_has_capability(text,uuid,uuid,uuid)') is null
+    or to_regprocedure('private.assert_shift_exchange_replacement_candidate(uuid,date,text)') is null
+    or has_function_privilege('authenticated','private.supervisor_target_has_capability(text,uuid,uuid,uuid)','EXECUTE')
+    or has_function_privilege('authenticated','private.assert_shift_exchange_replacement_candidate(uuid,date,text)','EXECUTE') then
+    raise exception 'Supervisor target/replacement private guard contract is absent or exposed';
+  end if;
+  select lower(prosrc) into strict v_inspect
+    from pg_proc where oid='public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)'::regprocedure;
+  if position('private.supervisor_target_has_capability' in v_inspect)=0 then
+    raise exception 'Route save no longer validates the selected recipient independently of the Admin caller';
+  end if;
+  select lower(prosrc) into strict v_inspect
+    from pg_proc where oid='private.assert_shift_exchange_parties_available()'::regprocedure;
+  if position('private.assert_shift_exchange_replacement_candidate' in v_inspect)=0 then
+    raise exception 'Replacement eligibility is not rechecked by the pending/approved exchange trigger';
+  end if;
+  if exists(
+    select 1 from unnest(array['outlet_issues','shift_handovers','shift_exchange_requests','staffing_interval_requirements']) expected(table_name)
+    where not exists(
+      select 1 from pg_catalog.pg_publication p
+      join pg_catalog.pg_publication_rel pr on pr.prpubid=p.oid
+      join pg_catalog.pg_class c on c.oid=pr.prrelid
+      join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+      where p.pubname='supabase_realtime' and n.nspname='public' and c.relname=expected.table_name
+    )
+  ) then
+    raise exception 'Supervisor Realtime publication membership is incomplete';
   end if;
 
   -- Verify token policy from definitions only; no operational token is read,
@@ -133,10 +267,10 @@ begin
 
     -- Never remove this exception. It rolls back employee, role, audit, trigger,
     -- and SET LOCAL changes before any success is reported.
-    raise exception 'READINESS_18_MANDATORY_ROLLBACK' using errcode='ZHR18';
-  exception when sqlstate 'ZHR18' then
+    raise exception 'READINESS_23_MANDATORY_ROLLBACK' using errcode='ZHR23';
+  exception when sqlstate 'ZHR23' then
     get stacked diagnostics v_message = message_text;
-    if v_message <> 'READINESS_18_MANDATORY_ROLLBACK' then raise; end if;
+    if v_message <> 'READINESS_23_MANDATORY_ROLLBACK' then raise; end if;
     v_rolled_back := true;
   end;
 
@@ -166,4 +300,4 @@ begin
 end;
 $verify_readiness$;
 
-select 'PASS: Preview migration 18 ACL/predicates and authenticated employee lifecycle; mandatory rollback restored scoped state and JWT/role context' as verification;
+select 'PASS: Preview migrations 18→23 ACL/RLS contracts, private configuration receipts, Realtime membership, and authenticated employee lifecycle; mandatory rollback restored scoped state and JWT/role context' as verification;

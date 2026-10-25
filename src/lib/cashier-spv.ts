@@ -76,6 +76,10 @@ export interface OperationalSignal {
   key: string; title: string; detail: string; href: string; tone: 'amber' | 'red' | 'blue';
   input: SpvFollowupInput;
 }
+export interface SupervisorActionItem {
+  key: string; title: string; detail: string; reason: string; href: string; workDate: string;
+  outletId: string | null; createdAt: string; priority: number; persisted: boolean;
+}
 export interface CashierDayStatus {
   employee: Employee; outletId: string; shift: Shift | 'off' | null;
   status: 'unassigned' | 'off' | 'leave' | 'not_due' | 'flexible' | 'needs_confirmation' | 'working' | 'completed' | 'needs_review';
@@ -202,6 +206,31 @@ export function operationalSignals(state: AppState, day: string, now = Date.now(
     }
   }
   return result;
+}
+
+export function supervisorActionQueue(state: AppState, day: string, now = Date.now()): SupervisorActionItem[] {
+  const stored = (state.spvFollowups ?? []).filter(row => row.status !== 'completed');
+  const storedKeys = new Set(stored.map(row => row.caseKey));
+  const persisted: SupervisorActionItem[] = stored.map(row => {
+    const isOverdue = !!row.dueAt && Date.parse(row.dueAt) < now;
+    return { key: `case:${row.id}`, title: row.issueType.replaceAll('_',' '),
+      detail: `${row.employeeId ? state.employees.find(employee => employee.id === row.employeeId)?.fullName ?? 'Kasir' : 'Kasir'} · ${row.workDate}`,
+      reason: isOverdue ? 'Kasus tersimpan melewati tenggat' : row.ownerId ? 'Kasus tersimpan sedang ditangani' : 'Kasus tersimpan belum memiliki PIC',
+      href: `/supervisor?case=${encodeURIComponent(row.id)}`, workDate: row.workDate, outletId: row.outletId,
+      createdAt: row.createdAt, priority: isOverdue ? 0 : row.ownerId ? 2 : 1, persisted: true };
+  });
+  const signals: SupervisorActionItem[] = operationalSignals(state,day,now).filter(row => !storedKeys.has(row.key)).map(row => ({
+    key: `signal:${row.key}`, title: row.title, detail: row.detail, reason: row.tone === 'red' ? 'Sinyal hari terpilih memerlukan konfirmasi' : 'Sinyal hari terpilih perlu ditinjau',
+    href: row.href, workDate: row.input.workDate, outletId: row.input.outletId, createdAt: `${row.input.workDate}T00:00:00+07:00`,
+    priority: row.tone === 'red' ? 1 : 3, persisted: false
+  }));
+  const shortages: SupervisorActionItem[] = staffingCoverage(state,day).filter(row => row.status === 'shortage').map(row => ({
+    key: `coverage:${row.outletId}:${row.shift}:${day}`, title: 'Kekurangan kasir',
+    detail: `${row.outletName} · ${row.shift} · tersedia ${row.available} dari minimum ${row.minimum}`,
+    reason: 'Cakupan rencana di bawah minimum', href: `/assignments?date=${encodeURIComponent(day)}`, workDate: day,
+    outletId: row.outletId, createdAt: `${day}T00:00:00+07:00`, priority: 1, persisted: false
+  }));
+  return [...persisted,...signals,...shortages].sort((a,b) => a.priority-b.priority || a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key));
 }
 
 export interface WeeklyCopyPreview { changes: CashierRosterChange[]; skipped: number; conflicts: string[]; sourceWeek: string; targetWeek: string }

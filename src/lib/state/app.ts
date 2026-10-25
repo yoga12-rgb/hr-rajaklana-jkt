@@ -1,5 +1,15 @@
 import { get, writable } from 'svelte/store';
-import type { AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest, Outlet, Position, Role, Shift, CashierAssignmentInput, AttendanceCorrectionInput, RetrospectiveLeaveInput, CashierRosterChange, StaffingRequirementInput, StaffingRequirement, SpvFollowupInput, SpvFollowup, SpvFollowupUpdate } from '../types';
+import type {
+  AppState, AttendanceRecord, ClockInInput, ClockOutInput, Department, Employee, LeaveDecision, LeaveInput, LeaveRequest,
+  Outlet, Position, Role, Shift, CashierAssignment, CashierAssignmentInput, AttendanceCorrectionInput, RetrospectiveLeaveInput,
+  CashierRosterChange, StaffingRequirementInput, StaffingRequirement, SpvFollowupInput, SpvFollowup,
+  SpvFollowupUpdate, SpvFollowupPage, SpvFollowupView, SupervisorIssueCategory, SupervisorCapability,
+  SupervisorCapabilitySaveInput, SupervisorCapabilitySaveResult, SupervisorIssueCategorySaveInput, SupervisorIssueRoute, SupervisorIssueRouteSaveInput,
+  SupervisorOperationConfiguration, OutletIssue, OutletIssueSubmitInput, OutletIssueUpdate, OutletIssueView, SupervisorPage, ShiftHandover, ShiftHandoverSaveInput,
+  ShiftHandoverResponseInput, ShiftExchangeRequest, ShiftExchangeSubmitInput, ShiftExchangeResponseInput,
+  ShiftExchangeDecisionInput, ShiftExchangeCancelInput, ShiftExchangeView, StaffingIntervalRequirement, StaffingIntervalRequirementInput,
+  CashierAssignmentPlanInput, SupervisorCoverage, SupervisorReport
+} from '../types';
 import { attendanceTiming, dateRange, deductionByYear, haversineMeters, jakartaDate, leaveEntitlement } from '../domain';
 import { initialDemo } from './demo';
 import { hasApproverAccess } from '../access';
@@ -29,6 +39,7 @@ let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let realtimeRetryAttempt = 0;
 let authRevision = 0;
 let liveAuthUserId: string | null = null;
+const demoFollowupReceipts = new Map<string, { fingerprint: string; result: SpvFollowup }>();
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
 function readDemoToken(token: string) {
@@ -113,6 +124,7 @@ function persist(state: AppState) {
 }
 function commit(change: (state: AppState) => void, action?: string, entityId = '', detail = '') {
   const before = get(app), state = structuredClone(before); change(state);
+  state.dataRevision = (before.dataRevision ?? 0) + 1;
   state.notifications = [...demoNotifications(before, state), ...(state.notifications ?? [])];
   if (action) state.auditEntries.unshift({ id: id(), actorId: state.user?.id ?? '', action, entityId, at: new Date().toISOString(), detail });
   if (state.user) state.user = state.employees.find(e => e.id === state.user?.id) ?? null;
@@ -139,7 +151,7 @@ async function rpc(name: string, args: Record<string, unknown>) {
 async function cleanupRejectedLeaveUpload(path: string | null, error: unknown) {
   await cleanupRejectedUpload('leave-attachments',path,error);
 }
-async function cleanupRejectedUpload(bucket: 'leave-attachments' | 'attendance-selfies', path: string | null, error: unknown) {
+async function cleanupRejectedUpload(bucket: 'leave-attachments' | 'attendance-selfies' | 'outlet-issue-photos', path: string | null, error: unknown) {
   // A SQLSTATE response confirms that PostgreSQL rolled the RPC back. Network
   // failures can arrive while it is still committing; keep that evidence rather
   // than racing its attachment link. Storage RLS also protects linked objects.
@@ -162,6 +174,145 @@ const cutTime = (v: string | null | undefined) => v?.slice(0, 5) ?? '';
 function mapEmployee(r: any, roles: any[]): Employee {
   return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoUrl: r.photo_path, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
 }
+function mapSpvFollowup(r: any): SpvFollowup {
+  return { id: r.id, caseKey: r.case_key ?? r.caseKey, issueType: r.issue_type ?? r.issueType,
+    sourceType: r.source_type ?? r.sourceType, sourceId: r.source_id ?? r.sourceId ?? null,
+    workDate: r.work_date ?? r.workDate, outletId: r.outlet_id ?? r.outletId,
+    employeeId: r.employee_id ?? r.employeeId ?? null, shift: r.shift ?? null,
+    ownerId: r.owner_id ?? r.ownerId ?? null, status: r.status,
+    note: r.note ?? '', resolutionNote: r.resolution_note ?? r.resolutionNote ?? '',
+    createdBy: r.created_by ?? r.createdBy, updatedBy: r.updated_by ?? r.updatedBy,
+    createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt,
+    reopenedCount: r.reopened_count ?? r.reopenedCount ?? 0, revision: Number(r.revision ?? 1),
+    dueAt: r.due_at ?? r.dueAt ?? null };
+}
+const numberValue = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const nullable = (value: unknown): string | null => typeof value === 'string' && value ? value : null;
+function mapSupervisorIssueCategory(r: any): SupervisorIssueCategory {
+  return { id: r.id, code: r.code, name: r.name, active: Boolean(r.active), createdBy: r.created_by ?? r.createdBy,
+    createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt ?? '', revision: numberValue(r.revision, 1) };
+}
+function mapSupervisorCapability(r: any): SupervisorCapability {
+  return { id: r.id, employeeId: r.employee_id ?? r.employeeId, capability: r.capability,
+    outletId: nullable(r.outlet_id ?? r.outletId), categoryId: nullable(r.category_id ?? r.categoryId),
+    grantedBy: r.granted_by ?? r.grantedBy, createdAt: r.created_at ?? r.createdAt,
+    updatedAt: r.updated_at ?? r.updatedAt ?? r.created_at ?? r.createdAt ?? '', revision: numberValue(r.revision, 1) };
+}
+function mapSupervisorIssueRoute(r: any): SupervisorIssueRoute {
+  return { id: r.id, categoryId: r.category_id ?? r.categoryId, outletId: nullable(r.outlet_id ?? r.outletId),
+    recipientEmployeeId: nullable(r.recipient_employee_id ?? r.recipientEmployeeId), active: Boolean(r.active),
+    createdBy: r.created_by ?? r.createdBy, createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt,
+    revision: numberValue(r.revision, 1) };
+}
+function mapCashierAssignment(r: any): CashierAssignment {
+  const plannedStartsAt = r.planned_starts_at ?? r.plannedStartsAt ?? null;
+  const plannedEndsAt = r.planned_ends_at ?? r.plannedEndsAt ?? null;
+  return { id: r.id, employeeId: r.employee_id ?? r.employeeId, workDate: r.work_date ?? r.workDate,
+    outletId: r.outlet_id ?? r.outletId, shift: r.shift, status: r.status, reason: r.reason,
+    createdBy: r.created_by ?? r.createdBy, createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt,
+    plannedStartsAt: plannedStartsAt ? cutTime(plannedStartsAt) : null,
+    plannedEndsAt: plannedEndsAt ? cutTime(plannedEndsAt) : null,
+    plannedEndsNextDay: r.planned_ends_next_day ?? r.plannedEndsNextDay ?? false,
+    plannedSource: r.planned_source ?? r.plannedSource ?? 'unknown' };
+}
+function mapOutletIssue(r: any): OutletIssue {
+  return { id: r.id, issueNumber: numberValue(r.issue_number ?? r.issueNumber), outletId: r.outlet_id ?? r.outletId,
+    reporterEmployeeId: nullable(r.reporter_employee_id ?? r.reporterEmployeeId), createdBy: r.created_by ?? r.createdBy,
+    categoryId: r.category_id ?? r.categoryId, categoryName: r.category_name_snapshot ?? r.categoryName ?? '',
+    routedToEmployeeId: nullable(r.routed_to_snapshot ?? r.routedToEmployeeId), ownerId: nullable(r.owner_id ?? r.ownerId),
+    urgency: r.urgency, description: r.description, photoPath: nullable(r.photo_path ?? r.photoPath), status: r.status,
+    dueAt: nullable(r.due_at ?? r.dueAt), resolutionNote: r.resolution_note ?? r.resolutionNote ?? '',
+    revision: numberValue(r.revision, 1), createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt,
+    completedAt: nullable(r.completed_at ?? r.completedAt) };
+}
+function mapShiftHandover(r: any): ShiftHandover {
+  return { id: r.id, outletId: r.outlet_id ?? r.outletId, workDate: r.work_date ?? r.workDate,
+    senderEmployeeId: r.sender_employee_id ?? r.senderEmployeeId, senderAssignmentId: nullable(r.sender_assignment_id ?? r.senderAssignmentId),
+    recipientEmployeeId: nullable(r.recipient_employee_id ?? r.recipientEmployeeId), recipientAssignmentId: nullable(r.recipient_assignment_id ?? r.recipientAssignmentId),
+    status: r.status, version: numberValue(r.version, 1), pendingWork: r.current_pending_work ?? r.pendingWork ?? '',
+    outletCondition: r.current_outlet_condition ?? r.outletCondition ?? '', notes: r.current_notes ?? r.notes ?? '',
+    sentAt: nullable(r.sent_at ?? r.sentAt), acceptedAt: nullable(r.accepted_at ?? r.acceptedAt),
+    createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt };
+}
+function mapShiftExchange(r: any): ShiftExchangeRequest {
+  return { id: r.id, requestNumber: numberValue(r.request_number ?? r.requestNumber), requestType: r.request_type ?? r.requestType,
+    workDate: r.work_date ?? r.workDate, requesterEmployeeId: r.requester_employee_id ?? r.requesterEmployeeId,
+    peerEmployeeId: r.peer_employee_id ?? r.peerEmployeeId, requesterAssignmentId: r.requester_assignment_id ?? r.requesterAssignmentId,
+    peerAssignmentId: nullable(r.peer_assignment_id ?? r.peerAssignmentId),
+    requesterAssignmentUpdatedAt: r.requester_assignment_updated_at ?? r.requesterAssignmentUpdatedAt,
+    peerAssignmentUpdatedAt: nullable(r.peer_assignment_updated_at ?? r.peerAssignmentUpdatedAt), reason: r.reason, status: r.status,
+    peerNote: r.peer_note ?? r.peerNote ?? '', decisionNote: r.decision_note ?? r.decisionNote ?? '',
+    decidedBy: nullable(r.decided_by ?? r.decidedBy), revision: numberValue(r.revision, 1),
+    createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt, decidedAt: nullable(r.decided_at ?? r.decidedAt) };
+}
+function mapIntervalRequirement(r: any): StaffingIntervalRequirement {
+  return { id: r.id, outletId: r.outlet_id ?? r.outletId, weekday: numberValue(r.weekday), startsAt: cutTime(r.starts_at ?? r.startsAt),
+    endsAt: cutTime(r.ends_at ?? r.endsAt), minimum: numberValue(r.minimum), effectiveFrom: r.effective_from ?? r.effectiveFrom,
+    effectiveUntil: nullable(r.effective_until ?? r.effectiveUntil), revision: numberValue(r.revision, 1),
+    createdBy: r.created_by ?? r.createdBy, createdAt: r.created_at ?? r.createdAt, updatedAt: r.updated_at ?? r.updatedAt };
+}
+function supervisorPage<T>(data: any, mapper: (row: any) => T): SupervisorPage<T> {
+  return { items: (data?.items ?? []).map(mapper), total: numberValue(data?.total), hasMore: Boolean(data?.has_more ?? data?.hasMore),
+    nextCursor: data?.next_cursor ?? data?.nextCursor ?? null, asOf: data?.as_of ?? data?.asOf ?? new Date().toISOString() };
+}
+function mapSupervisorCoverage(r: any): SupervisorCoverage {
+  return { outletId: r.outlet_id ?? r.outletId, workDate: r.work_date ?? r.workDate, asOf: r.as_of ?? r.asOf,
+    configured: Boolean(r.configured), coverage: (r.coverage ?? []).map((row: any) => ({
+      requirementId: row.requirement_id ?? row.requirementId, startsAt: row.starts_at ?? row.startsAt,
+      endsAt: row.ends_at ?? row.endsAt, minimum: numberValue(row.minimum), plannedCount: numberValue(row.planned_count ?? row.plannedCount),
+      availableCount: numberValue(row.available_count ?? row.availableCount), attendanceRecordedCount: numberValue(row.attendance_recorded_count ?? row.attendanceRecordedCount),
+      shortage: numberValue(row.shortage), employeeIds: Array.isArray(row.employee_ids ?? row.employeeIds) ? row.employee_ids ?? row.employeeIds : []
+    })), unknownMiddleCount: numberValue(r.unknown_middle_count ?? r.unknownMiddleCount),
+    unknownMiddleEmployeeIds: Array.isArray(r.unknown_middle_employee_ids ?? r.unknownMiddleEmployeeIds) ? r.unknown_middle_employee_ids ?? r.unknownMiddleEmployeeIds : [],
+    legacyShiftRequirements: (r.legacy_shift_requirements ?? r.legacyShiftRequirements ?? []).map((row: any) => ({ shift: row.shift, minimum: numberValue(row.minimum) })) };
+}
+function mapSupervisorReport(r: any): SupervisorReport {
+  const summary = r.summary ?? {};
+  return { from: r.from, to: r.to, outletId: nullable(r.outlet_id ?? r.outletId), employeeId: nullable(r.employee_id ?? r.employeeId),
+    asOf: r.as_of ?? r.asOf, basis: r.basis ?? '', summary: {
+      scheduledDays: numberValue(summary.scheduled_days ?? summary.scheduledDays), attendanceDays: numberValue(summary.attendance_days ?? summary.attendanceDays),
+      approvedFullLeaveDays: numberValue(summary.approved_full_leave_days ?? summary.approvedFullLeaveDays),
+      approvedPartialLeaveDays: numberValue(summary.approved_partial_leave_days ?? summary.approvedPartialLeaveDays),
+      lateMinutes: numberValue(summary.late_minutes ?? summary.lateMinutes), corrections: numberValue(summary.corrections),
+      coverageUnconfiguredDays: numberValue(summary.coverage_unconfigured_days ?? summary.coverageUnconfiguredDays),
+      coverageShortageIntervals: numberValue(summary.coverage_shortage_intervals ?? summary.coverageShortageIntervals),
+      coverageUnknownMiddleAssignments: numberValue(summary.coverage_unknown_middle_assignments ?? summary.coverageUnknownMiddleAssignments),
+      followupsOpenNow: summary.followups_open_now ?? summary.followupsOpenNow ?? null,
+      followupsCompletedNow: summary.followups_completed_now ?? summary.followupsCompletedNow ?? null,
+      followupsOverdueNow: summary.followups_overdue_now ?? summary.followupsOverdueNow ?? null
+    }, people: (r.people ?? []).map((row: any) => ({ employeeId: row.employee_id ?? row.employeeId,
+      scheduledDays: numberValue(row.scheduled_days ?? row.scheduledDays), attendanceDays: numberValue(row.attendance_days ?? row.attendanceDays),
+      approvedFullLeaveDays: numberValue(row.approved_full_leave_days ?? row.approvedFullLeaveDays),
+      approvedPartialLeaveDays: numberValue(row.approved_partial_leave_days ?? row.approvedPartialLeaveDays),
+      lateMinutes: numberValue(row.late_minutes ?? row.lateMinutes), corrections: numberValue(row.corrections) })),
+    details: (r.details ?? []).map((row: any) => ({ employeeId: nullable(row.employee_id ?? row.employeeId), workDate: row.work_date ?? row.workDate,
+      outletId: row.outlet_id ?? row.outletId, shift: row.shift, plannedSource: row.planned_source ?? row.plannedSource ?? 'unknown',
+      attendanceRecorded: Boolean(row.attendance_recorded ?? row.attendanceRecorded), fullLeave: Boolean(row.full_leave ?? row.fullLeave),
+      partialLeave: Boolean(row.partial_leave ?? row.partialLeave), lateMinutes: numberValue(row.late_minutes ?? row.lateMinutes), corrections: numberValue(row.corrections) })) };
+}
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function assertIdempotencyKey(value: string, label: string) {
+  if (!UUID_PATTERN.test(value)) throw new Error(`Kunci ${label} tidak valid. Muat ulang dan coba kembali.`);
+}
+function assertDateInput(value: string, label: string) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(+parsed) || parsed.toISOString().slice(0, 10) !== value) throw new Error(`${label} tidak valid.`);
+}
+function assertTimeInput(value: string, label: string) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(value)) throw new Error(`${label} tidak valid.`);
+}
+function elapsedTimeMinutes(startsAt: string, endsAt: string): number {
+  const parse = (value: string) => {
+    const [hours, minutes] = value.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+  let elapsed = parse(endsAt) - parse(startsAt);
+  if (elapsed <= 0) elapsed += 24 * 60;
+  return elapsed;
+}
+function requireSupervisorBackend() {
+  if (!configured) throw new Error('Modul supervisor operasional memerlukan Supabase Preview yang telah diperbarui.');
+}
 async function refresh() {
   if (!supabase) return;
   if (refreshPromise) { refreshRequested = true; return refreshPromise; }
@@ -172,7 +323,7 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   // A known Auth session still needs employee/RLS validation. Keep protected
   // routes loading while clearing old account data, rather than briefly
   // presenting that pending validation as a completed signed-out state.
-  app.set({ ...initialDemo(), mode: 'live', initialized: !validatingSession, loading: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
+  app.set({ ...initialDemo(), mode: 'live', dataRevision: (get(app).dataRevision ?? 0) + 1, initialized: !validatingSession, loading: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
   if (timer) clearTimeout(timer);
   timer = undefined;
   clearRealtimeRetry(true);
@@ -227,7 +378,7 @@ function createRealtimeChannel(userId: string, revision: number) {
   realtimeUserId = userId;
   realtimeTerminal = false;
   try {
-    for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups']) {
+    for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups', 'outlet_issues', 'shift_handovers', 'shift_exchange_requests', 'staffing_interval_requirements']) {
       target.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
         if (channel !== target || realtimeGeneration !== generation || authRevision !== revision) return;
         clearTimeout(timer);
@@ -293,9 +444,12 @@ async function refreshNow() {
       if (revision === authRevision) clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.');
       return;
     }
-    const [staffingRows, followupRows] = isAdmin(current)
-      ? await Promise.all([readAll('staffing_requirements'), readAll('spv_followups')])
-      : [[], []];
+    const [staffingRows, followupResponse] = isAdmin(current)
+      ? await Promise.all([readAll('staffing_requirements'), rpc('spv_followup_page', {
+          p_view: 'all_open', p_outlet_id: null, p_from: null, p_to: null, p_page_size: 100, p_cursor: null
+        })])
+      : [[], { items: [] }];
+    const followupRows = followupResponse?.items ?? [];
     const directory = await rpc('employee_directory', {});
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
     const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
@@ -321,8 +475,7 @@ async function refreshNow() {
       const attachment = r.attachment_path ? await supabase!.storage.from('leave-attachments').createSignedUrl(r.attachment_path,300) : null;
       return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
     }));
-    const cashierAssignments = assignmentRows.map(r => ({ id: r.id, employeeId: r.employee_id, workDate: r.work_date, outletId: r.outlet_id, shift: r.shift,
-      status: r.status, reason: r.reason, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at }));
+    const cashierAssignments: CashierAssignment[] = assignmentRows.map(mapCashierAssignment);
     const attendanceCorrectionRequests = correctionRows.map(r => ({ id: r.id, employeeId: r.employee_id, attendanceId: r.attendance_id, workDate: r.work_date,
       outletId: r.outlet_id, shift: r.shift, proposedClockIn: r.proposed_clock_in, proposedClockOut: r.proposed_clock_out, reason: r.reason,
       status: r.status, decisionNote: r.decision_note ?? '', decisionBy: r.decision_by, createdAt: r.created_at, decidedAt: r.decided_at,
@@ -331,13 +484,10 @@ async function refreshNow() {
     const notifications = notificationRows.map(r => ({ id: r.id, employeeId: r.employee_id, title: r.title, body: r.body, href: r.href, entityId: r.entity_id, entityType: r.entity_type ?? 'leave', createdAt: r.created_at, readAt: r.read_at }));
     const staffingRequirements: StaffingRequirement[] = staffingRows.map(r => ({ id: r.id, outletId: r.outlet_id, weekday: r.weekday, shift: r.shift,
       minimum: r.minimum, effectiveFrom: r.effective_from, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at }));
-    const spvFollowups: SpvFollowup[] = followupRows.map(r => ({ id: r.id, caseKey: r.case_key, issueType: r.issue_type, sourceType: r.source_type,
-      sourceId: r.source_id, workDate: r.work_date, outletId: r.outlet_id, employeeId: r.employee_id, shift: r.shift, ownerId: r.owner_id,
-      status: r.status, note: r.note ?? '', resolutionNote: r.resolution_note ?? '', createdBy: r.created_by, updatedBy: r.updated_by,
-      createdAt: r.created_at, updatedAt: r.updated_at, reopenedCount: r.reopened_count ?? 0 }));
+    const spvFollowups: SpvFollowup[] = followupRows.map(mapSpvFollowup);
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
@@ -677,8 +827,8 @@ export const actions = {
     }
     const now = new Date().toISOString(), before = (state.spvFollowups ?? []).find(row => row.caseKey === caseKey);
     if (before && before.status !== 'completed') return before.id;
-    const row: SpvFollowup = before ? { ...before, ...input, id: before.id, caseKey, status: 'new', ownerId: null, resolutionNote: '', updatedBy: actor.id, updatedAt: now, reopenedCount: before.reopenedCount + 1 }
-      : { id: id(), caseKey, ...input, ownerId: null, status: 'new', note: '', resolutionNote: '', createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now, reopenedCount: 0 };
+    const row: SpvFollowup = before ? { ...before, ...input, id: before.id, caseKey, status: 'new', ownerId: null, resolutionNote: '', updatedBy: actor.id, updatedAt: now, reopenedCount: before.reopenedCount + 1, revision: before.revision + 1, dueAt: null }
+      : { id: id(), caseKey, ...input, ownerId: null, status: 'new', note: '', resolutionNote: '', createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now, reopenedCount: 0, revision: 1, dueAt: null };
     commit(s => {
       s.spvFollowups ??= []; const index = s.spvFollowups.findIndex(item => item.caseKey === caseKey);
       if (index < 0) s.spvFollowups.push(row); else s.spvFollowups[index] = row;
@@ -687,26 +837,367 @@ export const actions = {
     });
     return row.id;
   },
+  async loadSpvFollowups(input: { view: SpvFollowupView; outletId?: string; from?: string; to?: string; pageSize?: number; cursor?: Record<string,string|number> | null }): Promise<SpvFollowupPage> {
+    requireAdmin();
+    const state = get(app), actor = user(), pageSize = Math.min(Math.max(input.pageSize ?? 25,1),100);
+    if (configured) {
+      const data = await rpc('spv_followup_page', { p_view: input.view, p_outlet_id: input.outletId || null,
+        p_from: input.from || null, p_to: input.to || null, p_page_size: pageSize, p_cursor: input.cursor ?? null });
+      return { items: (data?.items ?? []).map(mapSpvFollowup), total: Number(data?.total ?? 0), hasMore: Boolean(data?.has_more),
+        nextCursor: data?.next_cursor ?? null, asOf: data?.as_of ?? new Date().toISOString() };
+    }
+    const now = Date.now();
+    let rows = (state.spvFollowups ?? []).filter(row => input.view === 'history' ? row.status === 'completed' : row.status !== 'completed');
+    if (input.view === 'mine') rows = rows.filter(row => row.ownerId === actor.id);
+    if (input.view === 'unassigned') rows = rows.filter(row => !row.ownerId);
+    if (input.view === 'overdue') rows = rows.filter(row => row.dueAt && Date.parse(row.dueAt) < now);
+    if (input.outletId) rows = rows.filter(row => row.outletId === input.outletId);
+    if (input.from) rows = rows.filter(row => row.workDate >= input.from!);
+    if (input.to) rows = rows.filter(row => row.workDate <= input.to!);
+    rows = rows.slice().sort((a,b) => {
+      const aPriority = a.status !== 'completed' && a.dueAt && Date.parse(a.dueAt) < now ? 0 : 1;
+      const bPriority = b.status !== 'completed' && b.dueAt && Date.parse(b.dueAt) < now ? 0 : 1;
+      return aPriority-bPriority || (a.status === 'completed' ? a.updatedAt : a.dueAt ?? a.createdAt).localeCompare(b.status === 'completed' ? b.updatedAt : b.dueAt ?? b.createdAt) || a.id.localeCompare(b.id);
+    });
+    const offset = typeof input.cursor?.offset === 'number' ? input.cursor.offset : 0;
+    return { items: rows.slice(offset,offset+pageSize), total: rows.length, hasMore: offset+pageSize<rows.length,
+      nextCursor: offset+pageSize<rows.length ? { offset: offset+pageSize } : null, asOf: new Date().toISOString() };
+  },
   async updateSpvFollowup(input: SpvFollowupUpdate) {
     requireAdmin();
     const state = get(app), actor = user(), before = (state.spvFollowups ?? []).find(row => row.id === input.id);
     if (!before) throw new Error('Tindak lanjut tidak ditemukan. Muat ulang panel.');
     if (before.status === 'completed' && input.status !== 'completed') throw new Error('Buka kembali kasus hanya jika kondisi sumber muncul kembali.');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('Versi tindak lanjut tidak valid. Muat ulang panel.');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.idempotencyKey)) throw new Error('Kunci penyimpanan tindak lanjut tidak valid.');
     if (input.status === 'in_progress' && !input.ownerId) throw new Error('Pilih penanggung jawab sebelum memproses kasus.');
     if (input.status === 'completed' && input.resolutionNote.trim().length < 5) throw new Error('Catatan penyelesaian minimal 5 karakter.');
     if (input.note.length > 2000 || input.resolutionNote.length > 2000) throw new Error('Catatan maksimal 2.000 karakter.');
     if (input.ownerId && !state.employees.some(employee => employee.id === input.ownerId && employee.status === 'active' && employee.accountStatus === 'active' && employee.roles.includes('admin_hr'))) throw new Error('Penanggung jawab harus Admin HR aktif.');
-    if (configured) { await rpc('spv_followup_update', { p_id: input.id, p_status: input.status, p_owner_id: input.ownerId,
-      p_note: input.note, p_resolution_note: input.resolutionNote }); await refresh(); return; }
+    if ((input.ownerId !== before.ownerId || input.dueAt !== before.dueAt) && input.reason.trim().length < 5) throw new Error('Alasan perubahan PIC atau tenggat minimal 5 karakter.');
+    if (input.dueAt && !Number.isFinite(Date.parse(input.dueAt))) throw new Error('Tenggat tindak lanjut tidak valid.');
+    if (configured) {
+      const row = await rpc('spv_followup_update_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
+        p_idempotency_key: input.idempotencyKey, p_status: input.status, p_owner_id: input.ownerId,
+        p_note: input.note, p_resolution_note: input.resolutionNote, p_due_at: input.dueAt, p_reason: input.reason });
+      await refresh(); return mapSpvFollowup(row);
+    }
+    const receiptKey = `${actor.id}:${input.idempotencyKey}`;
+    const fingerprint = JSON.stringify(input);
+    const receipt = demoFollowupReceipts.get(receiptKey);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint) throw new Error('Kunci tindak lanjut sudah dipakai untuk perubahan lain.');
+      return structuredClone(receipt.result);
+    }
+    if (before.revision !== input.expectedRevision) throw new Error('Tindak lanjut berubah sejak dibuka. Tinjau nilai terbaru sebelum menyimpan.');
     const now = new Date().toISOString();
+    let result!: SpvFollowup;
     commit(s => {
       const row = s.spvFollowups!.find(item => item.id === input.id)!;
       const currentSource = operationalSignals(s, row.workDate).find(signal => signal.key === row.caseKey);
       if (currentSource) Object.assign(row, currentSource.input);
-      Object.assign(row, { status: input.status, ownerId: input.ownerId, note: input.note.trim(), resolutionNote: input.status === 'completed' ? input.resolutionNote.trim() : '', updatedBy: actor.id, updatedAt: now });
+      Object.assign(row, { status: input.status, ownerId: input.ownerId, note: input.note.trim(), resolutionNote: input.status === 'completed' ? input.resolutionNote.trim() : '', dueAt: input.dueAt, updatedBy: actor.id, updatedAt: now, revision: row.revision + 1 });
       s.auditEntries.unshift({ id: id(), actorId: actor.id, action: input.status === 'completed' ? 'spv_followup_completed' : 'spv_followup_updated', entityId: row.id,
-        at: now, detail: input.resolutionNote.trim() || input.note.trim() || 'Tindak lanjut diperbarui' });
+        at: now, detail: input.reason.trim() || input.resolutionNote.trim() || input.note.trim() || 'Tindak lanjut diperbarui' });
+      result = structuredClone(row);
     });
+    demoFollowupReceipts.set(receiptKey,{ fingerprint, result });
+    return result;
+  },
+  async loadSupervisorIssueCategories(includeInactive = false): Promise<SupervisorIssueCategory[]> {
+    // Categories are intentionally read through a scoped RPC.  The raw table
+    // contains configuration metadata and must not become a generic directory
+    // fetch merely because a user can submit an outlet report.
+    if (!configured) return [];
+    user();
+    if (includeInactive) requireAdmin();
+    const data = await rpc('supervisor_issue_category_page', { p_include_inactive: includeInactive });
+    return (data?.items ?? []).map(mapSupervisorIssueCategory);
+  },
+  async loadSupervisorOperationConfiguration(): Promise<SupervisorOperationConfiguration> {
+    requireAdmin(); requireSupervisorBackend();
+    const data = await rpc('supervisor_operation_configuration_page', {});
+    return { categories: (data?.categories ?? []).map(mapSupervisorIssueCategory), routes: (data?.routes ?? []).map(mapSupervisorIssueRoute),
+      capabilities: (data?.capabilities ?? []).map(mapSupervisorCapability), asOf: data?.as_of ?? data?.asOf ?? new Date().toISOString() };
+  },
+  async saveSupervisorIssueCategory(input: SupervisorIssueCategorySaveInput): Promise<SupervisorIssueCategory> {
+    requireAdmin(); requireSupervisorBackend();
+    const code = input.code.trim().toLowerCase(), name = input.name.trim();
+    if (!/^[a-z][a-z0-9_]{1,47}$/.test(code) || name.length < 3 || name.length > 120) throw new Error('Kode kategori dan nama 3–120 karakter tidak valid.');
+    assertIdempotencyKey(input.idempotencyKey, 'konfigurasi kategori');
+    const id = input.id ?? null, expectedRevision = input.expectedRevision ?? null;
+    if (id && (!Number.isInteger(expectedRevision) || (expectedRevision ?? 0) < 1)) throw new Error('Revisi kategori tidak valid. Muat ulang dan tinjau perubahan terbaru.');
+    if (!id && expectedRevision !== null) throw new Error('Kategori baru tidak boleh memakai revisi lama.');
+    const row = await rpc('supervisor_issue_category_save_v2', { p_id: id, p_expected_revision: expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_code: code, p_name: name, p_active: input.active });
+    await refresh();
+    return mapSupervisorIssueCategory(row);
+  },
+  async saveSupervisorIssueRoute(input: SupervisorIssueRouteSaveInput): Promise<SupervisorIssueRoute> {
+    requireAdmin(); requireSupervisorBackend();
+    if (!input.categoryId) throw new Error('Pilih kategori untuk routing kendala.');
+    assertIdempotencyKey(input.idempotencyKey, 'konfigurasi routing');
+    const id = input.id ?? null, expectedRevision = input.expectedRevision ?? null;
+    if (id && (!Number.isInteger(expectedRevision) || (expectedRevision ?? 0) < 1)) throw new Error('Revisi routing tidak valid. Muat ulang dan tinjau perubahan terbaru.');
+    if (!id && expectedRevision !== null) throw new Error('Routing baru tidak boleh memakai revisi lama.');
+    const row = await rpc('supervisor_issue_route_save_v2', { p_id: id, p_expected_revision: expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_category_id: input.categoryId,
+      p_outlet_id: input.outletId ?? null, p_recipient_employee_id: input.recipientEmployeeId ?? null, p_active: input.active });
+    await refresh();
+    return mapSupervisorIssueRoute(row);
+  },
+  async saveSupervisorCapability(input: SupervisorCapabilitySaveInput): Promise<SupervisorCapabilitySaveResult> {
+    requireAdmin(); requireSupervisorBackend();
+    const capabilities = new Set(['issue_report', 'issue_report_for_other', 'issue_view', 'issue_handle', 'issue_configure', 'handover_monitor', 'summary_view', 'coverage_configure']);
+    if (!input.employeeId || !capabilities.has(input.capability)) throw new Error('Karyawan atau kemampuan operasional tidak valid.');
+    assertIdempotencyKey(input.idempotencyKey, 'konfigurasi kemampuan');
+    const id = input.id ?? null, expectedRevision = input.expectedRevision ?? null;
+    if (input.granted && (id || expectedRevision !== null)) throw new Error('Pemberian kemampuan baru tidak boleh memakai baseline lama.');
+    if (!input.granted && (!id || !Number.isInteger(expectedRevision) || (expectedRevision ?? 0) < 1)) throw new Error('Pencabutan kemampuan memerlukan revisi terbaru. Muat ulang dan tinjau konfigurasi.');
+    const row = await rpc('supervisor_capability_save_v2', { p_id: id, p_expected_revision: expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_employee_id: input.employeeId, p_capability: input.capability,
+      p_outlet_id: input.outletId ?? null, p_category_id: input.categoryId ?? null, p_granted: input.granted });
+    await refresh();
+    if (row?.granted === true && row.capability && typeof row.capability === 'object') {
+      return { granted: true, capability: mapSupervisorCapability(row.capability) };
+    }
+    if (row?.granted === false && typeof row.id === 'string' && typeof row.employee_id === 'string'
+      && typeof row.capability === 'string' && Number.isInteger(Number(row.revision))) {
+      return { granted: false, id: row.id, employeeId: row.employee_id, capability: row.capability,
+        outletId: nullable(row.outlet_id), categoryId: nullable(row.category_id), revision: Number(row.revision) };
+    }
+    throw new Error('Respons konfigurasi kemampuan tidak lengkap. Muat ulang sebelum mencoba lagi.');
+  },
+  async loadMySupervisorCapabilities(): Promise<SupervisorCapability[]> {
+    const actor = user();
+    requireSupervisorBackend();
+    // This is intentionally a direct self-scoped read. The table RLS permits
+    // only the current employee (or HR), so a capability delegate never has
+    // to fetch the HR directory merely to decide which Planning controls fit.
+    const { data, error } = await supabase!.from('supervisor_capabilities').select('*').eq('employee_id', actor.id);
+    if (error) fail(error);
+    return (data ?? []).map(mapSupervisorCapability);
+  },
+  async uploadOutletIssuePhoto(photo: File, idempotencyKey: string): Promise<string> {
+    requireSupervisorBackend();
+    assertIdempotencyKey(idempotencyKey, 'unggahan kendala');
+    if (!photo.size || photo.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) {
+      throw new Error('Foto kendala harus JPEG, PNG, atau WebP dengan ukuran maksimal 5 MB.');
+    }
+    const { data: { session } } = await supabase!.auth.getSession();
+    if (!session) throw new Error('Silakan masuk kembali sebelum mengunggah foto kendala.');
+    const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const)[photo.type as 'image/jpeg' | 'image/png' | 'image/webp'];
+    const path = `${session.user.id}/${idempotencyKey}.${extension}`;
+    const upload = await supabase!.storage.from('outlet-issue-photos').upload(path, photo, { contentType: photo.type, upsert: false });
+    if (upload.error) {
+      // The deterministic path binds the object to the persisted submission
+      // key.  A retry after a lost response may legitimately find the same
+      // object already stored, without changing the original payload.
+      const statusCode = Number((upload.error as { statusCode?: number | string }).statusCode ?? 0);
+      if (statusCode !== 409) fail(upload.error);
+    }
+    return path;
+  },
+  async createOutletIssuePhotoUrl(path: string): Promise<string> {
+    user();
+    requireSupervisorBackend();
+    if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|jpeg|png|webp)$/.test(path)) {
+      throw new Error('Jalur foto kendala tidak valid.');
+    }
+    // Storage RLS verifies that the caller may read the linked issue before
+    // the signed URL is minted. Keep this URL only in component state.
+    const { data, error } = await supabase!.storage.from('outlet-issue-photos').createSignedUrl(path, 300);
+    if (error || !data?.signedUrl) fail(error ?? new Error('Foto kendala belum dapat dibuka.'));
+    return data.signedUrl;
+  },
+  async loadOutletIssues(input: { view: OutletIssueView; outletId?: string; categoryId?: string; pageSize?: number; cursor?: Record<string, string | number> | null }): Promise<SupervisorPage<OutletIssue>> {
+    if (!configured) return { items: [], total: 0, hasMore: false, nextCursor: null, asOf: new Date().toISOString() };
+    user();
+    const pageSize = Math.min(Math.max(input.pageSize ?? 25, 1), 100);
+    const data = await rpc('outlet_issue_page', { p_outlet_id: input.outletId ?? null, p_category_id: input.categoryId ?? null,
+      p_status: input.view, p_page_size: pageSize, p_cursor: input.cursor ?? null });
+    return supervisorPage(data, mapOutletIssue);
+  },
+  async submitOutletIssue(input: OutletIssueSubmitInput): Promise<OutletIssue> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'laporan kendala');
+    if (!input.outletId || !input.categoryId || !['low', 'normal', 'high', 'urgent'].includes(input.urgency)
+      || input.description.trim().length < 5 || input.description.trim().length > 2000) {
+      throw new Error('Outlet, kategori, uraian 5–2.000 karakter, dan tingkat urgensi wajib diisi.');
+    }
+    if (input.photo && (typeof File === 'undefined' || !(input.photo instanceof File))) {
+      throw new Error('Foto laporan perlu dipilih ulang sebelum diunggah.');
+    }
+    if (input.photo && input.photoPath) throw new Error('Gunakan foto baru atau jalur foto draft yang sudah ada, bukan keduanya.');
+    let photoPath = input.photoPath ?? null;
+    if (input.photo) photoPath = await actions.uploadOutletIssuePhoto(input.photo, input.idempotencyKey);
+    try {
+      const row = await rpc('outlet_issue_submit', { p_outlet_id: input.outletId, p_category_id: input.categoryId,
+        p_description: input.description.trim(), p_urgency: input.urgency, p_photo_path: photoPath,
+        p_reporter_employee_id: input.reporterEmployeeId ?? null, p_idempotency_key: input.idempotencyKey });
+      await refresh();
+      return mapOutletIssue(row);
+    } catch (error) {
+      // A durable replay can supply a path that was uploaded before the
+      // pending RPC was persisted.  A definite SQL rejection rolled back the
+      // relation, so remove either form of unused upload; a network failure is
+      // deliberately retained for exact receipt replay.
+      await cleanupRejectedUpload('outlet-issue-photos', photoPath, error);
+      throw error;
+    }
+  },
+  async updateOutletIssue(input: OutletIssueUpdate): Promise<OutletIssue> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'pembaruan kendala');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || !['new', 'assigned', 'in_progress', 'completed'].includes(input.status)) {
+      throw new Error('Versi atau status kendala tidak valid. Muat ulang kasus sebelum menyimpan.');
+    }
+    if (input.status === 'completed' && input.resolutionNote.trim().length < 5) throw new Error('Catatan penyelesaian minimal 5 karakter.');
+    if (input.resolutionNote.length > 2000 || input.reason.length > 2000) throw new Error('Catatan kendala maksimal 2.000 karakter.');
+    if (input.dueAt && !Number.isFinite(Date.parse(input.dueAt))) throw new Error('Tenggat kendala tidak valid.');
+    const row = await rpc('outlet_issue_update_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_status: input.status, p_owner_id: input.ownerId,
+      p_due_at: input.dueAt, p_resolution_note: input.resolutionNote, p_reason: input.reason });
+    await refresh();
+    return mapOutletIssue(row);
+  },
+  async loadShiftHandovers(input: { outletId?: string; from?: string; to?: string; pageSize?: number; cursor?: Record<string, string | number> | null } = {}): Promise<SupervisorPage<ShiftHandover>> {
+    if (!configured) return { items: [], total: 0, hasMore: false, nextCursor: null, asOf: new Date().toISOString() };
+    user();
+    if (input.from) assertDateInput(input.from, 'Tanggal mulai serah terima');
+    if (input.to) assertDateInput(input.to, 'Tanggal akhir serah terima');
+    if (input.from && input.to && input.from > input.to) throw new Error('Rentang tanggal serah terima tidak valid.');
+    const data = await rpc('shift_handover_page', { p_outlet_id: input.outletId ?? null, p_from: input.from ?? null,
+      p_to: input.to ?? null, p_page_size: Math.min(Math.max(input.pageSize ?? 25, 1), 100), p_cursor: input.cursor ?? null });
+    return supervisorPage(data, mapShiftHandover);
+  },
+  async saveShiftHandover(input: ShiftHandoverSaveInput): Promise<ShiftHandover> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'serah terima');
+    assertDateInput(input.workDate, 'Tanggal serah terima');
+    if (!input.outletId || !input.senderAssignmentId || (!input.recipientEmployeeId && input.send)
+      || (input.recipientEmployeeId && !input.recipientAssignmentId)) throw new Error('Outlet, penugasan pengirim, dan penerima beserta jadwalnya wajib sesuai status serah terima.');
+    if (input.id && (!Number.isInteger(input.expectedVersion) || (input.expectedVersion ?? 0) < 1)) throw new Error('Versi serah terima tidak valid. Muat ulang catatan.');
+    if (input.pendingWork.length > 2000 || input.outletCondition.length > 2000 || input.notes.length > 2000
+      || input.pendingWork.trim().length + input.outletCondition.trim().length + input.notes.trim().length < 5) throw new Error('Isi serah terima harus 5–2.000 karakter.');
+    const row = await rpc('shift_handover_save_v2', { p_id: input.id ?? null, p_expected_version: input.expectedVersion ?? null,
+      p_idempotency_key: input.idempotencyKey, p_outlet_id: input.outletId, p_work_date: input.workDate,
+      p_sender_assignment_id: input.senderAssignmentId, p_recipient_employee_id: input.recipientEmployeeId,
+      p_recipient_assignment_id: input.recipientAssignmentId, p_pending_work: input.pendingWork, p_outlet_condition: input.outletCondition,
+      p_notes: input.notes, p_send: input.send, p_reason: input.reason });
+    await refresh();
+    return mapShiftHandover(row);
+  },
+  async respondShiftHandover(input: ShiftHandoverResponseInput): Promise<ShiftHandover> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'respons serah terima');
+    if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || input.reason.trim().length < 3) throw new Error('Versi dan alasan respons serah terima wajib diisi.');
+    const row = await rpc('shift_handover_respond_v2', { p_id: input.id, p_expected_version: input.expectedVersion,
+      p_idempotency_key: input.idempotencyKey, p_accept: input.accept, p_reason: input.reason });
+    await refresh();
+    return mapShiftHandover(row);
+  },
+  async loadShiftExchanges(input: { view?: ShiftExchangeView; pageSize?: number; cursor?: Record<string, string | number> | null } = {}): Promise<SupervisorPage<ShiftExchangeRequest>> {
+    if (!configured) return { items: [], total: 0, hasMore: false, nextCursor: null, asOf: new Date().toISOString() };
+    user();
+    const data = await rpc('shift_exchange_page', { p_status: input.view ?? 'active', p_page_size: Math.min(Math.max(input.pageSize ?? 25, 1), 100),
+      p_cursor: input.cursor ?? null });
+    return supervisorPage(data, mapShiftExchange);
+  },
+  async submitShiftExchange(input: ShiftExchangeSubmitInput): Promise<ShiftExchangeRequest> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'pengajuan pertukaran');
+    if (!['swap', 'replacement'].includes(input.requestType) || !input.requesterAssignmentId || !input.peerEmployeeId || input.reason.trim().length < 5 || input.reason.length > 2000) {
+      throw new Error('Jenis, jadwal pengusul, rekan, dan alasan pengajuan 5–2.000 karakter wajib diisi.');
+    }
+    const row = await rpc('shift_exchange_submit', { p_request_type: input.requestType, p_requester_assignment_id: input.requesterAssignmentId,
+      p_peer_employee_id: input.peerEmployeeId, p_reason: input.reason, p_idempotency_key: input.idempotencyKey });
+    await refresh();
+    return mapShiftExchange(row);
+  },
+  async respondShiftExchange(input: ShiftExchangeResponseInput): Promise<ShiftExchangeRequest> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'respons pengajuan');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || input.note.trim().length < 3 || input.note.length > 2000) throw new Error('Versi dan catatan respons pengajuan wajib diisi.');
+    const row = await rpc('shift_exchange_respond_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_accept: input.accept, p_note: input.note });
+    await refresh();
+    return mapShiftExchange(row);
+  },
+  async decideShiftExchange(input: ShiftExchangeDecisionInput): Promise<ShiftExchangeRequest> {
+    requireAdmin(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'keputusan pengajuan');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || input.note.trim().length < 5 || input.note.length > 2000) throw new Error('Versi dan catatan keputusan minimal 5 karakter wajib diisi.');
+    const row = await rpc('shift_exchange_decide_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_approved: input.approved, p_note: input.note });
+    await refresh();
+    return mapShiftExchange(row);
+  },
+  async cancelShiftExchange(input: ShiftExchangeCancelInput): Promise<ShiftExchangeRequest> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'pembatalan pengajuan');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || input.note.trim().length < 3 || input.note.length > 2000) {
+      throw new Error('Versi dan alasan pembatalan pengajuan wajib diisi.');
+    }
+    const row = await rpc('shift_exchange_cancel_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
+      p_idempotency_key: input.idempotencyKey, p_note: input.note });
+    await refresh();
+    return mapShiftExchange(row);
+  },
+  async expireStaleShiftExchanges(idempotencyKey: string): Promise<{ expiredCount: number; asOf: string }> {
+    requireAdmin(); requireSupervisorBackend();
+    assertIdempotencyKey(idempotencyKey, 'penutupan pengajuan kedaluwarsa');
+    const row = await rpc('shift_exchange_expire_stale_v2', { p_idempotency_key: idempotencyKey });
+    await refresh();
+    return { expiredCount: numberValue(row?.expired_count ?? row?.expiredCount), asOf: row?.as_of ?? row?.asOf ?? new Date().toISOString() };
+  },
+  async loadIntervalRequirements(outletId?: string): Promise<StaffingIntervalRequirement[]> {
+    if (!configured) return [];
+    user();
+    let query = supabase!.from('staffing_interval_requirements').select('*').order('weekday').order('effective_from').order('starts_at');
+    if (outletId) query = query.eq('outlet_id', outletId);
+    const { data, error } = await query;
+    if (error) fail(error);
+    return (data ?? []).map(mapIntervalRequirement);
+  },
+  async saveIntervalRequirement(input: StaffingIntervalRequirementInput): Promise<StaffingIntervalRequirement> {
+    user(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'kebutuhan interval');
+    assertDateInput(input.effectiveFrom, 'Tanggal berlaku kebutuhan interval');
+    if (input.effectiveUntil) assertDateInput(input.effectiveUntil, 'Tanggal akhir kebutuhan interval');
+    assertTimeInput(input.startsAt, 'Jam mulai interval'); assertTimeInput(input.endsAt, 'Jam selesai interval');
+    if (!input.outletId || !Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6 || !Number.isInteger(input.minimum) || input.minimum < 0 || input.minimum > 100
+      || input.endsAt <= input.startsAt || (input.effectiveUntil && input.effectiveUntil < input.effectiveFrom)) throw new Error('Kebutuhan interval tidak valid.');
+    if (input.id && (!Number.isInteger(input.expectedRevision) || (input.expectedRevision ?? 0) < 1 || input.reason.trim().length < 5)) throw new Error('Perubahan kebutuhan interval memerlukan versi dan alasan minimal 5 karakter.');
+    const row = await rpc('staffing_interval_requirement_save_v2', { p_id: input.id ?? null, p_expected_revision: input.expectedRevision ?? null,
+      p_idempotency_key: input.idempotencyKey, p_outlet_id: input.outletId, p_weekday: input.weekday, p_starts_at: input.startsAt,
+      p_ends_at: input.endsAt, p_minimum: input.minimum, p_effective_from: input.effectiveFrom, p_effective_until: input.effectiveUntil,
+      p_reason: input.reason });
+    await refresh();
+    return mapIntervalRequirement(row);
+  },
+  async saveCashierAssignmentPlan(input: CashierAssignmentPlanInput): Promise<CashierAssignment> {
+    requireAdmin(); requireSupervisorBackend();
+    assertIdempotencyKey(input.idempotencyKey, 'jam rencana Middle');
+    assertTimeInput(input.startsAt, 'Jam mulai Middle'); assertTimeInput(input.endsAt, 'Jam selesai Middle');
+    if (!input.assignmentId || !input.expectedUpdatedAt || !Number.isFinite(Date.parse(input.expectedUpdatedAt)) || input.reason.trim().length < 5) throw new Error('Penugasan, versi jadwal, dan alasan jam Middle minimal 5 karakter wajib diisi.');
+    if (elapsedTimeMinutes(input.startsAt, input.endsAt) !== 8 * 60) throw new Error('Jam rencana Middle harus tepat 8 jam termasuk istirahat.');
+    const row = await rpc('cashier_assignment_plan_save_v2', { p_assignment_id: input.assignmentId, p_expected_updated_at: input.expectedUpdatedAt,
+      p_idempotency_key: input.idempotencyKey, p_starts_at: input.startsAt, p_ends_at: input.endsAt, p_reason: input.reason });
+    await refresh();
+    return mapCashierAssignment(row);
+  },
+  async loadSupervisorCoverage(outletId: string, workDate: string): Promise<SupervisorCoverage> {
+    user(); requireSupervisorBackend(); assertDateInput(workDate, 'Tanggal cakupan');
+    if (!outletId) throw new Error('Pilih outlet untuk melihat cakupan.');
+    return mapSupervisorCoverage(await rpc('supervisor_interval_coverage', { p_outlet_id: outletId, p_work_date: workDate }));
+  },
+  async loadSupervisorReport(input: { from: string; to: string; outletId?: string | null; employeeId?: string | null }): Promise<SupervisorReport> {
+    user(); requireSupervisorBackend(); assertDateInput(input.from, 'Tanggal awal laporan'); assertDateInput(input.to, 'Tanggal akhir laporan');
+    const duration = (Date.parse(`${input.to}T00:00:00Z`) - Date.parse(`${input.from}T00:00:00Z`)) / 86_400_000;
+    if (duration < 0 || duration > 62) throw new Error('Rentang laporan maksimal 63 hari.');
+    return mapSupervisorReport(await rpc('supervisor_report_page', { p_from: input.from, p_to: input.to,
+      p_outlet_id: input.outletId ?? null, p_employee_id: input.employeeId ?? null }));
   },
   async submitAttendanceCorrection(input: AttendanceCorrectionInput) {
     const actor = user(); assertCorrectionInput(get(app),actor.id,input);

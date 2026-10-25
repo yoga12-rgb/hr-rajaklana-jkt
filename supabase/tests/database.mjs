@@ -75,6 +75,22 @@ for (const name of migrationNames) {
   }
 }
 const scalar = async (sql, params=[]) => (await db.query(sql,params)).rows[0];
+const realtimeSupervisorTables=(await db.query(`select c.relname from pg_catalog.pg_publication p
+  join pg_catalog.pg_publication_rel pr on pr.prpubid=p.oid
+  join pg_catalog.pg_class c on c.oid=pr.prrelid
+  join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+  where p.pubname='supabase_realtime' and n.nspname='public'
+    and c.relname in ('outlet_issues','shift_handovers','shift_exchange_requests','staffing_interval_requirements')
+  order by c.relname`)).rows.map(row=>row.relname);
+assert.deepEqual(realtimeSupervisorTables,['outlet_issues','shift_exchange_requests','shift_handovers','staffing_interval_requirements'],
+  'Supervisor mutations are published to the Realtime channel the client subscribes to');
+let followupMutationKey = 0;
+const updateFollowup = async (id,status,ownerId,note,resolutionNote,dueAt=undefined,reason='') => {
+  const current=await scalar('select revision,due_at from public.spv_followups where id=$1',[id]);
+  const key=`40000000-0000-4000-8000-${String(++followupMutationKey).padStart(12,'0')}`;
+  return (await scalar(`select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9) as row`,
+    [id,current.revision,key,status,ownerId,note,resolutionNote,dueAt===undefined?current.due_at:dueAt,reason])).row;
+};
 // Employee mutexes must serialize competing writes while remaining compatible
 // with FK KEY SHARE checks for a different employee's audit/notification. Using
 // FOR UPDATE here permits reciprocal HR applicants to deadlock each other.
@@ -738,6 +754,8 @@ for(const signature of [
   'public.cashier_roster_batch_save(date,uuid,jsonb)',
   'public.spv_followup_start(text,date,uuid,uuid,text,text,uuid)',
   'public.spv_followup_update(uuid,text,uuid,text,text)',
+  'public.spv_followup_update_v2(uuid,bigint,uuid,text,uuid,text,text,timestamp with time zone,text)',
+  'public.spv_followup_page(text,uuid,date,date,integer,jsonb)',
   'public.attendance_correction_submit(uuid,date,timestamptz,timestamptz,text,text)',
   'public.attendance_correction_decide(uuid,boolean,text)','public.attendance_correction_cancel(uuid)',
   'public.leave_record_retrospective(uuid,text,date,date,text,text,time,time,jsonb,text,text)',
@@ -920,7 +938,7 @@ const rosterCaseDate=await scalar(`select d::date::text as day from generate_ser
   order by d desc limit 1`,[operationalId]);
 const rosterCase=(await scalar("select to_jsonb(public.spv_followup_start('unassigned',$1,$2,$3,null,'roster',null)) as row",
   [rosterCaseDate.day,outlet.id,operationalId])).row;
-await scalar("select public.spv_followup_update($1,'in_progress',$2,'Memeriksa outlet penugasan sementara','')",[rosterCase.id,adminId]);
+await updateFollowup(rosterCase.id,'in_progress',adminId,'Memeriksa outlet penugasan sementara','',null,'Tetapkan PIC pengujian');
 const thirdOutlet=await scalar("insert into public.outlets(name,latitude,longitude,radius_m) values('Outlet Fallback Fixture',-6.3,106.9,100) returning id");
 const rosterAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Penempatan pertama di outlet sementara')) as row",
   [operationalId,rosterCaseDate.day,alternateOutlet.id])).row;
@@ -954,8 +972,34 @@ const followArgs=['missing_clockin',followDate,alternateOutlet.id,operationalId,
 const follow=(await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row;
 assert.equal(follow.status,'new');
 assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',followArgs)).row.id,follow.id,'refresh/retry reuses one case');
-const inProgress=(await scalar("select to_jsonb(public.spv_followup_update($1,'in_progress',$2,$3,'')) as row",[follow.id,adminId,'Menghubungi kasir untuk konfirmasi'])).row;
+const inProgress=await updateFollowup(follow.id,'in_progress',adminId,'Menghubungi kasir untuk konfirmasi','',null,'Tetapkan PIC pengujian');
 assert.equal(inProgress.owner_id,adminId);
+const followupDue=`${followDate}T23:59:00+07:00`, followupRevision=inProgress.revision;
+const receiptKey='40000000-0000-4000-8000-000000009901';
+const dueMutationArgs=[follow.id,followupRevision,receiptKey,'in_progress',adminId,'Menghubungi kasir untuk konfirmasi','',followupDue,'Tetapkan tenggat pengujian'];
+const dueMutation=(await scalar('select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9) as row',dueMutationArgs)).row;
+assert.equal(dueMutation.revision,followupRevision+1,'successful mutation advances the monotonic server revision');
+assert.deepEqual((await scalar('select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9) as row',dueMutationArgs)).row,dueMutation,
+  'same actor/key/payload replays the original receipt without duplicate audit');
+await workflowError('select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+  [follow.id,followupRevision,receiptKey,'in_progress',adminId,'Payload berbeda','',followupDue,'Tetapkan tenggat pengujian'],'sudah dipakai');
+await workflowError('select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+  [follow.id,followupRevision,'40000000-0000-4000-8000-000000009902','in_progress',adminId,'Tulisan SPV kedua','',followupDue,'Perubahan dari SPV kedua'],'berubah sejak dibuka');
+await db.exec('reset role');
+assert.equal((await scalar('select count(*)::int as count from private.spv_followup_receipts where idempotency_key=$1',['40000000-0000-4000-8000-000000009902'])).count,0,
+  'stale transaction rolls its provisional receipt back');
+await asUser(adminAuth);
+const firstPage=(await scalar("select public.spv_followup_page('all_open',null,null,null,1,null) as page")).page;
+assert.equal(firstPage.items.length,1); assert.equal(firstPage.has_more,true); assert.ok(firstPage.total>=2);
+const secondPage=(await scalar("select public.spv_followup_page('all_open',null,null,null,1,$1::jsonb) as page",[JSON.stringify(firstPage.next_cursor)])).page;
+assert.notEqual(secondPage.items[0].id,firstPage.items[0].id,'keyset pagination does not duplicate the previous row');
+const minePage=(await scalar("select public.spv_followup_page('mine',null,null,null,25,null) as page")).page;
+assert.ok(minePage.items.some(row=>row.id===follow.id),'yesterday case remains visible in My Tasks without selecting its work date');
+await db.exec('reset role');
+assert.equal((await scalar('select private.dispatch_spv_followup_due(100) as count')).count,1);
+assert.equal((await scalar('select private.dispatch_spv_followup_due(100) as count')).count,0,'overdue dispatcher is idempotent per revision and recipient');
+await asUser(adminAuth);
+assert.equal((await scalar("select count(*)::int as count from public.notifications where entity_type='spv_followup' and entity_id=$1",[follow.id])).count,1);
 const movedSource=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Rotasi outlet dan shift selama tindak lanjut',$4,false)) as row",
   [operationalId,followDate,alternateOutlet.id,followAssignment.id])).row;
 const refreshedFollow=(await scalar('select to_jsonb(f) as row from public.spv_followups f where id=$1',[follow.id])).row;
@@ -963,6 +1007,7 @@ assert.equal(refreshedFollow.shift,'afternoon','an active case follows its chang
 assert.equal(refreshedFollow.outlet_id,alternateOutlet.id,'an active case follows its changed source outlet');
 assert.equal(refreshedFollow.owner_id,adminId,'source refresh preserves the selected owner');
 assert.equal(refreshedFollow.note,'Menghubungi kasir untuk konfirmasi','source refresh preserves follow-up notes');
+assert.ok(refreshedFollow.revision>dueMutation.revision,'source context mutation also advances the follow-up revision');
 assert.ok((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1 and action='source_context_refreshed'",[follow.id])).count===1,
   'source move records before/after follow-up audit evidence');
 const offFollowAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'off','HR menetapkan Libur saat kasus masih diproses',$4,false)) as row",
@@ -973,7 +1018,7 @@ assert.deepEqual(offFollow,{status:'in_progress',shift:'off',owner_id:adminId,no
 assert.equal(offFollowAssignment.shift,'off');
 await scalar("select public.cashier_assignment_save($1,$2,$3,'afternoon','Pulihkan sumber aktif sebelum penyelesaian',$4,false)",
   [operationalId,followDate,alternateOutlet.id,followAssignment.id]);
-const completed=(await scalar("select to_jsonb(public.spv_followup_update($1,'completed',$2,$3,$4)) as row",[follow.id,adminId,'Kasir memberi penjelasan','Konfirmasi langsung selesai dan dicatat'])).row;
+const completed=await updateFollowup(follow.id,'completed',adminId,'Kasir memberi penjelasan','Konfirmasi langsung selesai dan dicatat');
 assert.equal(completed.status,'completed');
 await scalar("select public.cashier_assignment_save($1,$2,$3,'morning','Sumber bergerak setelah kasus selesai',$4,false)",[operationalId,followDate,outlet.id,followAssignment.id]);
 const completedSnapshot=(await scalar('select to_jsonb(f) as row from public.spv_followups f where id=$1',[follow.id])).row;
@@ -987,7 +1032,7 @@ assert.equal(reopened.outlet_id,outlet.id,'reopening uses the source current out
 assert.equal(reopened.shift,'morning','reopening uses the source current shift');
 assert.equal((await scalar('select to_jsonb(public.spv_followup_start($1,$2,$3,$4,$5,$6,$7)) as row',reopenArgs)).row.reopened_count,1,
   'retrying the same open case does not count a second reopen');
-assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,7);
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='spv_followup' and entity_id=$1",[follow.id])).count,8);
 
 const shortDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-7)::text as day")).day;
 const shortAttendance=(await scalar('select to_jsonb(public.attendance_record_manual($1,$2,$3,$4,$5)) as row',
@@ -1041,6 +1086,489 @@ await workflowError('select * from public.staffing_requirements',[],'permission 
 await workflowError('select * from public.spv_followups',[],'permission denied');
 await db.exec('rollback');
 console.log('Operational workflows OK: mandatoryroster/off/shift/tempoutlet,historicalclockout,HRassignmentguard,ownrequests,RLS,atomicmanual,stalesnapshot/outletguard,retroactiveleave,hourcorrection,yearrefund,workflowinbox,staffinghistory,atomicweeklybatch,idempotency,followupownership,reopen');
+
+// Supervisor operations stay in a separate rollback fixture. It exercises
+// dynamic capability scope, immutable operational history, version conflicts,
+// idempotent replay, handover recipient controls, and the roster transaction
+// behind a peer-approved shift exchange.
+await db.exec('begin');
+for (const signature of [
+  'public.supervisor_capability_save(uuid,text,uuid,uuid,boolean)',
+  'public.supervisor_issue_category_save(uuid,text,text,boolean)',
+  'public.supervisor_issue_category_page(boolean)',
+  'public.supervisor_operation_configuration_page()',
+  'public.supervisor_issue_route_save(uuid,uuid,uuid,uuid,boolean)',
+  'public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)',
+  'public.supervisor_issue_route_save_v2(uuid,bigint,uuid,uuid,uuid,uuid,boolean)',
+  'public.supervisor_capability_save_v2(uuid,bigint,uuid,uuid,text,uuid,uuid,boolean)',
+  'public.outlet_issue_submit(uuid,uuid,text,text,text,uuid,uuid)',
+  'public.outlet_issue_update_v2(uuid,bigint,uuid,text,uuid,timestamptz,text,text)',
+  'public.outlet_issue_page(uuid,uuid,text,integer,jsonb)',
+  'public.shift_handover_save_v2(uuid,bigint,uuid,uuid,date,uuid,uuid,uuid,text,text,text,boolean,text)',
+  'public.shift_handover_respond_v2(uuid,bigint,uuid,boolean,text)',
+  'public.shift_handover_page(uuid,date,date,integer,jsonb)',
+  'public.shift_exchange_submit(text,uuid,uuid,text,uuid)',
+  'public.shift_exchange_respond_v2(uuid,bigint,uuid,boolean,text)',
+  'public.shift_exchange_decide_v2(uuid,bigint,uuid,boolean,text)',
+  'public.shift_exchange_page(text,integer,jsonb)'
+]) {
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',signature,'EXECUTE'])).allowed,true,`${signature} is callable only through secured RPC`);
+  assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['anon',signature,'EXECUTE'])).allowed,false,`${signature} rejects anon`);
+}
+assert.equal((await scalar("select has_table_privilege('authenticated',c.oid,'select') as allowed from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='private' and c.relname='supervisor_configuration_receipts'")).allowed,false,
+  'configuration idempotency receipts stay private from authenticated clients');
+assert.equal((await scalar("select c.relrowsecurity as enabled from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='private' and c.relname='supervisor_configuration_receipts'")).enabled,true,
+  'configuration idempotency receipts retain RLS even if a future grant is added');
+await asUser('', 'anon');
+await workflowError("select public.supervisor_issue_category_save_v2(null,null,$1,'anon_konfigurasi','Konfigurasi anonim',true)",['70000000-0000-4000-8000-000000000091'],'permission denied');
+await asUser(bakerAuth);
+await workflowError("select public.supervisor_issue_category_save_v2(null,null,$1,'nonhr_konfigurasi','Konfigurasi bukan HR',true)",['70000000-0000-4000-8000-000000000092'],'Admin HR');
+await workflowError('select public.supervisor_issue_route_save_v2(null,null,$1,null,null,null,true)',['70000000-0000-4000-8000-000000000093'],'Admin HR');
+await workflowError("select public.supervisor_capability_save_v2(null,null,$1,null,'issue_view',null,null,true)",['70000000-0000-4000-8000-000000000094'],'Admin HR');
+await asUser(adminAuth);
+const issueCategory=(await scalar("select to_jsonb(public.supervisor_issue_category_save(null,'sarana_uji','Sarana dan peralatan uji',true)) as row")).row;
+await asUser(cashierAuth);
+const reporterCategories=(await scalar('select public.supervisor_issue_category_page(false) as page')).page;
+assert.equal(reporterCategories.items[0].id,issueCategory.id,'reporter receives the narrow active category catalogue through RPC');
+await asUser(bakerAuth);
+await workflowError('select public.supervisor_issue_category_page(true)',[],'Admin HR');
+await workflowError('select public.supervisor_operation_configuration_page()',[],'Admin HR');
+await asUser(adminAuth);
+const initialConfiguration=(await scalar('select public.supervisor_operation_configuration_page() as page')).page;
+assert.equal(initialConfiguration.categories[0].id,issueCategory.id,'Admin HR alone receives the route/capability configuration snapshot');
+assert.equal(initialConfiguration.categories.find((row)=>row.id===issueCategory.id).revision,1,
+  'configuration snapshot exposes category revisions for v2 baselines');
+// An Admin HR caller must not lend their own unrestricted authority to a
+// recipient selected in routing. Both compatibility and v2 saves validate the
+// target employee's current scoped handling capability.
+await workflowError('select public.supervisor_issue_route_save(null,$1,$2,$3,true)',[issueCategory.id,outlet.id,cashierId],
+  'Penerima routing belum mempunyai kemampuan');
+await workflowError('select public.supervisor_issue_route_save_v2(null,null,$1,$2,$3,$4,true)',
+  ['70000000-0000-4000-8000-000000000099',issueCategory.id,outlet.id,cashierId], 'Penerima routing belum mempunyai kemampuan');
+assert.equal((await scalar('select count(*)::int as count from public.supervisor_issue_routes where category_id=$1 and outlet_id=$2 and recipient_employee_id=$3',
+  [issueCategory.id,outlet.id,cashierId])).count,0,'an Admin HR cannot route a new issue to an unrelated active cashier');
+await scalar('select public.supervisor_capability_save($1,$2,$3,$4,true) as row',[bakerId,'issue_view',outlet.id,issueCategory.id]);
+await scalar('select public.supervisor_capability_save($1,$2,$3,$4,true) as row',[bakerId,'issue_handle',outlet.id,issueCategory.id]);
+const issueRoute=(await scalar('select to_jsonb(public.supervisor_issue_route_save(null,$1,$2,$3,true)) as row',[issueCategory.id,outlet.id,bakerId])).row;
+assert.equal(issueRoute.recipient_employee_id,bakerId,'dynamic category route retains its explicitly configured recipient');
+const configAdminOutlet=await scalar("insert into public.outlets(name,latitude,longitude,radius_m) values('Outlet penerima Admin konfigurasi',-6.31,106.91,100) returning id");
+const adminRoute=(await scalar('select public.supervisor_issue_route_save_v2(null,null,$1,$2,$3,$4,true) as row',
+  ['70000000-0000-4000-8000-000000000097',issueCategory.id,configAdminOutlet.id,adminId])).row;
+assert.equal(adminRoute.recipient_employee_id,adminId,'an active Admin HR remains a valid route recipient without a redundant capability row');
+await workflowError('select public.supervisor_issue_route_save_v2(null,null,$1,$2,null,$3,true)',
+  ['70000000-0000-4000-8000-000000000098',issueCategory.id,bakerId], 'Penerima routing belum mempunyai kemampuan');
+const configuredRows=(await scalar('select public.supervisor_operation_configuration_page() as page')).page;
+assert.equal(configuredRows.routes.find((row)=>row.id===issueRoute.id).revision,1,
+  'configuration snapshot exposes route revisions for v2 baselines');
+assert.equal(configuredRows.capabilities.find((row)=>row.employee_id===bakerId && row.capability==='issue_view' && row.outlet_id===outlet.id && row.category_id===issueCategory.id).revision,1,
+  'configuration snapshot exposes capability revisions for v2 baselines');
+const invalidCategoryReceiptKey='70000000-0000-4000-8000-000000000100';
+await workflowError("select public.supervisor_issue_category_save_v2(null,null,$1,'x','Tidak valid',true)",[invalidCategoryReceiptKey],'Kode atau nama kategori tidak valid');
+const recoveredCategoryReceipt=(await scalar("select public.supervisor_issue_category_save_v2(null,null,$1,'konfigurasi_recovery','Receipt gagal dapat dicoba ulang',true) as row",[invalidCategoryReceiptKey])).row;
+assert.equal(recoveredCategoryReceipt.revision,1,'a failed category mutation leaves no dangling receipt and can retry with the same key');
+const v2CategoryKey='70000000-0000-4000-8000-000000000101';
+const v2Category=(await scalar("select public.supervisor_issue_category_save_v2(null,null,$1,'konfigurasi_uji','Konfigurasi bersamaan uji',true) as row",[v2CategoryKey])).row;
+assert.equal(v2Category.revision,1,'new configuration category begins with an explicit revision');
+assert.deepEqual((await scalar("select public.supervisor_issue_category_save_v2(null,null,$1,'konfigurasi_uji','Konfigurasi bersamaan uji',true) as row",[v2CategoryKey])).row,v2Category,
+  'category create replay returns the original row without a duplicate audit');
+const v2CategoryAudits=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_category' and entity_id=$1",[v2Category.id])).count;
+await workflowError("select public.supervisor_issue_category_save_v2(null,null,$1,'konfigurasi_uji','Konfigurasi duplikat bersamaan',true)",
+  ['70000000-0000-4000-8000-000000000112'],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_category' and entity_id=$1",[v2Category.id])).count,v2CategoryAudits,
+  'a duplicate category create is conflict-safe and leaves no partial audit');
+await workflowError("select public.supervisor_issue_category_save_v2(null,null,$1,'konfigurasi_lain','Payload lain pada key yang sama',true)",[v2CategoryKey],'Kunci konfigurasi');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_category' and entity_id=$1",[v2Category.id])).count,v2CategoryAudits,
+  'a category key/body mismatch leaves no partial audit');
+const v2CategoryUpdateKey='70000000-0000-4000-8000-000000000102';
+const v2CategoryUpdate=(await scalar("select public.supervisor_issue_category_save_v2($1,1,$2,'konfigurasi_uji','Konfigurasi bersamaan diperbarui',true) as row",
+  [v2Category.id,v2CategoryUpdateKey])).row;
+assert.equal(v2CategoryUpdate.revision,2,'category update advances the revision atomically');
+const categoryBeforeStale=(await scalar('select to_jsonb(c) as row from public.supervisor_issue_categories c where c.id=$1',[v2Category.id])).row;
+const v2CategoryAuditAfterUpdate=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_category' and entity_id=$1",[v2Category.id])).count;
+await workflowError("select public.supervisor_issue_category_save_v2($1,1,$2,'konfigurasi_uji','Konflik kategori usang',true)",
+  [v2Category.id,'70000000-0000-4000-8000-000000000103'],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_category' and entity_id=$1",[v2Category.id])).count,v2CategoryAuditAfterUpdate,
+  'a stale category update leaves no partial audit');
+assert.deepEqual((await scalar('select to_jsonb(c) as row from public.supervisor_issue_categories c where c.id=$1',[v2Category.id])).row,categoryBeforeStale,
+  'a stale category update leaves the current row untouched');
+await workflowError("select public.supervisor_issue_category_save_v2($1,1,$2,'konfigurasi_uji','Konflik kategori usang',true)",
+  [v2Category.id,'70000000-0000-4000-8000-000000000103'],'berubah sejak dibuka');
+const legacyCategory=(await scalar("select to_jsonb(public.supervisor_issue_category_save($1,'konfigurasi_uji','Diperbarui lewat kompatibilitas lama',true)) as row",[v2Category.id])).row;
+assert.equal(legacyCategory.revision,3,'the legacy category RPC also advances the v2 baseline');
+assert.deepEqual((await scalar("select public.supervisor_issue_category_save_v2($1,1,$2,'konfigurasi_uji','Konfigurasi bersamaan diperbarui',true) as row",
+  [v2Category.id,v2CategoryUpdateKey])).row,v2CategoryUpdate,
+  'category retry still returns its original receipt after a later legacy revision');
+const routeV2Key='70000000-0000-4000-8000-000000000104';
+const routeV2=(await scalar('select public.supervisor_issue_route_save_v2($1,$2,$3,$4,$5,$6,true) as row',
+  [issueRoute.id,issueRoute.revision,routeV2Key,issueCategory.id,outlet.id,bakerId])).row;
+assert.equal(routeV2.revision,2,'route update advances its own revision');
+const routeBeforeStale=(await scalar('select to_jsonb(r) as row from public.supervisor_issue_routes r where r.id=$1',[issueRoute.id])).row;
+const routeAuditsAfter=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_route' and entity_id=$1",[issueRoute.id])).count;
+await workflowError('select public.supervisor_issue_route_save_v2(null,null,$1,$2,$3,$4,true)',
+  ['70000000-0000-4000-8000-000000000113',issueCategory.id,outlet.id,bakerId],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_route' and entity_id=$1",[issueRoute.id])).count,routeAuditsAfter,
+  'a duplicate route create is conflict-safe and leaves no partial audit');
+await workflowError('select public.supervisor_issue_route_save_v2($1,$2,$3,$4,$5,$6,false)',
+  [issueRoute.id,issueRoute.revision,'70000000-0000-4000-8000-000000000105',issueCategory.id,outlet.id,bakerId],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_route' and entity_id=$1",[issueRoute.id])).count,routeAuditsAfter,
+  'a stale route update leaves no partial audit');
+assert.deepEqual((await scalar('select to_jsonb(r) as row from public.supervisor_issue_routes r where r.id=$1',[issueRoute.id])).row,routeBeforeStale,
+  'a stale route update leaves the current row untouched');
+await workflowError('select public.supervisor_issue_route_save_v2($1,$2,$3,$4,$5,$6,false)',
+  [issueRoute.id,issueRoute.revision,routeV2Key,issueCategory.id,outlet.id,bakerId],'Kunci konfigurasi');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_issue_route' and entity_id=$1",[issueRoute.id])).count,routeAuditsAfter,
+  'a route replay key/body mismatch leaves no partial audit');
+const legacyRoute=(await scalar('select to_jsonb(public.supervisor_issue_route_save($1,$2,$3,$4,true)) as row',
+  [issueRoute.id,issueCategory.id,outlet.id,bakerId])).row;
+assert.equal(legacyRoute.revision,3,'the legacy route RPC also advances the v2 baseline');
+assert.deepEqual((await scalar('select public.supervisor_issue_route_save_v2($1,$2,$3,$4,$5,$6,true) as row',
+  [issueRoute.id,issueRoute.revision,routeV2Key,issueCategory.id,outlet.id,bakerId])).row,routeV2,
+  'route replay returns the original result after a later valid legacy change');
+const capabilityV2Key='70000000-0000-4000-8000-000000000106';
+const capabilityV2=(await scalar("select public.supervisor_capability_save_v2(null,null,$1,$2,'issue_configure',$3,$4,true) as row",
+  [capabilityV2Key,bakerId,outlet.id,issueCategory.id])).row;
+assert.equal(capabilityV2.granted,true);
+const capabilityRow=capabilityV2.capability;
+assert.equal(capabilityRow.revision,1,'a capability grant carries its baseline row');
+assert.deepEqual((await scalar("select public.supervisor_capability_save_v2(null,null,$1,$2,'issue_configure',$3,$4,true) as row",
+  [capabilityV2Key,bakerId,outlet.id,issueCategory.id])).row,capabilityV2,
+  'capability grant replay returns the original receipt');
+const capabilityAuditsAfterGrant=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count;
+await workflowError("select public.supervisor_capability_save_v2(null,null,$1,$2,'issue_configure',$3,$4,true)",
+  ['70000000-0000-4000-8000-000000000109',bakerId,outlet.id,issueCategory.id],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count,capabilityAuditsAfterGrant,
+  'a duplicate capability grant is a retryable conflict with no partial audit');
+await scalar('select public.supervisor_capability_save($1,$2,$3,$4,true) as row',[bakerId,'issue_configure',outlet.id,issueCategory.id]);
+const capabilityCurrent=await scalar('select id,revision from public.supervisor_capabilities where id=$1',[capabilityRow.id]);
+assert.equal(capabilityCurrent.revision,2,'legacy capability maintenance advances the v2 baseline');
+assert.deepEqual((await scalar("select public.supervisor_capability_save_v2(null,null,$1,$2,'issue_configure',$3,$4,true) as row",
+  [capabilityV2Key,bakerId,outlet.id,issueCategory.id])).row,capabilityV2,
+  'capability grant replay returns the original result after a later valid legacy change');
+const capabilityBeforeStale=(await scalar('select to_jsonb(c) as row from public.supervisor_capabilities c where c.id=$1',[capabilityRow.id])).row;
+const capabilityAuditsBeforeStale=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count;
+await workflowError("select public.supervisor_capability_save_v2($1,1,$2,$3,'issue_configure',$4,$5,false)",
+  [capabilityRow.id,'70000000-0000-4000-8000-000000000107',bakerId,outlet.id,issueCategory.id],'berubah sejak dibuka');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count,capabilityAuditsBeforeStale,
+  'a stale capability revoke leaves no partial audit');
+assert.deepEqual((await scalar('select to_jsonb(c) as row from public.supervisor_capabilities c where c.id=$1',[capabilityRow.id])).row,capabilityBeforeStale,
+  'a stale capability revoke leaves the current grant untouched');
+const capabilityRevokeKey='70000000-0000-4000-8000-000000000108';
+await workflowError("select public.supervisor_capability_save_v2(null,null,$1,$2,'issue_configure',$3,$4,false)",
+  [capabilityRevokeKey,bakerId,outlet.id,issueCategory.id],'Pencabutan kemampuan wajib memakai ID dan revisi terakhir');
+await workflowError("select public.supervisor_capability_save_v2($1,null,$2,$3,'issue_configure',$4,$5,false)",
+  [capabilityRow.id,'70000000-0000-4000-8000-000000000110',bakerId,outlet.id,issueCategory.id],'Pencabutan kemampuan wajib memakai ID dan revisi terakhir');
+await workflowError("select public.supervisor_capability_save_v2(null,$1,$2,$3,'issue_configure',$4,$5,false)",
+  [capabilityCurrent.revision,'70000000-0000-4000-8000-000000000111',bakerId,outlet.id,issueCategory.id],'Pencabutan kemampuan wajib memakai ID dan revisi terakhir');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count,capabilityAuditsBeforeStale,
+  'a revoke rejected for missing baseline leaves no partial audit');
+const capabilityRevoked=(await scalar("select public.supervisor_capability_save_v2($1,$2,$3,$4,'issue_configure',$5,$6,false) as row",
+  [capabilityRow.id,capabilityCurrent.revision,capabilityRevokeKey,bakerId,outlet.id,issueCategory.id])).row;
+assert.equal(capabilityRevoked.granted,false);
+const capabilityAuditsAfterRevoke=(await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count;
+await workflowError("select public.supervisor_capability_save_v2($1,$2,$3,$4,'issue_view',$5,$6,false)",
+  [capabilityRow.id,capabilityCurrent.revision,capabilityRevokeKey,bakerId,outlet.id,issueCategory.id],'Kunci konfigurasi');
+assert.equal((await scalar("select count(*)::int as count from public.audit_events where entity='supervisor_capability' and entity_id=$1",[capabilityRow.id])).count,capabilityAuditsAfterRevoke,
+  'a capability replay key/body mismatch leaves no partial audit');
+assert.deepEqual((await scalar("select public.supervisor_capability_save_v2($1,$2,$3,$4,'issue_configure',$5,$6,false) as row",
+  [capabilityRow.id,capabilityCurrent.revision,capabilityRevokeKey,bakerId,outlet.id,issueCategory.id])).row,capabilityRevoked,
+  'capability revoke replay survives the deleted grant row');
+assert.equal((await scalar('select count(*)::int as count from public.supervisor_capabilities where id=$1',[capabilityRow.id])).count,0,
+  'the terminal capability revoke removes only its configured grant');
+await asUser(cashierAuth);
+const issueKey='71000000-0000-4000-8000-000000000001';
+const submittedIssue=(await scalar("select public.outlet_issue_submit($1,$2,'Mesin kasir menunjukkan pesan error','high',null,null,$3) as row",[outlet.id,issueCategory.id,issueKey])).row;
+assert.equal(submittedIssue.status,'assigned');
+assert.equal(submittedIssue.owner_id,bakerId,'assigned issue uses the configured scoped recipient snapshot');
+assert.deepEqual((await scalar("select public.outlet_issue_submit($1,$2,'Mesin kasir menunjukkan pesan error','high',null,null,$3) as row",[outlet.id,issueCategory.id,issueKey])).row,submittedIssue,
+  'issue submit exact replay returns its original result');
+const cashierIssuePage=(await scalar("select public.outlet_issue_page(null,null,'open',25,null) as page")).page;
+assert.equal(cashierIssuePage.items.length,1,'reporter receives only their own issue through the scoped page');
+await asUser(bakerAuth);
+const bakerIssuePage=(await scalar("select public.outlet_issue_page($1,$2,'open',25,null) as page",[outlet.id,issueCategory.id])).page;
+assert.equal(bakerIssuePage.items[0].id,submittedIssue.id,'scoped handler can read its routed issue without HR access');
+const issueProgress=(await scalar("select public.outlet_issue_update_v2($1,1,$2,'in_progress',$3,null,'','Memulai pemeriksaan mesin') as row",
+  [submittedIssue.id,'71000000-0000-4000-8000-000000000002',bakerId])).row;
+assert.equal(issueProgress.revision,2);
+await workflowError("select public.outlet_issue_update_v2($1,1,$2,'completed',$3,null,'Selesai diperiksa','Menutup versi lama')",
+  [submittedIssue.id,'71000000-0000-4000-8000-000000000003',bakerId],'berubah sejak dibuka');
+const issueDone=(await scalar("select public.outlet_issue_update_v2($1,2,$2,'completed',$3,null,'Komponen dibersihkan dan mesin normal','Pemeriksaan selesai') as row",
+  [submittedIssue.id,'71000000-0000-4000-8000-000000000004',bakerId])).row;
+assert.equal(issueDone.status,'completed');
+assert.equal((await scalar("select count(*)::int as count from public.outlet_issue_events where issue_id=$1",[submittedIssue.id])).count,3,
+  'issue events retain created, progress and completion history');
+await asUser(adminAuth);
+await scalar('select public.supervisor_capability_save($1,$2,$3,$4,false) as row',[bakerId,'issue_handle',outlet.id,issueCategory.id]);
+await asUser(cashierAuth);
+const revokedRouteIssue=(await scalar("select public.outlet_issue_submit($1,$2,'Printer struk macet setelah akses petugas dicabut','normal',null,null,$3) as row",
+  [outlet.id,issueCategory.id,'71000000-0000-4000-8000-000000000005'])).row;
+assert.deepEqual({ status:revokedRouteIssue.status,owner_id:revokedRouteIssue.owner_id,routed_to_snapshot:revokedRouteIssue.routed_to_snapshot },
+  { status:'new',owner_id:null,routed_to_snapshot:bakerId },'a revoked route recipient leaves a new issue unassigned while preserving route history');
+await asUser(adminAuth);
+await scalar('select public.supervisor_capability_save($1,$2,$3,$4,true) as row',[bakerId,'issue_handle',outlet.id,issueCategory.id]);
+
+await asUser(adminAuth);
+const handoverDate=clock.today;
+const cashierHandoverAssignment=await scalar("select id from public.cashier_assignments where employee_id=$1 and work_date=$2",[cashierId,handoverDate]);
+const bakerHandoverAssignment=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Penugasan penerima untuk serah terima',$4,false)) as row",
+  [bakerId,handoverDate,outlet.id,null])).row;
+await asUser(cashierAuth);
+await workflowError("select public.shift_handover_save_v2(null,null,$1,$2,$3,$4,null,null,'Sisa cek kas','Printer dan laci aman','Mohon lanjutkan hitung stok',true,'Kirim tanpa penerima')",
+  ['72000000-0000-4000-8000-000000000099',outlet.id,handoverDate,cashierHandoverAssignment.id], 'Penerima wajib');
+const handover=(await scalar("select public.shift_handover_save_v2(null,null,$1,$2,$3,$4,$5,$6,'Sisa cek kas','Printer dan laci aman','Mohon lanjutkan hitung stok',true,'Kirim serah terima akhir shift') as row",
+  ['72000000-0000-4000-8000-000000000001',outlet.id,handoverDate,cashierHandoverAssignment.id,bakerId,bakerHandoverAssignment.id])).row;
+assert.equal(handover.status,'sent');
+await asUser(bakerAuth);
+const receivedHandover=(await scalar("select public.shift_handover_respond_v2($1,1,$2,true,'Catatan sudah dibaca dan diterima') as row",
+  [handover.id,'72000000-0000-4000-8000-000000000002'])).row;
+assert.equal(receivedHandover.status,'accepted');
+assert.equal(receivedHandover.version,2,'a recipient response advances the handover version');
+assert.equal((await scalar('select count(*)::int as count from public.shift_handover_versions where handover_id=$1 and version=2',[handover.id])).count,1,
+  'the accepted/revision-requested response records the versioned content snapshot');
+assert.equal((await scalar("select public.shift_handover_page($1,null,null,25,null) as page",[outlet.id])).page.items[0].id,handover.id,
+  'recipient can retrieve the accepted versioned handover');
+
+await asUser(adminAuth);
+const exchangeDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+3)::text as day")).day;
+const cashierExchange=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal pengusul untuk tukar shift',$4,false)) as row",
+  [cashierId,exchangeDay,outlet.id,null])).row;
+const bakerExchange=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Jadwal rekan untuk tukar shift',$4,false)) as row",
+  [bakerId,exchangeDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+const exchange=(await scalar("select public.shift_exchange_submit('swap',$1,$2,'Mohon tukar jadwal karena keperluan keluarga',$3) as row",
+  [cashierExchange.id,bakerId,'73000000-0000-4000-8000-000000000001'])).row;
+assert.equal(exchange.status,'pending_peer');
+await asUser(bakerAuth);
+const acceptedExchange=(await scalar("select public.shift_exchange_respond_v2($1,1,$2,true,'Saya setuju dengan pertukaran shift ini') as row",
+  [exchange.id,'73000000-0000-4000-8000-000000000002'])).row;
+assert.equal(acceptedExchange.status,'pending_spv');
+await asUser(adminAuth);
+const decidedExchange=(await scalar("select public.shift_exchange_decide_v2($1,2,$2,true,'Disetujui setelah memeriksa jadwal dan kebutuhan outlet') as row",
+  [exchange.id,'73000000-0000-4000-8000-000000000003'])).row;
+assert.equal(decidedExchange.status,'approved');
+assert.deepEqual((await scalar("select public.shift_exchange_decide_v2($1,2,$2,true,'Disetujui setelah memeriksa jadwal dan kebutuhan outlet') as row",
+  [exchange.id,'73000000-0000-4000-8000-000000000003'])).row,decidedExchange,'decision replay keeps the original atomic result');
+const exchangedAssignments=(await db.query('select employee_id,shift from public.cashier_assignments where id in ($1,$2) order by employee_id',[cashierExchange.id,bakerExchange.id])).rows;
+assert.deepEqual(exchangedAssignments,[{employee_id:bakerId,shift:'morning'},{employee_id:cashierId,shift:'afternoon'}],
+  'approved swap preserves assignment row identities while atomically swapping shift context');
+// Replacement deliberately starts with no peer assignment. This guards the
+// decision path from losing the SELECT FOUND state after it cancels the
+// requester assignment, which would otherwise turn an insert into a null-row
+// update and leave the approved replacement without a roster entry.
+const replacementDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+4)::text as day")).day;
+const cashierReplacement=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal pengusul untuk pengganti',$4,false)) as row",
+  [cashierId,replacementDay,outlet.id,null])).row;
+assert.equal((await scalar('select count(*)::int as count from public.cashier_assignments where employee_id=$1 and work_date=$2',[bakerId,replacementDay])).count,0,
+  'replacement fixture begins without a peer assignment');
+await asUser(cashierAuth);
+const replacement=(await scalar("select public.shift_exchange_submit('replacement',$1,$2,'Mohon pengganti karena keperluan keluarga',$3) as row",
+  [cashierReplacement.id,bakerId,'73000000-0000-4000-8000-000000000004'])).row;
+await asUser(bakerAuth);
+const acceptedReplacement=(await scalar("select public.shift_exchange_respond_v2($1,1,$2,true,'Saya bersedia menjadi pengganti shift ini') as row",
+  [replacement.id,'73000000-0000-4000-8000-000000000005'])).row;
+assert.equal(acceptedReplacement.status,'pending_spv');
+await asUser(adminAuth);
+const decidedReplacement=(await scalar("select public.shift_exchange_decide_v2($1,2,$2,true,'Disetujui setelah memeriksa kebutuhan pengganti') as row",
+  [replacement.id,'73000000-0000-4000-8000-000000000006'])).row;
+assert.equal(decidedReplacement.status,'approved');
+assert.deepEqual(await scalar('select employee_id,shift,status from public.cashier_assignments where employee_id=$1 and work_date=$2',[bakerId,replacementDay]),
+  {employee_id:bakerId,shift:'morning',status:'active'},'approved replacement inserts the missing peer assignment atomically');
+assert.equal((await scalar('select status from public.cashier_assignments where id=$1',[cashierReplacement.id])).status,'cancelled');
+const cancelDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+5)::text as day")).day;
+const cashierCancel=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal pengusul untuk pembatalan',$4,false)) as row",
+  [cashierId,cancelDay,outlet.id,null])).row;
+const bakerCancel=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Jadwal rekan untuk pembatalan',$4,false)) as row",
+  [bakerId,cancelDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+const cancellable=(await scalar("select public.shift_exchange_submit('swap',$1,$2,'Pengajuan yang kemudian perlu dibatalkan',$3) as row",
+  [cashierCancel.id,bakerId,'73000000-0000-4000-8000-000000000007'])).row;
+const cancelled=(await scalar("select public.shift_exchange_cancel_v2($1,1,$2,'Jadwal keluarga berubah sehingga pengajuan dibatalkan') as row",
+  [cancellable.id,'73000000-0000-4000-8000-000000000008'])).row;
+assert.equal(cancelled.status,'cancelled','requester can atomically cancel a still-pending request');
+assert.deepEqual((await scalar("select public.shift_exchange_cancel_v2($1,1,$2,'Jadwal keluarga berubah sehingga pengajuan dibatalkan') as row",
+  [cancellable.id,'73000000-0000-4000-8000-000000000008'])).row, cancelled,'cancel replay returns the original terminal result');
+await db.exec('reset role');
+const expiredFixture=(await scalar(`insert into public.shift_exchange_requests(request_type,work_date,requester_employee_id,peer_employee_id,requester_assignment_id,peer_assignment_id,requester_assignment_updated_at,peer_assignment_updated_at,reason)
+  values('swap',(now() at time zone 'Asia/Jakarta')::date-1,$1,$2,$3,$4,$5,$6,'Fixture pengajuan lampau untuk expiry') returning *`,
+  [cashierId,bakerId,cashierCancel.id,bakerCancel.id,cashierCancel.updated_at,bakerCancel.updated_at]));
+await asUser(adminAuth);
+const expiration=(await scalar("select public.shift_exchange_expire_stale_v2($1) as row",['73000000-0000-4000-8000-000000000009'])).row;
+assert.equal(expiration.expired_count,1,'an Admin HR can close only past pending requests with durable history');
+assert.equal((await scalar('select status from public.shift_exchange_requests where id=$1',[expiredFixture.id])).status,'expired');
+assert.deepEqual((await scalar("select public.shift_exchange_expire_stale_v2($1) as row",['73000000-0000-4000-8000-000000000009'])).row,expiration,
+  'expiry replay does not duplicate events or notifications');
+const leaveBlockedDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+7)::text as day")).day;
+const cashierLeaveBlocked=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal yang terkena cuti penuh',$4,false)) as row",
+  [cashierId,leaveBlockedDay,outlet.id,null])).row;
+const bakerLeaveBlocked=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Jadwal rekan untuk cek cuti',$4,false)) as row",
+  [bakerId,leaveBlockedDay,outlet.id,null])).row;
+await db.exec('reset role');
+await db.query(`insert into public.leave_requests(employee_id,kind,extent,starts_on,ends_on,reason,status,decision_by,decision_note,decided_at)
+  values($1,'personal','full_day',$2,$2,'Cuti penuh fixture pertukaran','approved',$3,'Disetujui untuk cek pertukaran',clock_timestamp())`,[cashierId,leaveBlockedDay,adminId]);
+await asUser(cashierAuth);
+await workflowError("select public.shift_exchange_submit('swap',$1,$2,'Tidak boleh lolos saat cuti penuh aktif',$3)",
+  [cashierLeaveBlocked.id,bakerId,'73000000-0000-4000-8000-000000000010'],'cuti penuh');
+const decisionBlockedDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+8)::text as day")).day;
+await asUser(adminAuth);
+const cashierDecisionBlocked=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal untuk cek ulang cuti saat keputusan',$4,false)) as row",
+  [cashierId,decisionBlockedDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+const decisionBlocked=(await scalar("select public.shift_exchange_submit('replacement',$1,$2,'Pengganti perlu persetujuan sebelum jadwal aktif',$3) as row",
+  [cashierDecisionBlocked.id,bakerId,'73000000-0000-4000-8000-000000000017'])).row;
+await asUser(bakerAuth);
+const decisionBlockedAccepted=(await scalar("select public.shift_exchange_respond_v2($1,1,$2,true,'Saya bersedia membantu pada jadwal tersebut') as row",
+  [decisionBlocked.id,'73000000-0000-4000-8000-000000000018'])).row;
+assert.equal(decisionBlockedAccepted.status,'pending_spv');
+await db.exec('reset role');
+await db.query(`insert into public.leave_requests(employee_id,kind,extent,starts_on,ends_on,reason,status,decision_by,decision_note,decided_at)
+  values($1,'personal','full_day',$2,$2,'Cuti penuh berubah setelah respons rekan','approved',$3,'Disetujui untuk cek keputusan pertukaran',clock_timestamp())`,[bakerId,decisionBlockedDay,adminId]);
+await asUser(adminAuth);
+await workflowError("select public.shift_exchange_decide_v2($1,2,$2,true,'Tidak boleh menyetujui pengganti yang kemudian cuti penuh')",
+  [decisionBlocked.id,'73000000-0000-4000-8000-000000000019'],'cuti penuh');
+// A replacement has no peer assignment, so it needs its own eligibility gate.
+// First prove a candidate without Middle permission is rejected at submission.
+const middleSubmitBlockedDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+9)::text as day")).day;
+await db.exec('reset role');
+await db.query('update public.employees set can_middle_shift=true where id=$1',[cashierId]);
+await db.query('update public.employees set can_middle_shift=false where id=$1',[bakerId]);
+await asUser(adminAuth);
+const cashierMiddleBlocked=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'middle','Jadwal Middle untuk validasi calon pengganti',$4,false)) as row",
+  [cashierId,middleSubmitBlockedDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+await workflowError("select public.shift_exchange_submit('replacement',$1,$2,'Calon tanpa izin Middle tidak boleh diajukan',$3)",
+  [cashierMiddleBlocked.id,bakerId,'73000000-0000-4000-8000-000000000020'],'izin Shift Middle');
+assert.equal((await scalar('select count(*)::int as count from public.shift_exchange_requests where requester_assignment_id=$1',[cashierMiddleBlocked.id])).count,0,
+  'rejected Middle replacement leaves no pending request or receipt-backed mutation');
+// Then accept a valid Middle replacement, revoke the candidate permission, and
+// prove the final decision rechecks current eligibility before it changes any
+// assignment. This also exercises the trigger after the decision RPC has
+// staged its atomic assignment writes.
+const middleDecisionBlockedDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+10)::text as day")).day;
+await db.exec('reset role');
+await db.query('update public.employees set can_middle_shift=true where id=$1',[bakerId]);
+await asUser(adminAuth);
+const cashierMiddleDecision=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'middle','Jadwal Middle untuk cek ulang keputusan',$4,false)) as row",
+  [cashierId,middleDecisionBlockedDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+const middleDecisionRequest=(await scalar("select public.shift_exchange_submit('replacement',$1,$2,'Pengganti Middle yang perlu diperiksa lagi',$3) as row",
+  [cashierMiddleDecision.id,bakerId,'73000000-0000-4000-8000-000000000021'])).row;
+await asUser(bakerAuth);
+const middleDecisionAccepted=(await scalar("select public.shift_exchange_respond_v2($1,1,$2,true,'Saya bersedia membantu untuk Shift Middle ini') as row",
+  [middleDecisionRequest.id,'73000000-0000-4000-8000-000000000022'])).row;
+assert.equal(middleDecisionAccepted.status,'pending_spv');
+await db.exec('reset role');
+await db.query('update public.employees set can_middle_shift=false where id=$1',[bakerId]);
+await asUser(adminAuth);
+await workflowError("select public.shift_exchange_decide_v2($1,2,$2,true,'Hak Shift Middle calon berubah setelah pengajuan')",
+  [middleDecisionRequest.id,'73000000-0000-4000-8000-000000000023'],'izin Shift Middle');
+assert.equal((await scalar('select status from public.shift_exchange_requests where id=$1',[middleDecisionRequest.id])).status,'pending_spv',
+  'a failed final eligibility recheck preserves the request for explicit review');
+assert.equal((await scalar('select status from public.cashier_assignments where id=$1',[cashierMiddleDecision.id])).status,'active',
+  'failed final eligibility recheck rolls back cancellation of the requester assignment');
+assert.equal((await scalar('select count(*)::int as count from public.cashier_assignments where employee_id=$1 and work_date=$2',[bakerId,middleDecisionBlockedDay])).count,0,
+  'failed final eligibility recheck rolls back the candidate replacement assignment');
+await asUser(cashierAuth);
+const requesterExchangeHistory=(await scalar("select public.shift_exchange_page('history',25,null) as page")).page;
+assert.deepEqual(requesterExchangeHistory.items.map((item)=>item.id).sort(),[exchange.id,replacement.id,cancellable.id,expiredFixture.id].sort(),
+  'requester sees completed, cancelled, and expired histories but not a general HR queue');
+await asUser('', 'anon');
+await workflowError('select public.outlet_issue_page()',[],'permission denied');
+await workflowError('select public.shift_handover_page()',[],'permission denied');
+await workflowError('select public.shift_exchange_page()',[],'permission denied');
+await db.exec('rollback');
+console.log('Supervisor operations OK: scoped capability/routing, issue receipts+revision, private history, sender/recipient handover, atomic peer-approved swap, RLS');
+
+// Interval planning uses explicit needs and planned assignment snapshots. This
+// fixture is the required numeric case: B has a temporary leave 14:30–15:00
+// and C starts Middle at 15:00, so exactly one interval is short by one.
+await db.exec('begin');
+const coverageAuth='10000000-0000-0000-0000-000000000089',coverageId='20000000-0000-0000-0000-000000000089';
+const coverageDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+6)::text as day")).day;
+await db.exec('reset role');
+const coverageAlternateOutlet=await scalar("insert into public.outlets(name,latitude,longitude,radius_m) values('Outlet Scope Cakupan Fiktif',-6.26,106.86,100) returning id");
+await db.query("insert into auth.users(id,email) values($1,'rk000089@login.rajaklana.internal')",[coverageAuth]);
+await db.query(`insert into public.employees(id,auth_user_id,full_name,whatsapp,department_id,position_id,outlet_id,starts_on,account_status,approver_employee_id,can_clock,can_middle_shift)
+  values($1,$2,'Kasir Cakupan','081234567889',$3,$4,$5,$6,'active',$7,true,true)`,[coverageId,coverageAuth,position.department_id,position.id,outlet.id,`${clock.year-1}-01-01`,adminId]);
+await db.query("insert into public.employee_roles values($1,'employee')",[coverageId]);
+await db.query('update public.employees set can_middle_shift=true where id in ($1,$2)',[cashierId,bakerId]);
+await asUser(adminAuth);
+const coverageWeekday=(await scalar('select extract(dow from $1::date)::int as day',[coverageDate])).day;
+const intervalRequirement=(await scalar("select public.staffing_interval_requirement_save_v2(null,null,$1,$2,$3,'14:00','16:00',2,$4,null,'') as row",
+  ['74000000-0000-4000-8000-000000000001',outlet.id,coverageWeekday,coverageDate])).row;
+await workflowError("select public.staffing_interval_requirement_save_v2(null,null,$1,$2,$3,'15:00','17:00',1,$4,null,'Tumpang tindih')",
+  ['74000000-0000-4000-8000-000000000002',outlet.id,coverageWeekday,coverageDate],'tidak boleh saling tumpang tindih');
+await workflowError("select public.staffing_interval_requirement_save_v2($1,null,$2,$3,$4,'14:00','16:00',2,$5,null,'Perubahan tanpa versi')",
+  [intervalRequirement.id,'74000000-0000-4000-8000-000000000011',outlet.id,coverageWeekday,coverageDate],'berubah sejak dibuka');
+const replayEffectiveDate=(await scalar('select ($1::date+7)::text as day',[coverageDate])).day;
+const replayRequirement=(await scalar("select public.staffing_interval_requirement_save_v2(null,null,$1,$2,$3,'17:00','18:00',1,$4,null,'Fixture replay interval masa depan') as row",
+  ['74000000-0000-4000-8000-000000000014',outlet.id,coverageWeekday,replayEffectiveDate])).row;
+const replayFirst=(await scalar("select public.staffing_interval_requirement_save_v2($1,$2,$3,$4,$5,'17:00','18:00',2,$6,null,'Ubah pertama yang responsnya hilang') as row",
+  [replayRequirement.id,replayRequirement.revision,'74000000-0000-4000-8000-000000000015',outlet.id,coverageWeekday,replayEffectiveDate])).row;
+const replayLater=(await scalar("select public.staffing_interval_requirement_save_v2($1,$2,$3,$4,$5,'17:00','18:00',3,$6,null,'Perubahan lain sesudah commit pertama') as row",
+  [replayRequirement.id,replayFirst.revision,'74000000-0000-4000-8000-000000000016',outlet.id,coverageWeekday,replayEffectiveDate])).row;
+assert.equal(replayLater.revision,replayFirst.revision+1,'a later edit advances the interval revision before the original response is retried');
+assert.deepEqual((await scalar("select public.staffing_interval_requirement_save_v2($1,$2,$3,$4,$5,'17:00','18:00',2,$6,null,'Ubah pertama yang responsnya hilang') as row",
+  [replayRequirement.id,replayRequirement.revision,'74000000-0000-4000-8000-000000000015',outlet.id,coverageWeekday,replayEffectiveDate])).row,replayFirst,
+  'an interval retry returns its committed receipt even after a later revision, without duplicating audit');
+await scalar('select public.supervisor_capability_save($1,$2,$3,null,true) as row',[bakerId,'coverage_configure',coverageAlternateOutlet.id]);
+await asUser(bakerAuth);
+await workflowError("select public.staffing_interval_requirement_save_v2($1,$2,$3,$4,$5,'14:00','16:00',2,$6,null,'Mencoba memindahkan kebutuhan outlet lain')",
+  [intervalRequirement.id,intervalRequirement.revision,'74000000-0000-4000-8000-000000000012',coverageAlternateOutlet.id,coverageWeekday,coverageDate],'outlet kebutuhan sebelumnya');
+await asUser(adminAuth);
+const coverageAssignments=[];
+for (const [employeeId,shift,reason] of [[cashierId,'middle','Penugasan A untuk uji cakupan interval'],[bakerId,'middle','Penugasan B untuk uji cakupan interval'],[coverageId,'middle','Penugasan C untuk uji cakupan interval']]) {
+  coverageAssignments.push((await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,$4,$5,null,false)) as row",[employeeId,coverageDate,outlet.id,shift,reason])).row);
+}
+const planKeys=['74000000-0000-4000-8000-000000000003','74000000-0000-4000-8000-000000000004','74000000-0000-4000-8000-000000000005'];
+for (const [index,assignment] of coverageAssignments.entries()) {
+  const [starts,ends]=index===2?['15:00','23:00']:['08:00','16:00'];
+  await scalar('select public.cashier_assignment_plan_save_v2($1,$2,$3,$4,$5,$6) as row',[assignment.id,assignment.updated_at,planKeys[index],starts,ends,'Jam rencana Middle untuk uji cakupan']);
+}
+await db.exec('reset role');
+await db.query(`insert into public.leave_requests(employee_id,kind,extent,starts_on,ends_on,starts_at,ends_at,reason,status,decision_by,decision_note,decided_at)
+  values($1,'personal','temporary_exit',$2,$2,'14:30','15:00','Izin keluar sementara uji cakupan','approved',$3,'Disetujui untuk uji cakupan',clock_timestamp())`,[bakerId,coverageDate,adminId]);
+await asUser(adminAuth);
+const coverage=(await scalar('select public.supervisor_interval_coverage($1,$2) as row',[outlet.id,coverageDate])).row;
+assert.equal(coverage.configured,true);
+assert.equal(coverage.unknown_middle_count,0,'all three Middle shifts have explicit 8-hour planned intervals');
+assert.equal(coverage.coverage.filter(row=>row.shortage===1).length,1,'only the leave overlap interval is short by one');
+const shortage=coverage.coverage.find(row=>row.shortage===1);
+assert.equal(shortage.available_count,1);
+assert.equal(shortage.minimum,2);
+assert.equal(coverage.coverage.find(row=>row.planned_count===3)?.shortage,0,'Middle C joins only from its 15:00 boundary without double counting');
+const report=(await scalar('select public.supervisor_report_page($1,$2,$3,null) as row',[coverageDate,coverageDate,outlet.id])).row;
+assert.equal(report.summary.scheduled_days,3);
+assert.equal(report.summary.coverage_shortage_intervals,1);
+assert.equal(report.summary.coverage_unconfigured_days,0);
+await scalar('select public.supervisor_capability_save($1,$2,$3,null,true) as row',[bakerId,'summary_view',outlet.id]);
+await asUser(bakerAuth);
+const limitedCoverage=(await scalar('select public.supervisor_interval_coverage($1,$2) as row',[outlet.id,coverageDate])).row;
+assert.deepEqual(limitedCoverage.unknown_middle_employee_ids,[],'non-HR summary users do not receive worker identity lists');
+const limitedReport=(await scalar('select public.supervisor_report_page($1,$2,$3,$4) as row',[coverageDate,coverageDate,outlet.id,bakerId])).row;
+assert.deepEqual(limitedReport.people,[],'non-HR summary users do not receive an organization people aggregate');
+await asUser(adminAuth);
+await scalar('select public.supervisor_capability_save($1,$2,$3,null,false) as row',[bakerId,'summary_view',outlet.id]);
+await scalar('select public.supervisor_capability_save($1,$2,$3,null,true) as row',[bakerId,'coverage_configure',outlet.id]);
+await asUser(bakerAuth);
+assert.equal((await db.query('select id from public.staffing_interval_requirements where outlet_id=$1',[outlet.id])).rows.length,2,
+  'coverage configurator can read each scoped requirement without gaining a broad HR directory');
+const configureCoverage=(await scalar('select public.supervisor_interval_coverage($1,$2) as row',[outlet.id,coverageDate])).row;
+assert.deepEqual(configureCoverage.unknown_middle_employee_ids,[],'coverage configurator receives the same redacted people output as a summary-only user');
+await asUser(adminAuth);
+const legacyMiddleDate=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date-1)::text as day")).day;
+const legacyMiddle=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'middle','Penugasan lama untuk guard absensi',$4,false)) as row",
+  [coverageId,legacyMiddleDate,outlet.id,null])).row;
+const legacyAttendance=(await scalar("select to_jsonb(public.attendance_record_manual($1,'middle',$2,$3,'Catatan absensi lama untuk guard jam Middle')) as row",
+  [coverageId,`${legacyMiddleDate}T15:00:00+07:00`,`${legacyMiddleDate}T23:00:00+07:00`])).row;
+await db.exec('reset role');
+await db.query('update public.attendance set assignment_id=null where id=$1',[legacyAttendance.id]);
+await asUser(adminAuth);
+await workflowError('select public.cashier_assignment_plan_save_v2($1,$2,$3,$4,$5,$6)',
+  [legacyMiddle.id,legacyMiddle.updated_at,'74000000-0000-4000-8000-000000000013','15:00','23:00','Mencoba mengubah jam setelah absensi legacy'],'sumber absensi');
+await asUser('', 'anon');
+await workflowError('select public.supervisor_interval_coverage($1,$2)',[outlet.id,coverageDate],'permission denied');
+await workflowError('select public.supervisor_report_page($1,$2,$3,null)',[coverageDate,coverageDate,outlet.id],'permission denied');
+await db.exec('rollback');
+console.log('Supervisor planning/reports OK: non-overlap interval config, 8-hour Middle snapshot, partial leave boundary, scoped coverage and traceable period summary');
 
 // Tokens are server-managed, replaceable, 24h, single-use and claim protected.
 await db.exec('reset role');
