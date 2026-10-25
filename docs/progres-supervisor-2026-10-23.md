@@ -139,7 +139,7 @@ Migration diterapkan secara forward-only dari history 18 ke 23. Connector manage
 
 - Branch **`codex/preview`** pada commit **`3278545e00f06e4c9f2fb113ca8b195e998389e8`** telah dipush.
 - Target Vercel diverifikasi sebagai project **`hr-rajaklana/hr-rajaklana-jkt`** dengan project ID **`prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`**.
-- Deployment **`dpl_GimwcHFk2qAccs7bHnXfHDkL6Riq`** berstatus **READY**, target Preview, pada <https://hr-rajaklana-dtpbnload-hr-rajaklana.vercel.app>. Alias <https://hr-rajaklana-jkt-preview.vercel.app> dan alias Git `git-codex-preview` mengarah ke deployment Preview tersebut.
+- Deployment **`dpl_GimwcHFk2qAccs7bHnXfHDkL6Riq`** berstatus **READY**, target Preview, pada <https://hr-rajaklana-dtpbnload-hr-rajaklana.vercel.app>. Alias branch Preview yang diverifikasi adalah <https://hr-rajaklana-jkt-preview.vercel.app> dan alias Git `git-codex-preview`; keduanya dapat berpindah ke deployment berikutnya dari branch yang sama.
 - `vercel curl` yang terautentikasi menerima **HTTP 200** untuk `/login` dan `/service-worker.js`.
 
 Ini adalah bukti deploy/source dan HTTP smoke saja. HTTP 200 untuk script worker tidak membuktikan browser berhasil mendaftarkan worker, memperoleh controller setelah reload, bekerja offline, atau menangani update lintas versi. Bukti ini juga bukan login aplikasi, workflow pengguna, Realtime, atau uji perangkat.
