@@ -228,11 +228,19 @@ Status pelaksanaan: **P1, P2, dan hardening lokal P3 selesai; deployment Preview
 
 | Temuan | Implementasi lokal | Deployment Preview | Workflow hosted | iPhone/iPad | Status |
 | --- | --- | --- | --- | --- | --- |
-| T-01 PWA | Hardening + tes negatif + PWA 1/1 lulus | Menunggu commit/deployment otomatis | Menunggu browser authenticated; bukti lama tetap SecurityError | Ditunda pengguna | Terbuka terbatas |
-| T-02 Panduan | Copy dan tautan `/supervisor` selesai; check lulus | Menunggu deployment commit | Belum diuji dengan akun hosted | Tidak diperlukan untuk copy | Lokal lulus |
-| T-03 README | 23 source migration, snapshot historis dan preflight dibedakan | Menunggu deployment commit | Tidak berlaku untuk teks | Tidak berlaku | Lokal lulus |
+| T-01 PWA | Hardening + tes negatif + PWA 1/1 lulus | `dpl_5Q8yg5X51tDE5zwnzxp5JgKrCMgQ` Ready; HTTP smoke 200 untuk shell/worker/manifest | Menunggu browser authenticated; bukti lama tetap SecurityError | Ditunda pengguna | Terbuka terbatas |
+| T-02 Panduan | Copy dan tautan `/supervisor` selesai; check + QA desktop/mobile lulus | Termuat pada deployment Ready yang sama | Belum diuji dengan akun hosted | Tidak diperlukan untuk copy | Lokal lulus; hosted copy belum ditinjau |
+| T-03 README | 23 source migration, snapshot historis dan preflight dibedakan | Termuat pada deployment Ready yang sama | Tidak berlaku untuk teks | Tidak berlaku | Lokal lulus |
 
-Perubahan di atas tidak menyentuh transaksi atomik, baseline/version checks, replay key/payload, RLS, riwayat kasus, atau isolasi draft per akun. Langkah berikutnya adalah commit/push `codex/preview`, verifikasi CI dan deployment Preview, lalu—hanya bila sesi browser pengguna tersedia—melakukan T-01 hosted dan mencatat hasilnya tanpa menyimpan token/cookie/URL bertanda tangan.
+Perubahan di atas tidak menyentuh transaksi atomik, baseline/version checks, replay key/payload, RLS, riwayat kasus, atau isolasi draft per akun. Commit/push, CI, dan deployment Preview dicatat di bawah; langkah lanjutan yang masih diperlukan hanyalah—bila sesi browser pengguna tersedia—melakukan T-01 hosted dan mencatat hasilnya tanpa menyimpan token/cookie/URL bertanda tangan.
+
+### Bukti remote setelah push
+
+- Commit `ebab65bb47888ad3d806e2779640835b89a71eb2` berhasil dipush ke `yoga12-rgb/hr-rajaklana-jkt` pada branch `codex/preview`.
+- GitHub Actions CI untuk SHA tersebut selesai **success**: <https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/40281196710>.
+- Vercel Preview project `hr-rajaklana-jkt` menghasilkan deployment **`dpl_5Q8yg5X51tDE5zwnzxp5JgKrCMgQ`**, status **READY**, URL unik `https://hr-rajaklana-2vwpuodby-hr-rajaklana.vercel.app`, alias branch `https://hr-rajaklana-jkt-preview.vercel.app` dan alias Git `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`. Metadata deployment menunjuk repo `yoga12-rgb/hr-rajaklana-jkt`, ref `codex/preview`, dan SHA yang sama.
+- `vercel curl` terautentikasi menerima HTTP **200** untuk `/login` (`text/html`), `/service-worker.js` (`application/javascript`, `Cache-Control: no-cache`), dan `/manifest.webmanifest` (`application/manifest+json`), tanpa redirect pada smoke request. Ini hanya bukti HTTP/artefak; belum membuktikan request internal `register`, `activated/controller`, offline shell, update lintas versi, atau iPhone/iPad.
+- Tidak ada tindakan Supabase remote pada checkpoint ini karena source tidak mengubah schema. Identitas Preview tetap `hr-rajaklana-preview` / `lypsqrwjzrmuyqtdcegr`; Production/main tidak disentuh.
 
 ## Matriks bukti
 
