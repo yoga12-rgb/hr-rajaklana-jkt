@@ -244,6 +244,31 @@ Perubahan di atas tidak menyentuh transaksi atomik, baseline/version checks, rep
 
 Dokumentasi checkpoint kemudian dipush sebagai commit `31ad65a4f1830f796607b8ac90387e839e11cf38`. CI-nya selesai **success** pada run <https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/40281408877>. Deployment dokumentasi tersebut juga **READY** sebagai `dpl_Ao5V6n5oVDckf2D9yzi5dAw6JYak` dengan alias Preview yang sama; smoke worker pada alias itu tetap HTTP 200 JavaScript tanpa redirect. Deployment kode `ebab65b` dan deployment dokumentasi `31ad65a` sama-sama tercatat, sedangkan hasil browser hosted/PVR-02 tetap tidak dinaikkan statusnya oleh smoke ini.
 
+## Penutupan celah audit PWA dan migrasi — checkpoint lokal 26 Oktober 2026
+
+Panduan pelaksanaan: [guide-penutupan-celah-audit-2026-10-26.md](guide-penutupan-celah-audit-2026-10-26.md). Worktree memulai checkpoint ini pada branch `codex/preview`, HEAD `4fefac2`, tanpa migration baru dan tanpa tindakan Supabase hosted.
+
+- **C-01 — identitas shell PWA:** validator kini memerlukan marker `data-rajaklana-app-shell="true"` pada `<body>` shell aplikasi, selain status, MIME, origin, dan redirect checks. Respons same-origin 200 HTML login/SSO ditolak. Reproduksi negatif dan positif ada di `src/lib/pwa-cache-validation.test.ts`.
+- **C-02 — instalasi cache parsial:** precache kini menulis ke staging cache dan mempromosikannya setelah semua aset serta shell tervalidasi. Jalur gagal menghapus staging/fresh cache dan mempertahankan cache aktif. Install-level mock menguji kegagalan aset, kegagalan shell, preservasi cache lama, dan retry di `src/lib/pwa-install.test.ts`.
+- **C-03 — runbook migration:** README memisahkan Preview m23 dari baseline 18 dan historis 13, menautkan dua preflight, serta tidak lagi menampilkan satu `db push` generik sebagai langkah aman. Fixture upgrade 18→23 dan 13→23 lulus; tidak ada DDL hosted.
+- **C-04 — jejak rilis:** bukti SHA/CI/deployment final dicatat setelah commit perubahan ini. `Ready` dan HTTP smoke tetap dipisahkan dari bukti browser hosted.
+
+### Bukti gate lokal checkpoint
+
+| Pemeriksaan | Hasil | Batas bukti |
+| --- | --- | --- |
+| `npm.cmd run check` | Lulus, 0 error/0 warning | Source lokal |
+| `npm.cmd test -- --maxWorkers=1 --reporter=dot` | Lulus, **35 file / 440 test** | Unit/domain lokal |
+| `npm.cmd test -- --run src/lib/pwa-cache-validation.test.ts src/lib/pwa-install.test.ts --maxWorkers=1` | Lulus, **2 file / 7 test** | Validator dan install transaction mock |
+| `npm.cmd run test:database` | Lulus: fresh 1–23, Preview 18→23, historis 13→23 dengan preflight, biometric/push | PGlite/fixture; bukan DDL hosted |
+| `npm.cmd run test:database:legacy` | Lulus; reset/refusal/rollback fixture menjaga Auth/Storage | Tidak menjalankan reset hosted |
+| `node supabase/deployment/verify-readiness-preview.test.mjs` | Lulus: probe dua kali, rollback equality, fail-closed fixture | Harness lokal |
+| PWA build lokal `E2E_PWA=1` | Lulus **1/1**: activated/controller, cache shell valid, respons dinamis tidak tercache, offline navigation | Browser lokal; bukan hosted/iPhone |
+| Live-mock supervisor `E2E_LIVE_SUPABASE_MOCK=1` | Lulus **11/11**: persist/reload/retry key-payload asli, konflik, recovery isolation | Browser lokal + REST interception |
+| `npm.cmd run build` dan `git diff --check` | Lulus | Artefak lokal |
+
+Browser hosted Preview belum membuktikan `register` tanpa redirect, `activated/controller`, offline, atau update A→B. PVR-02/iPhone/iPad dan SPV-11 dua akun tetap **terbuka/tertunda**. Production dan `main` tidak disentuh.
+
 ## Matriks bukti
 
 | Milestone | Implementasi lokal | Deployment Preview | Workflow hosted | Perangkat/PWA |

@@ -67,18 +67,26 @@ Pada Beranda Admin HR, **Persiapan tim** merangkum outlet yang lokasi absensinya
 Backend hosted untuk kedua lingkungan telah disiapkan. Langkah di bawah adalah referensi penyiapan/rilis untuk operator; pilih project reference yang benar sebelum menjalankan perintah dan jangan membuat ulang proyek yang sudah tersedia.
 
 1. Gunakan proyek Production atau Preview pada [daftar lingkungan](docs/deployment-environments.md), dan catat URL/kunci publik yang sesuai. Verifikasi nama proyek, project ref, branch, dan environment sebelum perintah yang menulis.
-2. Login CLI, tautkan proyek yang benar, lalu jalankan dry-run dan preflight yang sesuai sebelum menerapkan. Upgrade Preview yang sudah berada pada baseline aktual adalah jalur berbeda dari fixture historis yang masih berada pada baseline 13 migration; pada jalur historis, preflight harus dijalankan sebelum migration lama yang memang dapat gagal.
+2. Login CLI, tautkan proyek yang benar, lalu jalankan dry-run dan preflight yang sesuai sebelum menerapkan. **Jangan menjalankan satu `db push` generik pada baseline 13 atau 18:** migration 14 dapat gagal sebelum migration perbaikannya berjalan, dan preflight m22 harus berhenti setelah m21. Upgrade Preview yang sudah berada pada baseline aktual adalah jalur berbeda dari fixture historis. Jika prosedur staged write belum diverifikasi untuk target tersebut, berhenti setelah pemeriksaan baca saja.
 
 ```powershell
 npx.cmd supabase@2.111.0 login
 npx.cmd supabase@2.111.0 link --project-ref PROJECT_REF
 npx.cmd supabase@2.111.0 migration list
 npx.cmd supabase@2.111.0 db push --dry-run
-# Setelah target, urutan migration, dan preflight ditinjau:
-npx.cmd supabase@2.111.0 db push
+# Jangan lanjutkan ke `db push` sebelum jalur baseline dan preflight diverifikasi.
 ```
 
 Migrasi diterapkan menurut urutan nama di `supabase/migrations`. **Source saat ini berisi 23 migration**; yang terakhir diverifikasi adalah `20261024233053_supervisor_configuration_concurrency.sql`. Hitungan dan nama ini menggambarkan source branch ini, bukan klaim bahwa Production sudah menerimanya. Snapshot hosted 13 Oktober memverifikasi tujuh migrasi sampai `20261012094903_hr_api_service_role_reads.sql`; uraian tujuh/dua belas migrasi pada catatan rilis lama adalah snapshot bertanggal, bukan keadaan source terkini. Preview yang diverifikasi pada 25 Oktober berada pada history remote 18→23; timestamp history remote dapat berbeda dari nama file source, sehingga urutan dan nama harus dicocokkan sebelum write. Production/main tetap di luar perubahan ini. Pengguna telah menyetujui penghapusan 13 tabel aplikasi lama beserta datanya pada Production; Auth/Storage dan dua akun Auth lama dipertahankan. Proses tersebut bukan langkah deploy rutin dan tidak boleh diulang untuk meluluskan tes. [Referensi resmi migrasi Supabase](https://supabase.com/docs/reference/cli/supabase-db-push).
+
+### Jalur preflight upgrade yang wajib
+
+- **Preview aktual m23:** verifikasi history dan nama migration saja. Tidak perlu menjalankan preflight, `db push`, reset, atau repair untuk aplikasi ini.
+- **Fixture/baseline 18:** terapkan hanya m19–m21 pada fixture terisolasi, jalankan [preflight supervisor operational hardening](supabase/deployment/preflight-supervisor-operational-hardening.sql) pada history tepat 1–21, kemudian lanjutkan m22–m23. Preflight ini fail-closed dan tidak mengubah baris operasional.
+- **Fixture/baseline 13:** jalankan [preflight kompatibilitas sebelum m14](supabase/deployment/preflight-followup-off-compatibility.sql) pada history tepat 1–13, kemudian m14–m21, preflight m22 pada history tepat 1–21, lalu m22–m23. Migration 14 harus direproduksi gagal sebelum preflight; jangan mengedit migration lama atau menandai history sebagai applied tanpa SQL yang benar-benar berjalan.
+- **History lain atau drift:** hentikan proses dan buat reproduksi lokal. `migration list` membandingkan timestamp; cocokkan nama dan urutan sebelum mempertimbangkan write. Kedua preflight diuji oleh [harness upgrade lokal](supabase/tests/followup-upgrade-compatibility.mjs), bukan bukti bahwa remote telah diubah.
+
+Perintah `db push` hanya boleh dipakai setelah jalur bertahap untuk baseline target memiliki prosedur dan review eksplisit. `--dry-run` menampilkan migration yang akan dijalankan, tetapi tidak menjalankan preflight di tengah daftar dan bukan bukti bahwa upgrade aman.
 
 3. Matikan **public signup secara global**, tetapi tetap aktifkan **provider Email/password** yang diperlukan login nomor karyawan. Konfigurasi CLI menggunakan `[auth].enable_signup=false` dan `[auth.email].enable_signup=true`; pengaturan hosted yang telah diverifikasi adalah `disable_signup=true` dan `external.email=true`. Minimum password 10 karakter; Site URL mengikuti origin frontend HTTPS. Tidak perlu SMTP untuk aktivasi melalui WhatsApp karena akun dibuat server dan kata sandi diatur melalui token aplikasi.
 4. Siapkan secret **server Edge Function** pada berkas lokal yang diabaikan Git, misalnya `.env.hr-api`:

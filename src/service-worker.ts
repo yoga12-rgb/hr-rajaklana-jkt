@@ -1,27 +1,19 @@
 /// <reference lib="webworker" />
 import { version } from '$app/env';
 import { immutable, assets } from '$app/manifest';
-import { validatePwaResponse } from './lib/pwa-cache-validation';
+import { installPwaCache } from './lib/pwa-install';
 
 const sw = globalThis as unknown as ServiceWorkerGlobalScope;
 const CACHE = `rajaklana-shell-${version}`;
 const paths = [...immutable, ...assets].map(item => item.path.startsWith('/') ? item.path : `/${item.path}`).filter(path => !['/_redirects', '/_headers'].includes(path));
 const shellFiles = [...new Set([...paths, '/200.html'])];
-sw.addEventListener('install', event => event.waitUntil((async () => {
-  const cache = await caches.open(CACHE);
-  for (const path of paths) {
-    const response = await fetch(path, { cache: 'reload' });
-    const check = validatePwaResponse(response, path, sw.location.origin, 'asset');
-    if (!check.ok) throw new Error(`PWA asset unavailable: ${path} (${check.reason})`);
-    await cache.put(path, response);
-  }
-  // Static hosts and the preview server expose the SPA shell at `/` even when
-  // the generated fallback file is not a publicly addressable route.
-  const shell = await fetch('/', { cache: 'reload' });
-  const shellCheck = validatePwaResponse(shell, '/', sw.location.origin, 'shell');
-  if (!shellCheck.ok) throw new Error(`SPA shell unavailable (${shellCheck.reason})`);
-  await cache.put('/200.html', shell);
-})()));
+sw.addEventListener('install', event => event.waitUntil(installPwaCache({
+  cacheStorage: caches,
+  fetcher: fetch,
+  origin: sw.location.origin,
+  cacheName: CACHE,
+  paths
+})));
 sw.addEventListener('activate', event => event.waitUntil((async () => {
   for (const key of await caches.keys()) if (key.startsWith('rajaklana-shell-') && key !== CACHE) await caches.delete(key);
   await sw.clients.claim();

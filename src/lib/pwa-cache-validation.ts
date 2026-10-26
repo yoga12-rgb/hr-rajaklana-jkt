@@ -19,7 +19,7 @@ function expectedTypes(path: string) {
 }
 
 /** Reject redirect/SSO responses before they can enter the public PWA shell cache. */
-export function validatePwaResponse(response: Response, path: string, origin: string, kind: PwaResponseKind): PwaResponseCheck {
+export async function validatePwaResponse(response: Response, path: string, origin: string, kind: PwaResponseKind): Promise<PwaResponseCheck> {
   if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
   if (response.redirected) return { ok: false, reason: 'redirected response' };
   if (response.url) {
@@ -31,7 +31,11 @@ export function validatePwaResponse(response: Response, path: string, origin: st
   }
   const type = contentType(response);
   if (kind === 'shell') {
-    return type.includes('text/html') ? { ok: true } : { ok: false, reason: `unexpected shell type ${type || 'missing'}` };
+    if (!type.includes('text/html')) return { ok: false, reason: `unexpected shell type ${type || 'missing'}` };
+    const body = await response.clone().text();
+    return /<body\b[^>]*\bdata-rajaklana-app-shell\s*=\s*["']true["']/i.test(body)
+      ? { ok: true }
+      : { ok: false, reason: 'shell identity marker missing' };
   }
   if (!type || type.includes('text/html')) return { ok: false, reason: 'asset is not a non-HTML response' };
   const expected = expectedTypes(path);
