@@ -184,7 +184,7 @@ Dengan demikian, build dan kontrak PWA lokal tervalidasi, tetapi **PVR-02 tidak 
 
 ## Penutupan tiga temuan supervisor — checkpoint 26 Oktober 2026
 
-Status pelaksanaan: **P1, P2, dan hardening lokal P3 selesai; deployment Preview dan browser hosted menunggu commit/rilis dan sesi browser yang benar-benar lolos proteksi. PVR-02/iPhone/iPad tetap terbuka.** Target tetap branch `codex/preview`; Production dan `main` tidak disentuh.
+Status pelaksanaan: **P1, P2, dan hardening lokal P3 selesai; CI dan deployment Preview untuk source terbaru lulus, sedangkan browser hosted masih menunggu sesi yang benar-benar lolos proteksi. PVR-02/iPhone/iPad tetap terbuka.** Target tetap branch `codex/preview`; Production dan `main` tidak disentuh.
 
 ### P0 — baseline aktual
 
