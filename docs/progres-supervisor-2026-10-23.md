@@ -251,7 +251,7 @@ Panduan pelaksanaan: [guide-penutupan-celah-audit-2026-10-26.md](guide-penutupan
 - **C-01 — identitas shell PWA:** validator kini memerlukan marker `data-rajaklana-app-shell="true"` pada `<body>` shell aplikasi, selain status, MIME, origin, dan redirect checks. Respons same-origin 200 HTML login/SSO ditolak. Reproduksi negatif dan positif ada di `src/lib/pwa-cache-validation.test.ts`.
 - **C-02 — instalasi cache parsial:** precache kini menulis ke staging cache dan mempromosikannya setelah semua aset serta shell tervalidasi. Jalur gagal menghapus staging/fresh cache dan mempertahankan cache aktif. Install-level mock menguji kegagalan aset, kegagalan shell, preservasi cache lama, dan retry di `src/lib/pwa-install.test.ts`.
 - **C-03 — runbook migration:** README memisahkan Preview m23 dari baseline 18 dan historis 13, menautkan dua preflight, serta tidak lagi menampilkan satu `db push` generik sebagai langkah aman. Fixture upgrade 18→23 dan 13→23 lulus; tidak ada DDL hosted.
-- **C-04 — jejak rilis:** bukti SHA/CI/deployment final dicatat setelah commit perubahan ini. `Ready` dan HTTP smoke tetap dipisahkan dari bukti browser hosted.
+- **C-04 — jejak rilis:** bukti SHA/CI/deployment final dicatat di bawah. `Ready` dan HTTP smoke tetap dipisahkan dari bukti browser hosted.
 
 ### Bukti gate lokal checkpoint
 
@@ -268,6 +268,14 @@ Panduan pelaksanaan: [guide-penutupan-celah-audit-2026-10-26.md](guide-penutupan
 | `npm.cmd run build` dan `git diff --check` | Lulus | Artefak lokal |
 
 Browser hosted Preview belum membuktikan `register` tanpa redirect, `activated/controller`, offline, atau update A→B. PVR-02/iPhone/iPad dan SPV-11 dua akun tetap **terbuka/tertunda**. Production dan `main` tidak disentuh.
+
+### Bukti remote C-04 setelah implementasi
+
+- Commit final implementasi: `8474796769e31a5298e5e567f38d1407109fe2fe` pada `codex/preview`, sudah dipush ke `yoga12-rgb/hr-rajaklana-jkt`.
+- GitHub Actions untuk SHA tersebut selesai **success** pada run <https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/40285447476>.
+- Vercel Preview project `hr-rajaklana-jkt` membuat deployment **`dpl_HBSVFkT2qdTQcw3FRYHd96etAuwk`**, status **READY**, URL unik `https://hr-rajaklana-kgluhg9kz-hr-rajaklana.vercel.app`, alias branch `https://hr-rajaklana-jkt-preview.vercel.app`, dan alias Git `https://hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`. Metadata deployment mencatat repo `yoga12-rgb/hr-rajaklana-jkt`, ref `codex/preview`, dan SHA yang sama.
+- Smoke HTTP terautentikasi pada deployment final: `/service-worker.js` **200** `application/javascript`, `/manifest.webmanifest` **200** `application/manifest+json`, dan `/200.html` **200** `text/html`; tidak ada redirect pada request smoke. Ini tetap hanya bukti artefak HTTP, bukan registrasi worker, controller, offline, update A→B, atau perangkat.
+- Tidak ada perubahan Supabase remote pada checkpoint ini; Preview `lypsqrwjzrmuyqtdcegr` dan Production/main tidak disentuh.
 
 ## Matriks bukti
 
