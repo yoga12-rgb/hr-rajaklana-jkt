@@ -182,6 +182,58 @@ Dengan demikian, build dan kontrak PWA lokal tervalidasi, tetapi **PVR-02 tidak 
 | SPV-11 | Dikerjakan | Database dan Vercel Preview selesai untuk deployment/smoke; workflow pengguna, Realtime, dan handoff rilis belum dilakukan. |
 | PVR-02/perangkat | Lokal browser lulus; hosted/perangkat terbuka | Build produksi lokal membuktikan worker, cache shell, dan offline. Browser hosted ber-header OIDC menerima `SecurityError` saat registrasi worker; pengguna masih menunda uji offline/perangkat nyata. |
 
+## Penutupan tiga temuan supervisor — checkpoint 26 Oktober 2026
+
+Status pelaksanaan: **P1, P2, dan hardening lokal P3 selesai; deployment Preview dan browser hosted menunggu commit/rilis dan sesi browser yang benar-benar lolos proteksi. PVR-02/iPhone/iPad tetap terbuka.** Target tetap branch `codex/preview`; Production dan `main` tidak disentuh.
+
+### P0 — baseline aktual
+
+- Branch/HEAD saat mulai: `codex/preview` / `0f99829504ec70b7a6371f9902a639bc3eb2cd5d`; worktree bersih sebelum perubahan.
+- Source memiliki **23 migration**, terakhir `20261024233053_supervisor_configuration_concurrency.sql`. Tidak ada migration yang diedit atau ditambah.
+- Target yang dirujuk tetap Supabase Preview `hr-rajaklana-preview` / `lypsqrwjzrmuyqtdcegr` dan Vercel project `hr-rajaklana-jkt`. Identitas source lokal diperiksa melalui `.vercel/project.json`; pemeriksaan CLI hosted pada runner ini terhambat resolusi DNS, sehingga tidak dipakai sebagai bukti browser.
+- T-01 dicatat sesuai audit: HTTP shell/worker dan `Ready` deployment bukan bukti registrasi; percobaan hosted sebelumnya menerima `SecurityError` karena script worker berada di balik redirect. Tidak ada proteksi yang dinonaktifkan atau bypass baru.
+
+### P1 — README migrasi (T-03)
+
+- `README.md` kini menyebut keadaan source saat ini sebagai 23 migration dan nama terakhir yang diverifikasi, serta menegaskan bahwa hitungan itu bukan status Production.
+- Snapshot tujuh/dua belas migration tetap disebut sebagai catatan bertanggal. Preview 18→23 dipisahkan dari fixture historis 13→23 yang memerlukan preflight sebelum migration lama.
+- Contoh CLI kini meminta verifikasi target, `migration list`, dry-run, dan preflight sebelum perintah write. Tidak ada SQL/DDL atau `db push` hosted yang dijalankan untuk perubahan dokumentasi.
+
+### P2 — Panduan dalam aplikasi (T-02)
+
+- `src/routes/(app)/guide/+page.svelte` sekarang menjelaskan bahwa hanya Admin HR aktif yang mengelola `/supervisor`, termasuk jalur ponsel **Beranda → Buka semua**.
+- Copy mencakup lima tab antrean, filter outlet/tanggal, pagination, kasus lintas tanggal, detail sumber, PIC/tenggat WIB, alasan perubahan, catatan penyelesaian, riwayat, dua pilihan konflik, serta retry hasil belum pasti tanpa membuat pengajuan baru.
+- Copy akses HR dipisahkan dari kendala outlet, serah terima, tukar shift, dan perencanaan yang sudah ada; tidak ada capability baru yang diberikan kepada kasir.
+
+### P3 — hardening PWA yang dapat dibuktikan lokal (T-01)
+
+- `src/service-worker.ts` tidak lagi memakai `cache.addAll` tanpa pemeriksaan. Setiap aset dan shell diperiksa sebagai respons same-origin, tidak redirect, bukan HTML untuk aset, serta mempunyai MIME yang sesuai sebelum masuk cache.
+- `src/lib/pwa-cache-validation.ts` dan tesnya mereproduksi aset JavaScript yang berisi halaman SSO, shell yang redirect ke origin Vercel, respons MIME salah, serta shell aplikasi yang valid. Respons privat/API tidak masuk cache.
+- Uji browser build produksi lokal dengan `E2E_PWA=1`, `E2E_BASE_URL=http://127.0.0.1:5198`: **1/1 lulus**. Worker aktif, controller tersedia, cache shell publik valid, respons dinamis tidak tercache, dan navigasi offline membuka shell.
+- Browser hosted Preview belum diulang pada sesi pengguna yang telah menyelesaikan Vercel Authentication untuk alias branch yang sama. Karena itu belum ada klaim `activated/controller/offline/update` hosted; status PVR-02 tetap terbuka. Uji iPhone/iPad juga tetap ditunda.
+
+### P4 — regresi lokal dan bukti terpisah
+
+| Pemeriksaan | Hasil | Batas bukti |
+| --- | --- | --- |
+| `npm.cmd run check` | Lulus, 0 error/0 warning | Source lokal |
+| `npm.cmd test -- --maxWorkers=1 --reporter=dot` | Lulus, **34 file / 437 test** | Unit/domain lokal; cache Vitest dijalankan di konteks Windows yang diizinkan |
+| `npm.cmd run test:database` | Lulus: fresh 1–23, Preview 18→23, historis 13→23 dengan preflight, biometric/push | PGlite/fixture; bukan DDL hosted baru |
+| `npm.cmd run test:database:legacy` | Lulus: known-legacy reset/refusal/rollback fixture | Tidak menjalankan reset hosted |
+| `node supabase/deployment/verify-readiness-preview.test.mjs` | Lulus: probe dua kali, rollback equality, fail-closed fixture | Harness lokal |
+| Live-mock supervisor eksplisit pada `PUBLIC_APP_ENV=preview`, URL mock `http://127.0.0.1:54329`, port 5183 | **3/3 lulus**: follow-up, operations, planning; persist/reload/retry key-payload asli dan konflik draft | Browser lokal + REST interception, bukan Supabase/Vercel hosted atau dua akun Realtime |
+| `npm.cmd run build` | Lulus: SSR, client, dan service worker | Artefak lokal |
+| PWA build lokal | **1/1 lulus** seperti P3 | Bukan browser hosted/iPhone |
+| `git diff --check` | Lulus | Tidak ada whitespace error |
+
+| Temuan | Implementasi lokal | Deployment Preview | Workflow hosted | iPhone/iPad | Status |
+| --- | --- | --- | --- | --- | --- |
+| T-01 PWA | Hardening + tes negatif + PWA 1/1 lulus | Menunggu commit/deployment otomatis | Menunggu browser authenticated; bukti lama tetap SecurityError | Ditunda pengguna | Terbuka terbatas |
+| T-02 Panduan | Copy dan tautan `/supervisor` selesai; check lulus | Menunggu deployment commit | Belum diuji dengan akun hosted | Tidak diperlukan untuk copy | Lokal lulus |
+| T-03 README | 23 source migration, snapshot historis dan preflight dibedakan | Menunggu deployment commit | Tidak berlaku untuk teks | Tidak berlaku | Lokal lulus |
+
+Perubahan di atas tidak menyentuh transaksi atomik, baseline/version checks, replay key/payload, RLS, riwayat kasus, atau isolasi draft per akun. Langkah berikutnya adalah commit/push `codex/preview`, verifikasi CI dan deployment Preview, lalu—hanya bila sesi browser pengguna tersedia—melakukan T-01 hosted dan mencatat hasilnya tanpa menyimpan token/cookie/URL bertanda tangan.
+
 ## Matriks bukti
 
 | Milestone | Implementasi lokal | Deployment Preview | Workflow hosted | Perangkat/PWA |

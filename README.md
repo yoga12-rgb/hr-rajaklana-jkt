@@ -66,17 +66,19 @@ Pada Beranda Admin HR, **Persiapan tim** merangkum outlet yang lokasi absensinya
 
 Backend hosted untuk kedua lingkungan telah disiapkan. Langkah di bawah adalah referensi penyiapan/rilis untuk operator; pilih project reference yang benar sebelum menjalankan perintah dan jangan membuat ulang proyek yang sudah tersedia.
 
-1. Gunakan proyek Production atau Preview pada [daftar lingkungan](docs/deployment-environments.md), dan catat URL/kunci publik yang sesuai.
-2. Login CLI, tautkan proyek yang benar, dan pratinjau migrasi sebelum menerapkan.
+1. Gunakan proyek Production atau Preview pada [daftar lingkungan](docs/deployment-environments.md), dan catat URL/kunci publik yang sesuai. Verifikasi nama proyek, project ref, branch, dan environment sebelum perintah yang menulis.
+2. Login CLI, tautkan proyek yang benar, lalu jalankan dry-run dan preflight yang sesuai sebelum menerapkan. Upgrade Preview yang sudah berada pada baseline aktual adalah jalur berbeda dari fixture historis yang masih berada pada baseline 13 migration; pada jalur historis, preflight harus dijalankan sebelum migration lama yang memang dapat gagal.
 
 ```powershell
 npx.cmd supabase@2.111.0 login
 npx.cmd supabase@2.111.0 link --project-ref PROJECT_REF
+npx.cmd supabase@2.111.0 migration list
 npx.cmd supabase@2.111.0 db push --dry-run
+# Setelah target, urutan migration, dan preflight ditinjau:
 npx.cmd supabase@2.111.0 db push
 ```
 
-Migrasi diterapkan menurut urutan nama di `supabase/migrations`. Source berisi dua belas migrasi untuk organisasi, tabel HR, fungsi transaksi, audit, RLS, token akun, bucket privat, alur cuti/notifikasi, penugasan/koreksi kasir, biometrik/push, serta pemeriksaan kepemilikan langganan perangkat. Snapshot hosted 13 Oktober memverifikasi tujuh migrasi sampai `20261012094903_hr_api_service_role_reads.sql`; dua migrasi 16 Oktober dan dua migrasi awal 18 Oktober sudah diterapkan dan diverifikasi pada kedua database. Migrasi terakhir `20261018162525_push_subscription_status.sql` harus diterapkan sebelum merilis klien notifikasi yang memakainya. Pengguna telah menyetujui penghapusan 13 tabel aplikasi lama beserta datanya pada Production; Auth/Storage dan dua akun Auth lama dipertahankan. Proses ini tidak membuat arsip data lama dan bukan langkah deploy rutin. Perubahan berikutnya harus ditinjau pada Preview terlebih dahulu. [Referensi resmi migrasi Supabase](https://supabase.com/docs/reference/cli/supabase-db-push).
+Migrasi diterapkan menurut urutan nama di `supabase/migrations`. **Source saat ini berisi 23 migration**; yang terakhir diverifikasi adalah `20261024233053_supervisor_configuration_concurrency.sql`. Hitungan dan nama ini menggambarkan source branch ini, bukan klaim bahwa Production sudah menerimanya. Snapshot hosted 13 Oktober memverifikasi tujuh migrasi sampai `20261012094903_hr_api_service_role_reads.sql`; uraian tujuh/dua belas migrasi pada catatan rilis lama adalah snapshot bertanggal, bukan keadaan source terkini. Preview yang diverifikasi pada 25 Oktober berada pada history remote 18→23; timestamp history remote dapat berbeda dari nama file source, sehingga urutan dan nama harus dicocokkan sebelum write. Production/main tetap di luar perubahan ini. Pengguna telah menyetujui penghapusan 13 tabel aplikasi lama beserta datanya pada Production; Auth/Storage dan dua akun Auth lama dipertahankan. Proses tersebut bukan langkah deploy rutin dan tidak boleh diulang untuk meluluskan tes. [Referensi resmi migrasi Supabase](https://supabase.com/docs/reference/cli/supabase-db-push).
 
 3. Matikan **public signup secara global**, tetapi tetap aktifkan **provider Email/password** yang diperlukan login nomor karyawan. Konfigurasi CLI menggunakan `[auth].enable_signup=false` dan `[auth.email].enable_signup=true`; pengaturan hosted yang telah diverifikasi adalah `disable_signup=true` dan `external.email=true`. Minimum password 10 karakter; Site URL mengikuti origin frontend HTTPS. Tidak perlu SMTP untuk aktivasi melalui WhatsApp karena akun dibuat server dan kata sandi diatur melalui token aplikasi.
 4. Siapkan secret **server Edge Function** pada berkas lokal yang diabaikan Git, misalnya `.env.hr-api`:
