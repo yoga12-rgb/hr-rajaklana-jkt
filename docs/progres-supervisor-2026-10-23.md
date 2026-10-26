@@ -242,6 +242,8 @@ Perubahan di atas tidak menyentuh transaksi atomik, baseline/version checks, rep
 - `vercel curl` terautentikasi menerima HTTP **200** untuk `/login` (`text/html`), `/service-worker.js` (`application/javascript`, `Cache-Control: no-cache`), dan `/manifest.webmanifest` (`application/manifest+json`), tanpa redirect pada smoke request. Ini hanya bukti HTTP/artefak; belum membuktikan request internal `register`, `activated/controller`, offline shell, update lintas versi, atau iPhone/iPad.
 - Tidak ada tindakan Supabase remote pada checkpoint ini karena source tidak mengubah schema. Identitas Preview tetap `hr-rajaklana-preview` / `lypsqrwjzrmuyqtdcegr`; Production/main tidak disentuh.
 
+Dokumentasi checkpoint kemudian dipush sebagai commit `31ad65a4f1830f796607b8ac90387e839e11cf38`. CI-nya selesai **success** pada run <https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/40281408877>. Deployment dokumentasi tersebut juga **READY** sebagai `dpl_Ao5V6n5oVDckf2D9yzi5dAw6JYak` dengan alias Preview yang sama; smoke worker pada alias itu tetap HTTP 200 JavaScript tanpa redirect. Deployment kode `ebab65b` dan deployment dokumentasi `31ad65a` sama-sama tercatat, sedangkan hasil browser hosted/PVR-02 tetap tidak dinaikkan statusnya oleh smoke ini.
+
 ## Matriks bukti
 
 | Milestone | Implementasi lokal | Deployment Preview | Workflow hosted | Perangkat/PWA |
