@@ -1741,5 +1741,24 @@ assert.equal(securityDefiners.filter(row=>!row.pinned_search_path).length,0,
 assert.ok(securityDefiners.some(row=>row.authenticated_execute),
   'the exposed RPC surface must remain present for authenticated business workflows');
 console.log(`SECURITY DEFINER hygiene OK: ${securityDefiners.length} public functions, anon EXECUTE denied, search_path pinned, authenticated RPC surface retained`);
+// The PGlite fixture intentionally starts without automatic service-role
+// grants; model the hosted service path explicitly before checking the two
+// fail-closed public tables.
+await db.exec('grant select on public.account_tokens, public.cashier_roster_batches to service_role');
+for (const table of ['account_tokens','cashier_roster_batches']) {
+  const acl=(await db.query(`
+    select c.relrowsecurity as rls_enabled,
+           has_table_privilege('anon',c.oid,'SELECT') as anon_select,
+           has_table_privilege('authenticated',c.oid,'SELECT') as authenticated_select,
+           has_table_privilege('service_role',c.oid,'SELECT') as service_select
+    from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='public' and c.relname=$1
+  `,[table])).rows[0];
+  assert.equal(acl.rls_enabled,true,`${table} must keep RLS enabled`);
+  assert.equal(acl.anon_select,false,`${table} must remain unreadable to anon`);
+  assert.equal(acl.authenticated_select,false,`${table} must remain unreadable to authenticated`);
+  assert.equal(acl.service_select,true,`${table} must remain available to service_role workflows`);
+}
+console.log('No-policy table hygiene OK: account_tokens and cashier_roster_batches remain RLS fail-closed with service_role-only reads');
 await db.close();
 console.log('All database checks passed. Hosted Supabase Auth/Storage integration still requires deployment testing.');
