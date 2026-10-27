@@ -26,6 +26,12 @@ await db.exec(`
 `);
 const migrationDir = new URL('../migrations/', import.meta.url);
 const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
+const hardenedTables = [
+  'shift_handovers', 'shift_handover_versions', 'shift_handover_events',
+  'shift_exchange_requests', 'shift_exchange_events',
+  'supervisor_issue_categories', 'supervisor_capabilities', 'supervisor_issue_routes',
+  'outlet_issues', 'outlet_issue_events', 'staffing_interval_requirements'
+];
 for (const name of migrationNames) {
   // Seed a deliberately stale open case after the old roster migration but
   // before the forward repair migration, proving the actual upgrade backfill.
@@ -49,12 +55,44 @@ for (const name of migrationNames) {
       [ids.followup,`missing_clockin:${ids.assignment}`,ids.assignment,day,ids.staleOutlet,ids.employee]);
     globalThis.spvRepairUpgradeFixture = { ids, day };
   }
+  if (name === '20261027090000_sensitive_operational_acl_hardening.sql') {
+    // Hosted Preview has broad default table grants. Reproduce the effective
+    // pre-migration ACL before applying the forward-only hardening migration.
+    await db.exec(`grant all on table ${hardenedTables.map(table => `public.${table}`).join(',')} to anon,authenticated`);
+    for (const table of hardenedTables) for (const role of ['anon','authenticated']) {
+      assert.equal((await db.query('select has_table_privilege($1,$2,$3) as allowed',[role,`public.${table}`,'INSERT'])).rows[0].allowed,true,
+        `${role} fixture grant must reproduce the hosted INSERT exposure for ${table}`);
+    }
+  }
   let sql = await readFile(new URL(name, migrationDir), 'utf8');
   // gen_random_uuid is built into Postgres17. The pgcrypto package is owned by
   // hosted Supabase but not bundled in PGlite; no other statement is removed.
   sql = sql.replace('create extension if not exists pgcrypto with schema extensions;', '');
   try { await db.exec(sql); console.log(`Migration OK: ${name}`); }
   catch (error) { console.error(`Migration FAILED: ${name}`, error.message); throw error; }
+  if (name === '20261027090000_sensitive_operational_acl_hardening.sql') {
+    for (const table of hardenedTables) {
+      for (const role of ['anon','authenticated']) for (const privilege of ['INSERT','UPDATE','DELETE']) {
+        assert.equal((await db.query('select has_table_privilege($1,$2,$3) as allowed',[role,`public.${table}`,privilege])).rows[0].allowed,false,
+          `${role} direct ${privilege} must be revoked from ${table}`);
+      }
+      assert.equal((await db.query('select has_table_privilege($1,$2,$3) as allowed',['authenticated',`public.${table}`,'SELECT'])).rows[0].allowed,true,
+        `authenticated scoped SELECT must remain available for ${table}`);
+      for (const role of ['anon','authenticated']) for (const statement of [
+        `insert into public.${table} default values`,
+        `update public.${table} set id=id where false`,
+        `delete from public.${table} where false`
+      ]) {
+        await db.exec('begin');
+        await db.exec(`set role ${role}`);
+        await assert.rejects(db.exec(statement), /permission denied|row-level security|policy/,
+          `${role} direct DML must fail at the database boundary for ${table}`);
+        await db.exec('rollback');
+        await db.exec('reset role');
+      }
+    }
+    console.log('ACL hardening OK: hosted-style broad grants reproduced, direct DML revoked, RLS-scoped SELECT retained');
+  }
   if (name === '20261020060745_cashier_spv_audit_repairs.sql') {
     const { ids, day } = globalThis.spvRepairUpgradeFixture;
     const repaired = (await db.query('select id,work_date::text as work_date,outlet_id,employee_id,shift from public.spv_followups where id=$1',[ids.followup])).rows[0];

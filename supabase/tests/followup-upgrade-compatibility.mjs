@@ -77,7 +77,7 @@ const setupHistory = async (db, sourceShift='off') => {
 };
 
 // Preview-style upgrade: the known deployed 18-migration baseline receives
-// only forward supervisor migrations 19–23. This is intentionally separate
+// only forward supervisor migrations 19–24. This is intentionally separate
 // from the historical 13-migration path below: a current Preview must never
 // run the legacy preflight intended for the migration-14 CHECK failure.
 {
@@ -85,7 +85,7 @@ const setupHistory = async (db, sourceShift='off') => {
   try {
     const previewBaseline=idx('20261022170000');
     const hardening=idx('20261024110000');
-    const target=idx('20261024233053');
+    const target=idx('20261027090000');
     assert.equal(previewBaseline,17,'Preview baseline must contain exactly 18 migrations');
     assert.notEqual(hardening,-1,'m22 operational hardening must remain present before m23');
     assert.equal(target,migrationNames.length-1,'latest supervisor migration must remain the upgrade target');
@@ -158,7 +158,7 @@ const setupHistory = async (db, sourceShift='off') => {
     assert.equal((await scalar(db,'select outlet_id from public.spv_followups where id=$1',[ids.completedRoster])).outlet_id,ids.outletA,
       'Preview upgrade does not rewrite a completed roster snapshot');
     assert.equal((await scalar(db,"select count(*)::int as count from private.spv_followup_context_repair_log where migration_key='20261020081916_cashier_followup_context_consistency'")).count,0,
-      '18→23 does not invoke the historical repair intended for the earlier 15→16 upgrade');
+      '18→24 does not invoke the historical repair intended for the earlier 15→16 upgrade');
 
     // m23 is strictly forward-only on the Preview baseline: legacy
     // configuration rows acquire a version, a v2 receipt replays its original
@@ -213,23 +213,25 @@ const setupHistory = async (db, sourceShift='off') => {
       'the activation page preflight accepts a safely abandoned claim');
     const retry=(await scalar(db,'select public.claim_account_token($1,$2) as token',['a'.repeat(64),'30000000-0000-4000-8000-000000000092'])).token;
     assert.equal(retry.token_id,firstClaim.token_id,'retry reclaims the original Preview token');
-    console.log('Preview 18→23 upgrade OK: cases retained/revisioned, m22 duplicate preflight fail-closed/clean-repeat, m23 configuration receipt/revision replay preserved, supervisor tables additive/hardened, Libur context intact, linked account lifecycle preserved');
+    console.log('Preview 18→24 upgrade OK: cases retained/revisioned, m22 duplicate preflight fail-closed/clean-repeat, m23 configuration receipt/revision replay preserved, ACL hardening applied, supervisor tables additive/hardened, Libur context intact, linked account lifecycle preserved');
   } finally { await db.close(); }
 }
 
-// Historical upgrade: prove migration 14 fails before a later correction could
-// run, then apply the bounded preflight and complete the upgrade without resets.
+// Historical upgrade: prove the 12→13→m14 boundary, reproduce migration 14's
+// failure before a later correction could run, then apply both bounded
+// preflights and complete the upgrade without resets.
 {
   const db = await createDb();
   try {
+    const m13=idx('20261019061522');
     const m14=idx('20261020060745');
-    assert.equal(m14,13,'Historical fixture must stop after 13 migrations');
-    await apply(db,0,m14-1);
-    const ids=await setupHistory(db,'off');
+    const m22=idx('20261024110000');
+    assert.equal(m13,12,'Historical fixture must stop after 12 migrations before applying migration 13');
+    assert.equal(m14,13,'Historical fixture must stop after migration 13 before applying migration 14');
     await db.exec('create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text primary key,name text)');
-    for (const name of migrationNames.slice(0,m14)) {
-      await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)',[migrationVersion(name),migrationName(name)]);
-    }
+    await apply(db,0,m13-1);
+    await apply(db,m13,m13);
+    const ids=await setupHistory(db,'off');
     let sql=await readFile(new URL(migrationNames[m14],migrationDir),'utf8');
     sql=sql.replace('create extension if not exists pgcrypto with schema extensions;','');
     await db.exec('begin');
@@ -244,7 +246,14 @@ const setupHistory = async (db, sourceShift='off') => {
       'bounded preflight adds off and is idempotent');
     await db.exec(sql);
     await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)',[migrationVersion(migrationNames[m14]),migrationName(migrationNames[m14])]);
-    for (const name of migrationNames.slice(m14+1)) {
+    for (let i=m14+1;i<migrationNames.length;i++) {
+      const name=migrationNames[i];
+      if (i===m22) {
+        // The historical path must run the bounded preflight explicitly at
+        // the 21-migration boundary; m22's own guard is not a substitute.
+        await db.exec(hardeningPreflight);
+        await db.exec(hardeningPreflight);
+      }
       let next=await readFile(new URL(name,migrationDir),'utf8');
       next=next.replace('create extension if not exists pgcrypto with schema extensions;','');
       await db.exec(next);
@@ -259,6 +268,6 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('rollback');
     assert.equal((await scalar(db,'select shift from public.spv_followups where id=$1',[ids.activeCase])).shift,'off',
       'refusing an out-of-scope preflight does not change the migrated case');
-    console.log('Historical 13→23 upgrade OK: preflight absence reproduced; bounded preflight applied twice; migrations 14–23 completed');
+    console.log('Historical 12→24 upgrade OK: migration 13 boundary covered; preflight absence reproduced; both bounded preflights applied twice; migrations 14–24 completed');
   } finally { await db.close(); }
 }
