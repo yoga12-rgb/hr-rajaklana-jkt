@@ -166,3 +166,7 @@ Query catalog tanpa membaca data HR mengembalikan untuk semua 11 tabel target (`
 ### Catatan tooling dan deployment
 
 CLI Supabase lokal tidak dapat membuat file migration karena telemetry mencoba menulis file sementara di profil Windows dan terkena `EPERM`; file migration dibuat dengan `apply_patch` setelah SQL dan versi CLI diperiksa, lalu diuji penuh di PGlite. Migration hosted diterapkan hanya ke Preview melalui connector setelah inspeksi tabel; Production tidak disentuh. Commit dan deployment Preview harus tetap diverifikasi lagi setelah push: status Vercel `READY` saja bukan bukti workflow.
+
+### Verifikasi post-push
+
+Commit `0bdabffec44fd435619c7202e21f60cecb65b007` sudah dipush ke `origin/codex/preview`. Vercel deployment `dpl_9phXyeei9rb8g97MyMkNxx2eYB3a` kemudian menjadi `READY`, bersumber dari `yoga12-rgb/hr-rajaklana-jkt`, branch `codex/preview`, dan alias Preview `hr-rajaklana-jkt-preview.vercel.app`. Ini membuktikan source/deployment tersinkron; belum membuktikan login, RPC, Realtime, PWA, atau perangkat.
