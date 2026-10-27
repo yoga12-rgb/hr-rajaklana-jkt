@@ -1725,5 +1725,21 @@ assert.equal((await db.query('select id from public.employee_directory() where i
   'the same account can read its employee record after reactivation');
 await db.exec('reset role');
 console.log('Employee lifecycle OK: atomic data+roles rollback, disable, same-identity reactivation, reset recovery');
+
+const securityDefiners=(await db.query(`
+  select p.oid,
+         has_function_privilege('anon',p.oid,'execute') as anon_execute,
+         has_function_privilege('authenticated',p.oid,'execute') as authenticated_execute,
+         coalesce(array_to_string(p.proconfig,','),'') like '%search_path=%' as pinned_search_path
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.prosecdef
+`)).rows;
+assert.equal(securityDefiners.filter(row=>row.anon_execute).length,0,
+  'public SECURITY DEFINER functions must not be executable by anon');
+assert.equal(securityDefiners.filter(row=>!row.pinned_search_path).length,0,
+  'public SECURITY DEFINER functions must pin search_path');
+assert.ok(securityDefiners.some(row=>row.authenticated_execute),
+  'the exposed RPC surface must remain present for authenticated business workflows');
+console.log(`SECURITY DEFINER hygiene OK: ${securityDefiners.length} public functions, anon EXECUTE denied, search_path pinned, authenticated RPC surface retained`);
 await db.close();
 console.log('All database checks passed. Hosted Supabase Auth/Storage integration still requires deployment testing.');
