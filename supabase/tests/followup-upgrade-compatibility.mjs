@@ -3,6 +3,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { readFile, readdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { installAuthSessionFixture, fixtureSession } from './auth-session-fixture.mjs';
 
 const migrationDir = new URL('../migrations/', import.meta.url);
 const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
@@ -31,6 +32,7 @@ const createDb = async () => {
     create function storage.foldername(name text) returns text[] language sql immutable as $$ select string_to_array(name,'/'); $$;
     create publication supabase_realtime;
   `);
+  await installAuthSessionFixture(db);
   return db;
 };
 const apply = async (db, from, to) => {
@@ -77,7 +79,7 @@ const setupHistory = async (db, sourceShift='off') => {
 };
 
 // Preview-style upgrade: the known deployed 18-migration baseline receives
-// only forward supervisor migrations 19–24. This is intentionally separate
+// only forward migrations 19–25. This is intentionally separate
 // from the historical 13-migration path below: a current Preview must never
 // run the legacy preflight intended for the migration-14 CHECK failure.
 {
@@ -85,7 +87,7 @@ const setupHistory = async (db, sourceShift='off') => {
   try {
     const previewBaseline=idx('20261022170000');
     const hardening=idx('20261024110000');
-    const target=idx('20261027090000');
+    const target=idx('20261027090100');
     assert.equal(previewBaseline,17,'Preview baseline must contain exactly 18 migrations');
     assert.notEqual(hardening,-1,'m22 operational hardening must remain present before m23');
     assert.equal(target,migrationNames.length-1,'latest supervisor migration must remain the upgrade target');
@@ -139,7 +141,7 @@ const setupHistory = async (db, sourceShift='off') => {
     open = await scalar(db,'select id,status,shift,outlet_id,owner_id,note,resolution_note,revision from public.spv_followups where id=$1',[ids.activeCase]);
     assert.equal(open.shift,'morning');
     assert.equal(open.revision,1,'new revision begins at one for an existing Preview case');
-    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await fixtureSession(db,ids.authUser);
     await db.exec('set role authenticated');
     await db.query("select public.cashier_assignment_save($1,'2026-10-15',$2,'off','Uji Libur setelah upgrade',$3,false)",
       [ids.employee,ids.outletB,ids.assignment]);
@@ -158,13 +160,13 @@ const setupHistory = async (db, sourceShift='off') => {
     assert.equal((await scalar(db,'select outlet_id from public.spv_followups where id=$1',[ids.completedRoster])).outlet_id,ids.outletA,
       'Preview upgrade does not rewrite a completed roster snapshot');
     assert.equal((await scalar(db,"select count(*)::int as count from private.spv_followup_context_repair_log where migration_key='20261020081916_cashier_followup_context_consistency'")).count,0,
-      '18→24 does not invoke the historical repair intended for the earlier 15→16 upgrade');
+      '18→25 does not invoke the historical repair intended for the earlier 15→16 upgrade');
 
     // m23 is strictly forward-only on the Preview baseline: legacy
     // configuration rows acquire a version, a v2 receipt replays its original
     // response after a later v1 write, and the configuration snapshot exposes
     // the server revision needed for an optimistic client baseline.
-    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await fixtureSession(db,ids.authUser);
     await db.exec('set role authenticated');
     const configKey='30000000-0000-4000-8000-000000000093';
     const firstCategory=(await scalar(db,`select public.supervisor_issue_category_save_v2(
@@ -186,7 +188,7 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.query('insert into auth.users(id,email) values($1,$2)',[employeeAuth,'rk-upgrade-fixture@login.rajaklana.internal']);
     await db.query('update public.employees set auth_user_id=$1,account_status=\'active\' where id=$2',[employeeAuth,ids.employee]);
     await db.query("insert into public.employee_roles(employee_id,role) values($1,'head_baker')",[ids.employee]);
-    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await fixtureSession(db,ids.authUser);
     await db.exec('set role authenticated');
     await db.query(`select public.hr_save_employee_with_roles(
       jsonb_build_object('status','inactive','ends_on','2026-10-15'::date,'exit_reason','Uji upgrade lifecycle'),
@@ -198,23 +200,58 @@ const setupHistory = async (db, sourceShift='off') => {
     const reactivated=await scalar(db,'select status,account_status,auth_user_id from public.employees where id=$1',[ids.employee]);
     assert.deepEqual(reactivated,{status:'active',account_status:'active',auth_user_id:employeeAuth},
       'the new Preview migration reactivates an existing linked account');
-    await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)`,[ids.authUser]);
+    await fixtureSession(db,ids.authUser);
     await db.exec('set role authenticated');
     const issued=(await scalar(db,`select public.issue_account_token($1,'reset',$2) as token`,[ids.employee,'a'.repeat(64)])).token;
     await db.exec('reset role');
-    await db.query(`select set_config('request.jwt.claim.sub','',false),set_config('request.jwt.claim.role','service_role',false)`);
+    await fixtureSession(db,'','service_role');
     await db.exec('set role service_role');
     const firstClaim=(await scalar(db,'select public.claim_account_token($1,$2) as token',['a'.repeat(64),'30000000-0000-4000-8000-000000000091'])).token;
     await db.exec('reset role');
     await db.query("update public.account_tokens set claimed_at=now()-interval '6 minutes' where id=$1",[issued.id]);
-    await db.query(`select set_config('request.jwt.claim.sub','',false),set_config('request.jwt.claim.role','service_role',false)`);
+    await fixtureSession(db,'','service_role');
     await db.exec('set role service_role');
     assert.equal((await scalar(db,'select public.inspect_account_token($1) as token',['a'.repeat(64)])).token.purpose,'reset',
       'the activation page preflight accepts a safely abandoned claim');
     const retry=(await scalar(db,'select public.claim_account_token($1,$2) as token',['a'.repeat(64),'30000000-0000-4000-8000-000000000092'])).token;
     assert.equal(retry.token_id,firstClaim.token_id,'retry reclaims the original Preview token');
-    console.log('Preview 18→24 upgrade OK: cases retained/revisioned, m22 duplicate preflight fail-closed/clean-repeat, m23 configuration receipt/revision replay preserved, ACL hardening applied, supervisor tables additive/hardened, Libur context intact, linked account lifecycle preserved');
+    console.log('Preview 18→25 upgrade OK: cases retained/revisioned, m22 duplicate preflight fail-closed/clean-repeat, m23 configuration receipt/revision replay preserved, ACL and MFA hardening applied, Libur context intact, linked account lifecycle preserved');
   } finally { await db.close(); }
+}
+
+// Actual hosted Preview baseline at the MFA/security checkpoint is 24. Unlike
+// historical upgrades, it receives exactly one additive hardening file
+// and must not rerun a bounded preflight or alter any operational snapshot.
+{
+  const db=await createDb();
+  try {
+    const baseline=idx('20261027090000');
+    assert.equal(baseline,23,'actual Preview baseline must contain 24 migrations');
+    await db.exec('create schema supabase_migrations;create table supabase_migrations.schema_migrations(version text primary key,name text)');
+    await apply(db,0,baseline);
+    const ids=await setupHistory(db,'morning');
+    const snapshot=async()=>(await scalar(db,`select jsonb_build_object(
+      'cases',(select jsonb_agg(to_jsonb(f) order by id) from public.spv_followups f),
+      'assignments',(select jsonb_agg(to_jsonb(a) order by id) from public.cashier_assignments a),
+      'employees',(select jsonb_agg(to_jsonb(e) order by id) from public.employees e),
+      'roles',(select jsonb_agg(to_jsonb(r) order by employee_id,role) from public.employee_roles r),
+      'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a)
+    ) as value`)).value;
+    const before=await snapshot();
+    await apply(db,baseline+1,migrationNames.length-1);
+    assert.deepEqual(await snapshot(),before,'actual Preview upgrade preserves all existing business snapshots/audit');
+    assert.equal((await scalar(db,'select count(*)::integer as count from supabase_migrations.schema_migrations')).count,25);
+    await fixtureSession(db,ids.authUser,'authenticated','aal1');
+    await db.exec('set role authenticated');
+    assert.equal((await scalar(db,'select public.auth_access_context() as value')).value.reason,'mfa_required');
+    await assert.rejects(db.query('select * from public.employee_directory()'),/Verifikasi dua langkah/);
+    await db.exec('reset role');
+    await fixtureSession(db,ids.authUser,'authenticated','aal2');
+    await db.exec('set role authenticated');
+    assert.equal((await scalar(db,'select public.auth_access_context() as value')).value.allowed,true);
+    assert.ok((await db.query('select * from public.employee_directory()')).rows.length>0);
+    console.log('Actual Preview 24→25 upgrade OK: one additive file, no historical preflight, business/audit snapshot equality, privileged aal1 denied and verified aal2 allowed');
+  } finally {await db.close();}
 }
 
 // Historical upgrade: prove the 12→13→m14 boundary, reproduce migration 14's
@@ -268,6 +305,6 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('rollback');
     assert.equal((await scalar(db,'select shift from public.spv_followups where id=$1',[ids.activeCase])).shift,'off',
       'refusing an out-of-scope preflight does not change the migrated case');
-    console.log('Historical 12→24 upgrade OK: migration 13 boundary covered; preflight absence reproduced; both bounded preflights applied twice; migrations 14–24 completed');
+    console.log('Historical 12→25 upgrade OK: migration 13 boundary covered; preflight absence reproduced; both bounded preflights applied twice; migrations 14–25 completed');
   } finally { await db.close(); }
 }

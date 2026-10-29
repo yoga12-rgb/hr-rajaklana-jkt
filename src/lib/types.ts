@@ -239,6 +239,8 @@ export interface RetrospectiveLeaveInput {
 }
 export interface AppState {
   mode: 'demo' | 'live'; initialized: boolean; loading: boolean; user: Employee | null;
+  // Set only after the database access-context check; no factors or secrets.
+  mfaRequired?: boolean; mfaProtected?: boolean; mfaUserId?: string | null;
   employees: Employee[]; outlets: Outlet[]; departments: Department[]; positions: Position[];
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];

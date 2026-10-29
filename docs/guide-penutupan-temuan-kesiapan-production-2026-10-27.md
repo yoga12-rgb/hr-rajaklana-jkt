@@ -1,5 +1,7 @@
 # Panduan penutupan temuan kesiapan Production — 27 Oktober 2026
 
+> Progres terbaru diteruskan pada [checkpoint 29 Oktober](progres-kesiapan-production-2026-10-29.md), [runbook MFA](mfa-rollout-recovery.md), dan [rencana cutover](production-cutover-plan.md). Tabel eksekusi 27 Oktober di bawah adalah bukti historis; tidak membuktikan alur MFA baru atau menutup gerbang hosted/perangkat.
+
 Dokumen ini adalah acuan kerja agent implementasi berikutnya. Tujuannya menutup temuan audit keamanan dan membuktikan alur operasional sebelum versi terbaru dipakai untuk HR Rajaklana. Status `READY` di Vercel berarti build/deployment selesai; status itu tidak membuktikan login, transaksi, Realtime, PWA, atau perangkat nyata lulus.
 
 ## 1. Baseline dan keputusan rilis

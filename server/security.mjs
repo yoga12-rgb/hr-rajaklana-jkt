@@ -28,9 +28,27 @@ export async function authenticate(request, env = process.env) {
   const token = bearer.slice(7);
   const { data: { user }, error } = await admin.auth.getUser(token);
   if (error || !user) throw new ApiError('unauthorized', 'Sesi berakhir. Silakan login kembali.', 401);
-  const { data: employee, error: employeeError } = await admin.from('employees').select('id,auth_user_id,full_name,status,account_status,can_clock').eq('auth_user_id', user.id).single();
-  if (employeeError || employee?.status !== 'active' || employee?.account_status !== 'active') throw new ApiError('inactive', 'Akses akun tidak aktif. Hubungi HR.', 403);
   const client = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, { ...options, global: { headers: { Authorization: bearer } } });
+  // getUser verifies the bearer; the user-scoped RPC binds its signed claims
+  // to the live account, session and factor. Never derive privilege or AAL
+  // from user_metadata, a decoded unsigned JWT, or a service-role query.
+  const { data: access, error: accessError } = await client.rpc('auth_access_context');
+  if (accessError || !access || Array.isArray(access) || typeof access.requires_mfa !== 'boolean'
+    || !['aal1','aal2'].includes(access.current_level) || typeof access.allowed !== 'boolean'
+    || (access.employee_id !== null && (typeof access.employee_id !== 'string' || !access.employee_id))
+    || ![null,'inactive','mfa_required','session_revoked'].includes(access.reason)
+    || (access.allowed && (!access.employee_id || access.reason !== null))) {
+    throw new ApiError('auth_unavailable', 'Pemeriksaan keamanan sesi belum berhasil. Coba kembali.', 503);
+  }
+  if (access.reason === 'session_revoked') throw new ApiError('unauthorized', 'Sesi berakhir. Silakan login kembali.', 401);
+  if (!access.employee_id || access.reason === 'inactive') throw new ApiError('inactive', 'Akses akun tidak aktif. Hubungi HR.', 403);
+  if (access.requires_mfa && (!access.allowed || access.current_level !== 'aal2')) {
+    throw new ApiError('mfa_required', 'Selesaikan verifikasi dua langkah sebelum melanjutkan.', 403);
+  }
+  if (!access.allowed) throw new ApiError('unauthorized', 'Sesi berakhir. Silakan login kembali.', 401);
+  const { data: employee, error: employeeError } = await admin.from('employees').select('id,auth_user_id,full_name,status,account_status,can_clock').eq('auth_user_id', user.id).single();
+  if (employeeError || employee?.id !== access.employee_id || employee?.auth_user_id !== user.id
+    || employee?.status !== 'active' || employee?.account_status !== 'active') throw new ApiError('inactive', 'Akses akun tidak aktif. Hubungi HR.', 403);
   return { admin, client, user, employee };
 }
 /** @param {Request} request @param {number} [maxBytes] @returns {Promise<Record<string,any>>} */

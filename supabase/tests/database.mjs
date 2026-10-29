@@ -4,6 +4,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { readFile, readdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { installAuthSessionFixture, fixtureSession } from './auth-session-fixture.mjs';
 
 const db = new PGlite();
 await db.exec(`
@@ -24,6 +25,7 @@ await db.exec(`
   create function storage.foldername(name text) returns text[] language sql immutable as $$ select string_to_array(name,'/'); $$;
   create publication supabase_realtime;
 `);
+await installAuthSessionFixture(db);
 const migrationDir = new URL('../migrations/', import.meta.url);
 const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
 const hardenedTables = [
@@ -291,8 +293,7 @@ for (const [employeeId,creatorId] of [[cashierId,adminId],[adminId,bakerId]]) {
   await db.query("insert into public.cashier_assignments(employee_id,work_date,outlet_id,shift,reason,created_by) values($1,$2,$3,'morning','Penugasan fixture absensi',$4)",[employeeId,clock.today,outlet.id,creatorId]);
 }
 const asUser=async(id,role='authenticated')=>{
-  await db.exec('reset role');
-  await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role',$2,false)`,[id,role]);
+  await fixtureSession(db,id,role);
   await db.exec(`set role ${role}`);
 };
 await asUser(cashierAuth);

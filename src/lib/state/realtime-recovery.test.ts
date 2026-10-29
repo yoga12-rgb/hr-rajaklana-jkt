@@ -5,7 +5,7 @@ import { RealtimeClient } from '@supabase/realtime-js';
 const { mockSupabase } = vi.hoisted(() => ({ mockSupabase: {} as Record<string, any> }));
 vi.mock('./client', () => ({ configured: true, supabase: mockSupabase }));
 
-const sessionFor = (id: string) => ({ user: { id }, access_token: `test-session-${id}` });
+const sessionFor = (id: string, aal = 'aal2') => ({ user: { id }, access_token: `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: id, aal })).toString('base64url')}.fixture-signature` });
 let currentSession: ReturnType<typeof sessionFor> | null = sessionFor('auth-admin');
 const liveTables: Record<string, Record<string, unknown>[]> = {
   employees: [{ id: 'employee-admin', employee_number: 'RK000001', full_name: 'Admin Uji', whatsapp: '0812', department_id: 'department', position_id: 'position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-admin', can_middle_shift: false, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' }],
@@ -91,7 +91,9 @@ function installLiveClient() {
       };
       return query;
     }),
-    rpc: vi.fn(async (name: string) => ({ data: name === 'leave_balance' ? { expired: false, remaining: 12 } : [], error: null })),
+    rpc: vi.fn(async (name: string) => ({ data: name === 'auth_access_context'
+      ? { employee_id: currentSession?.user.id === 'auth-cashier' ? 'employee-cashier' : 'employee-admin', requires_mfa: currentSession?.user.id !== 'auth-cashier', current_level: 'aal2', allowed: true, reason: null }
+      : name === 'leave_balance' ? { expired: false, remaining: 12 } : [], error: null })),
     storage: { from: vi.fn(() => ({ createSignedUrl: vi.fn(async () => ({ data: { signedUrl: '' }, error: null })) })) },
     channel: vi.fn(() => {
       let statusCallback: ((status: string) => void) | undefined;
@@ -139,6 +141,71 @@ describe('live Realtime recovery', () => {
   });
 
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
+
+  it('keeps a privileged password-only session available for MFA without reading protected tables', async () => {
+    currentSession = sessionFor('auth-admin', 'aal1');
+    mockSupabase.rpc.mockResolvedValue({ data: { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }, error: null });
+    const { app } = await openLiveApp();
+    expect(get(app)).toMatchObject({ user: null, mfaRequired: true, mfaUserId: 'auth-admin', employees: [], loading: false });
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+    expect(mockSupabase.channel).not.toHaveBeenCalled();
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it.each(['network', 'malformed'])('clears cached privileged data if access context becomes %s', async failure => {
+    const { app, actions } = await openLiveApp();
+    expect(get(app).user?.id).toBe('employee-admin');
+    const channel = channels[0];
+    mockSupabase.rpc.mockImplementation(async () => failure === 'network'
+      ? { data: null, error: new Error('Security context unavailable') }
+      : { data: { allowed: true }, error: null });
+    mockSupabase.from.mockClear();
+    await actions.refresh();
+    expect(get(app)).toMatchObject({ user: null, employees: [], attendanceRecords: [], leaveRequests: [] });
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(channel);
+    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('immediately clears privileged data on a same-account assurance downgrade', async () => {
+    const { app } = await openLiveApp();
+    expect(get(app).mfaProtected).toBe(true);
+    const downgraded = sessionFor('auth-admin', 'aal1');
+    currentSession = downgraded;
+    mockSupabase.rpc.mockResolvedValue({ data: { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }, error: null });
+    authListener?.('TOKEN_REFRESHED', downgraded);
+    expect(get(app)).toMatchObject({ user: null, initialized: false, loading: true, employees: [] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app)).toMatchObject({ user: null, mfaRequired: true, mfaUserId: 'auth-admin', employees: [] });
+  });
+
+  it('rejects an old privileged snapshot when the token is downgraded during startup', async () => {
+    let announceRead!: () => void;
+    const readStarted = new Promise<void>(resolve => { announceRead = resolve; });
+    employeeReadStarted = announceRead;
+    delayNextEmployeeRead = true;
+    const { app, actions } = await import('./app');
+    const snapshots: (string | null)[] = [];
+    const unsubscribe = app.subscribe(state => snapshots.push(state.user?.id ?? null));
+    try {
+      const initialization = actions.init();
+      await readStarted;
+      expect(get(app).mfaProtected).not.toBe(true);
+      currentSession = sessionFor('auth-admin', 'aal1');
+      mockSupabase.rpc.mockImplementation(async (name: string) => ({ data: name === 'auth_access_context'
+        ? { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }
+        : name === 'leave_balance' ? { expired: false, remaining: 12 } : [], error: null }));
+      authListener?.('TOKEN_REFRESHED', currentSession);
+      releaseDelayedEmployeeRead?.();
+      await initialization;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await actions.refresh();
+      expect(get(app)).toMatchObject({ user: null, mfaRequired: true, employees: [] });
+      expect(snapshots).not.toContain('employee-admin');
+      expect(mockSupabase.channel).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
 
   it.each([false, true])('keeps a restored session pending during delayed employee validation (INITIAL_SESSION callback: %s)', async emitInitialSession => {
     let announceEmployeeRead!: () => void;

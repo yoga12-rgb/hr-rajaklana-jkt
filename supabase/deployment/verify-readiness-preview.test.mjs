@@ -21,7 +21,10 @@ await db.exec(`
   create schema supabase_migrations;
   create table supabase_migrations.schema_migrations(version text primary key,name text);
 `);
-const migrations = (await readdir(new URL('supabase/migrations/', root))).filter(file=>file.endsWith('.sql')).sort();
+// This probe intentionally remains the historical 23-migration rollback
+// contract. The current MFA baseline has a separate catalog-only probe.
+const migrations = (await readdir(new URL('supabase/migrations/', root)))
+  .filter(file=>file.endsWith('.sql') && file.slice(0,file.indexOf('_'))<='20261024233053').sort();
 for (const name of migrations) {
   let sql = await readFile(new URL(`supabase/migrations/${name}`, root),'utf8');
   sql = sql.replace('create extension if not exists pgcrypto with schema extensions;', '');
@@ -59,5 +62,5 @@ await db.query("update public.employees set account_status='disabled' where full
 const failBefore = await snapshot();
 await assert.rejects(db.exec(script), /No unlocked safe linked nonadmin fixture/);
 assert.deepEqual(await snapshot(),failBefore,'fail-closed path must leave all fixture state intact');
-console.log('PASS: probe twice, full-state rollback equality, and missing-safe-fixture fail-closed');
+console.log('PASS historical23: probe twice, full-state rollback equality, and missing-safe-fixture fail-closed');
 await db.close();

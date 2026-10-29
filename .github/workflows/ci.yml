@@ -44,17 +44,19 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Check dependency advisories
+        run: npm audit --audit-level=moderate
+
       - name: Run Postgres migration and access tests
         run: npm run test:database
 
       - name: Check guarded legacy replacement
         run: npm run test:database:legacy
 
-      # This harness executes the read-only Preview readiness probe against a
-      # freshly migrated fixture. It catches drift in the expected upgrade
-      # boundary, RPC grants, RLS, and the mandatory rollback contract before
-      # a Preview release is considered for deployment.
-      - name: Verify Preview readiness probe contract
+      # Keep the historical 23-migration rollback probe reproducible. The
+      # current catalog-only MFA/net readiness probe is separately executed
+      # against the final baseline by test:database's mfa-enforcement harness.
+      - name: Verify historical 23-migration probe contract
         run: node supabase/deployment/verify-readiness-preview.test.mjs
 
       - name: Check patch whitespace
@@ -62,3 +64,85 @@ jobs:
 
       - name: Build SPA and PWA
         run: npm run build
+
+  browser:
+    name: Browser ${{ matrix.suite }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [demo-pwa, live-mock]
+    env:
+      # Both jobs use isolated fixture backends. No hosted credentials are used.
+      PUBLIC_APP_ENV: development
+      PUBLIC_SUPABASE_URL: ''
+      PUBLIC_SUPABASE_ANON_KEY: ''
+      PLAYWRIGHT_CHANNEL: chromium
+      E2E_BASE_URL: http://127.0.0.1:5198
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies and test browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build the PWA fixture
+        if: matrix.suite == 'demo-pwa'
+        run: npm run build
+
+      - name: Start the isolated fixture server
+        env:
+          PUBLIC_APP_ENV: ${{ matrix.suite == 'live-mock' && 'preview' || 'development' }}
+          PUBLIC_SUPABASE_URL: ${{ matrix.suite == 'live-mock' && 'http://127.0.0.1:54329' || '' }}
+          PUBLIC_SUPABASE_ANON_KEY: ${{ matrix.suite == 'live-mock' && 'sb_publishable_isolated_audit_mock' || '' }}
+        run: |
+          if [ '${{ matrix.suite }}' = 'demo-pwa' ]; then
+            npm run preview -- --port 5198 --strictPort > /tmp/rajaklana-browser-server.log 2>&1 &
+          else
+            npm run dev -- --port 5198 --strictPort > /tmp/rajaklana-browser-server.log 2>&1 &
+          fi
+          node --input-type=module <<'NODE'
+          import { setTimeout } from 'node:timers/promises';
+          for (let attempt = 0; attempt < 60; attempt++) {
+            try {
+              if ((await fetch('http://127.0.0.1:5198/login')).ok) process.exit(0);
+            } catch {}
+            await setTimeout(1000);
+          }
+          throw new Error('The isolated browser fixture did not become ready');
+          NODE
+
+      - name: Run every required browser scenario
+        env:
+          E2E_PWA: ${{ matrix.suite == 'demo-pwa' && '1' || '' }}
+          E2E_LIVE_SUPABASE_MOCK: ${{ matrix.suite == 'live-mock' && '1' || '' }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/ci-browser.json
+        run: |
+          if [ '${{ matrix.suite }}' = 'demo-pwa' ]; then
+            npm run test:e2e -- tests/demo.spec.ts --reporter=line,json --forbid-only --retries=0
+          else
+            npm run test:e2e -- 'live-.*\.spec\.ts' --reporter=line,json --forbid-only --retries=0
+          fi
+
+      - name: Reject skipped or incomplete browser results
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const { stats } = JSON.parse(readFileSync('test-results/ci-browser.json', 'utf8'));
+          if (!stats || stats.expected < 1 || stats.skipped !== 0 || stats.unexpected !== 0 || stats.flaky !== 0) {
+            throw new Error('Required browser scenarios must all pass without skips or retries');
+          }
+          console.log(`Required browser gate: ${stats.expected} passed, 0 skipped`);
+          NODE

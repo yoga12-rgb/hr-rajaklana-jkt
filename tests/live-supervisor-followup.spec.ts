@@ -40,7 +40,7 @@ async function openFollowupMock(page: Page) {
     app_metadata: { provider: 'email', providers: ['email'] }, user_metadata: {}, created_at: now
   };
   const session = {
-    access_token: jwt({ sub: adminAuthId, aud: 'authenticated', role: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600 }),
+    access_token: jwt({ sub: adminAuthId, aud: 'authenticated', role: 'authenticated', aal: 'aal2', exp: Math.floor(Date.now() / 1000) + 3600 }),
     refresh_token: 'simulated-followup-refresh', token_type: 'bearer', expires_in: 3600, user: authUser
   };
   let followup: Record<string, unknown> = {
@@ -73,6 +73,7 @@ async function openFollowupMock(page: Page) {
     if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
     if (path === '/auth/v1/user') { await respond(route, authUser); return; }
     if (path === '/auth/v1/token') { await respond(route, { ...session, expires_at: Math.floor(Date.now() / 1000) + 3600 }); return; }
+    if (path === '/rest/v1/rpc/auth_access_context') { await respond(route, { employee_id: adminId, requires_mfa: true, current_level: 'aal2', allowed: true, reason: null }); return; }
     if (path === '/rest/v1/rpc/spv_followup_page') {
       await respond(route, { items: [structuredClone(followup)], total: 1, has_more: false, next_cursor: null, as_of: new Date().toISOString() });
       return;

@@ -20,6 +20,13 @@ jwt_expiry = 3600
 enable_signup = false
 minimum_password_length = 10
 
+[auth.mfa]
+max_enrolled_factors = 10
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
 [auth.email]
 # Keep email/password login available for employee numbers.
 # Public registration remains disabled by [auth].enable_signup above.

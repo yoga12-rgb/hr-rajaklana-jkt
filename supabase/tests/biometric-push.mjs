@@ -3,6 +3,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { readFile,readdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { installAuthSessionFixture, fixtureSession } from './auth-session-fixture.mjs';
 const db=new PGlite();
 await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
 create schema auth;create schema storage;create schema extensions;
@@ -16,13 +17,14 @@ grant usage on schema public,auth,storage to authenticated,service_role;
 grant select,insert,update,delete on storage.objects to authenticated;
 create function storage.foldername(name text) returns text[] language sql immutable as $$select string_to_array(name,'/')$$;
 create publication supabase_realtime;`);
+await installAuthSessionFixture(db);
 for(const name of (await readdir(new URL('../migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')).sort()) {
   const sql=(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8')).replace('create extension if not exists pgcrypto with schema extensions;','');
   await db.exec(sql);
 }
 const row=async(sql,args=[])=>((await db.query(sql,args)).rows[0]);
 async function asUser(id,role='authenticated'){
-  await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role',$2,false)",[id,role]);await db.exec('set role '+role);
+  await fixtureSession(db,id,role);await db.exec('set role '+role);
 }
 async function denied(sql,args,fragment){await assert.rejects(()=>db.query(sql,args),e=>e.message.includes(fragment),fragment);}
 const adminAuth='10000000-0000-0000-0000-000000000001',cashAuth='10000000-0000-0000-0000-000000000002',otherAuth='10000000-0000-0000-0000-000000000003';
