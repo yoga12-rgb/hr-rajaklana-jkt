@@ -20,7 +20,7 @@ Dokumen ini mencatat bukti eksekusi panduan [guide-penutupan-tiga-temuan-autenti
 
 ## ARF-00 — baseline dan reproduksi
 
-- Branch tetap `codex/preview`; HEAD awal `4cafee36d4586e98e3753060b49eaee2a7582418`, lalu perbaikan regresi refresh dipush sebagai `bab91d2e15524176195cf39a4eb3afcdb5cc2c20`.
+- Branch tetap `codex/preview`; HEAD awal `4cafee36d4586e98e3753060b49eaee2a7582418`, perbaikan regresi refresh dipush sebagai `bab91d2e15524176195cf39a4eb3afcdb5cc2c20`, dan checkpoint dokumen final berada pada HEAD `af086c36e2ff8f39cc05312e1a6a96126af40727`.
 - Baseline lokal berisi 26 migration; migration retirement lokal `20261030031318_retire_application_authenticator.sql`. Tidak ada file migration applied yang diubah.
 - Preview yang menjadi sasaran: project `hr-rajaklana-preview`, ref `lypsqrwjzrmuyqtdcegr`, organisasi `bvwgekyfibloctfslgdf`. Mapping timestamp hosted yang berbeda dari lokal tetap diperlakukan sebagai mapping, bukan diperbaiki.
 - Reproduksi AR-01 di `src/lib/state/realtime-recovery.test.ts` sebelumnya menghasilkan `initialized=false,user=null` saat token akun sama berubah. Reproduksi sekarang dipertahankan sebagai tes red/green dan memeriksa state saat pembacaan employee ditunda.
@@ -127,8 +127,8 @@ Demo/PWA dijalankan pada production build lokal dengan URL/key Supabase kosong. 
 
 Target dan identitas diverifikasi ulang sebelum rilis. Tidak ada migration yang dijalankan ulang pada hosted Preview dan tidak ada reset/penghapusan data.
 
-- GitHub Actions run `41005538379` untuk SHA `bab91d2e15524176195cf39a4eb3afcdb5cc2c20`: `Check, test, database, build`, `Browser demo-pwa`, dan `Browser live-mock` semuanya completed/success. [Run CI](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41005538379).
-- Vercel deployment `dpl_CfdZooTiRXriy89zonwQedDUNj64` (`hr-rajaklana-af269lkxr-hr-rajaklana.vercel.app`) berstatus `READY`, target `preview`, alias `https://hr-rajaklana-jkt-preview.vercel.app` dan branch alias `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`.
+- GitHub Actions run `41005538379` untuk SHA `bab91d2e15524176195cf39a4eb3afcdb5cc2c20` dan run `41006111921` untuk checkpoint dokumen `af086c36e2ff8f39cc05312e1a6a96126af40727`: `Check, test, database, build`, `Browser demo-pwa`, dan `Browser live-mock` semuanya completed/success. [Run kode](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41005538379) · [Run checkpoint](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41006111921).
+- Vercel deployment final `dpl_EHJ1DWpjTAMDPQAD9t3ebAgHW1JJ` (`hr-rajaklana-209dc0jsc-hr-rajaklana.vercel.app`) berstatus `READY`, target `preview`, alias `https://hr-rajaklana-jkt-preview.vercel.app` dan branch alias `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`.
 - Smoke HTTP read-only ke alias `/login`: status 200, tanpa mengirim kredensial.
 - Supabase Preview terverifikasi: ref `lypsqrwjzrmuyqtdcegr`, nama `hr-rajaklana-preview`, organisasi `bvwgekyfibloctfslgdf`, `ACTIVE_HEALTHY`. Probe `verify-authenticator-removed-preview.sql` lulus tanpa result/error. Katalog hosted: 26 migration, latest `20261030033256 / retire_application_authenticator`, `private.employee_requires_mfa` tidak ada, total/verified TOTP `0/0`, recovery rows `0`, employee rows `3`, audit rows `29`.
 
