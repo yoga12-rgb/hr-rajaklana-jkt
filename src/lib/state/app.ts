@@ -438,8 +438,10 @@ async function readAll(table: string, fields = '*'): Promise<any[]> {
 async function refreshNow() {
   if (!supabase || refreshing) return; refreshing = true;
   let revision = authRevision;
+  let sessionUserId: string | null = null;
   try {
     const { data: { session } } = await supabase.auth.getSession();
+    sessionUserId = session?.user.id ?? null;
     if (revision !== authRevision) return;
     const nextAuthUserId = session?.user.id ?? null;
     const nextAccessToken = session?.access_token ?? null;
@@ -530,7 +532,20 @@ async function refreshNow() {
     app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
   } catch (e) {
-    if (revision === authRevision) clearLiveState(e instanceof Error ? e.message : 'Data belum berhasil dimuat.');
+    if (revision === authRevision) {
+      const message = e instanceof Error ? e.message : 'Data belum berhasil dimuat.';
+      const current = get(app);
+      // A refresh can fail after the account and access context were already
+      // validated (for example, a transient table read during conflict
+      // reconciliation). Keep the validated shell and its local draft alive
+      // so the user can review/retry. Auth/session validation failures still
+      // clear the account above or while sessionValidating is true.
+      if (current.mode === 'live' && current.initialized && current.user?.authUserId === sessionUserId && !current.sessionValidating) {
+        app.update(state => ({ ...state, connected: false, error: message }));
+      } else {
+        clearLiveState(message);
+      }
+    }
   }
   finally { refreshing = false; }
 }
