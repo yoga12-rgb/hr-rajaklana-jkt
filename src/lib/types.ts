@@ -239,6 +239,10 @@ export interface RetrospectiveLeaveInput {
 }
 export interface AppState {
   mode: 'demo' | 'live'; initialized: boolean; loading: boolean; user: Employee | null;
+  // A live session can rotate its access token without changing the account.
+  // Keep the shell mounted while the new token is revalidated, but make the
+  // transitional state visible to protected client actions.
+  sessionValidating?: boolean;
   employees: Employee[]; outlets: Outlet[]; departments: Department[]; positions: Position[];
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];

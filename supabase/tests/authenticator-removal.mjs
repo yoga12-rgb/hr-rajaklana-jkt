@@ -51,11 +51,61 @@ try {
   assert.equal((await db.query('select id from public.employees')).rows.length, 1, 'valid password-only HR session retains its scoped employee read');
   await assert.rejects(db.query('select public.auth_mfa_recovery_authorize(null,null,\'retired feature\')'), /permission denied|hentikan/);
   await db.exec('reset role');
+  // A legacy aal2 claim remains compatible with a live session, and factor
+  // presence/absence is no longer an authorization input after retirement.
+  await db.query("update auth.sessions set not_after=null,aal='aal2' where id='20000000-0000-4000-8000-000000000001'");
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal2', session_id:'20000000-0000-4000-8000-000000000001' })]);
+  await db.exec('set role authenticated');
+  assert.equal((await scalar('select public.auth_access_context() as value')).value.allowed, true, 'legacy aal2 session remains valid without a factor');
+  await db.exec('reset role');
+  await db.query("insert into auth.mfa_factors(id,user_id,status,factor_type) values('30000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','unverified','totp')");
+  await db.query("delete from auth.mfa_factors where id='30000000-0000-4000-8000-000000000001'");
+  await db.exec('set role authenticated');
+  assert.equal((await scalar('select public.auth_access_context() as value')).value.allowed, true, 'deleting a factor does not revoke an otherwise live password session');
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal1', session_id:'not-a-uuid' })]);
+  assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked', 'malformed session id fails closed');
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal1', session_id:'20000000-0000-0000-0000-000000000099' })]);
+  assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked', 'session/user mismatch fails closed');
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-0000-0000-000000000099', role:'authenticated', aal:'aal1', session_id:'20000000-0000-0000-0000-000000000099' })]);
+  await db.exec('reset role');
   await db.query("update auth.sessions set not_after=now()-interval '1 second' where id='20000000-0000-4000-8000-000000000001'");
   await db.exec('set role authenticated');
   assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked');
   await db.exec('reset role');
   await db.exec(probe);
+  const probeRejects = async (pattern, label) => {
+    await assert.rejects(db.exec(probe), pattern, label);
+    // A failed DO block aborts the read-only transaction; make the fixture
+    // reusable before restoring the isolated mutation.
+    await db.exec('rollback').catch(() => undefined);
+  };
+  await db.exec('grant insert on table public.shift_handovers to authenticated');
+  await probeRejects(/sensitive operational ACL/, 'probe rejects an authenticated direct INSERT grant');
+  await db.exec('revoke insert on table public.shift_handovers from authenticated');
+
+  await db.exec('drop policy privileged_mfa_session on public.employees');
+  await probeRejects(/restrictive live-session policy missing or weakened on employees/, 'probe rejects a missing employees policy');
+  await db.exec('create policy privileged_mfa_session on public.employees as restrictive to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+
+  await db.exec('drop policy privileged_mfa_session on storage.objects');
+  await db.exec('create policy privileged_mfa_session on storage.objects as restrictive to authenticated using (true) with check (true)');
+  await probeRejects(/Storage restrictive live-session policy/, 'probe rejects an always-true Storage predicate');
+  await db.exec('drop policy privileged_mfa_session on storage.objects');
+  await db.exec('create policy privileged_mfa_session on storage.objects as restrictive to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+
+  await db.query("update supabase_migrations.schema_migrations set name='wrong_foundation' where version=(select min(version) from supabase_migrations.schema_migrations)");
+  await probeRejects(/ordered 26-name contract/, 'probe rejects a wrong migration name with the same count');
+  await db.query("update supabase_migrations.schema_migrations set name='hr_foundation' where version=(select min(version) from supabase_migrations.schema_migrations)");
+
+  await db.exec('grant execute on function public.auth_mfa_recovery_authorize(uuid,uuid,text) to public');
+  await probeRejects(/retired recovery function is executable/, 'probe rejects an inherited PUBLIC recovery grant');
+  await db.exec('revoke execute on function public.auth_mfa_recovery_authorize(uuid,uuid,text) from public');
+
+  await db.exec('alter table public.employees disable row level security');
+  await probeRejects(/public table\/RLS missing: employees/, 'probe rejects disabled employees RLS');
+  await db.exec('alter table public.employees enable row level security');
+  await db.exec(probe);
+  console.log('Authenticator removal mutation gates OK: ACL, policy, Storage, ordered history, inherited PUBLIC grant and disabled RLS are all rejected and restored');
   console.log('Authenticator removal LOCAL OK: migration26, password-only aal1 fixture without factor, live-session revocation, tombstoned recovery RPCs, restrictive Storage policy and history preservation');
 } finally {
   await db.close();

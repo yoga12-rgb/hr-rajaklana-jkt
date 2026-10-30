@@ -5,7 +5,7 @@ import { RealtimeClient } from '@supabase/realtime-js';
 const { mockSupabase } = vi.hoisted(() => ({ mockSupabase: {} as Record<string, any> }));
 vi.mock('./client', () => ({ configured: true, supabase: mockSupabase }));
 
-const sessionFor = (id: string, aal = 'aal2') => ({ user: { id }, access_token: `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: id, aal })).toString('base64url')}.fixture-signature` });
+const sessionFor = (id: string, aal = 'aal2', nonce = 'fixture-signature') => ({ user: { id }, access_token: `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: id, aal })).toString('base64url')}.${nonce}` });
 let currentSession: ReturnType<typeof sessionFor> | null = sessionFor('auth-admin');
 const liveTables: Record<string, Record<string, unknown>[]> = {
   employees: [{ id: 'employee-admin', employee_number: 'RK000001', full_name: 'Admin Uji', whatsapp: '0812', department_id: 'department', position_id: 'position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-admin', can_middle_shift: false, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' }],
@@ -522,6 +522,26 @@ describe('live Realtime recovery', () => {
     expect(mockSupabase.auth.signOut).toHaveBeenCalledTimes(1);
     expect(get(app).user).toBeNull();
     expect(get(app).employees).toEqual([]);
+  });
+
+  it('keeps the validated shell and local form context mounted during same-account token revalidation', async () => {
+    const { actions, app } = await openLiveApp();
+    expect(get(app)).toMatchObject({ initialized: true, user: { id: 'employee-admin' }, sessionValidating: false });
+    let announceRead!: () => void;
+    const readStarted = new Promise<void>(resolve => { announceRead = resolve; });
+    employeeReadStarted = announceRead;
+    delayNextEmployeeRead = true;
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotated-token');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await readStarted;
+    // The old implementation cleared the app and unmounted the route here.
+    // A same-account refresh must retain the validated shell while the new
+    // context is checked, so an open form/camera can remain mounted.
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: { id: 'employee-admin' }, sessionValidating: true });
+    releaseDelayedEmployeeRead?.();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: { id: 'employee-admin' }, sessionValidating: false });
   });
 
   it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {

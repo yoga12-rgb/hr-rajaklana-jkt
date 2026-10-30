@@ -141,7 +141,7 @@ const setupHistory = async (db, sourceShift='off') => {
     open = await scalar(db,'select id,status,shift,outlet_id,owner_id,note,resolution_note,revision from public.spv_followups where id=$1',[ids.activeCase]);
     assert.equal(open.shift,'morning');
     assert.equal(open.revision,1,'new revision begins at one for an existing Preview case');
-    await fixtureSession(db,ids.authUser);
+    await fixtureSession(db,ids.authUser,'authenticated','aal2');
     await db.exec('set role authenticated');
     await db.query("select public.cashier_assignment_save($1,'2026-10-15',$2,'off','Uji Libur setelah upgrade',$3,false)",
       [ids.employee,ids.outletB,ids.assignment]);
@@ -166,7 +166,7 @@ const setupHistory = async (db, sourceShift='off') => {
     // configuration rows acquire a version, a v2 receipt replays its original
     // response after a later v1 write, and the configuration snapshot exposes
     // the server revision needed for an optimistic client baseline.
-    await fixtureSession(db,ids.authUser);
+    await fixtureSession(db,ids.authUser,'authenticated','aal2');
     await db.exec('set role authenticated');
     const configKey='30000000-0000-4000-8000-000000000093';
     const firstCategory=(await scalar(db,`select public.supervisor_issue_category_save_v2(
@@ -188,7 +188,7 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.query('insert into auth.users(id,email) values($1,$2)',[employeeAuth,'rk-upgrade-fixture@login.rajaklana.internal']);
     await db.query('update public.employees set auth_user_id=$1,account_status=\'active\' where id=$2',[employeeAuth,ids.employee]);
     await db.query("insert into public.employee_roles(employee_id,role) values($1,'head_baker')",[ids.employee]);
-    await fixtureSession(db,ids.authUser);
+    await fixtureSession(db,ids.authUser,'authenticated','aal2');
     await db.exec('set role authenticated');
     await db.query(`select public.hr_save_employee_with_roles(
       jsonb_build_object('status','inactive','ends_on','2026-10-15'::date,'exit_reason','Uji upgrade lifecycle'),
@@ -200,7 +200,7 @@ const setupHistory = async (db, sourceShift='off') => {
     const reactivated=await scalar(db,'select status,account_status,auth_user_id from public.employees where id=$1',[ids.employee]);
     assert.deepEqual(reactivated,{status:'active',account_status:'active',auth_user_id:employeeAuth},
       'the new Preview migration reactivates an existing linked account');
-    await fixtureSession(db,ids.authUser);
+    await fixtureSession(db,ids.authUser,'authenticated','aal2');
     await db.exec('set role authenticated');
     const issued=(await scalar(db,`select public.issue_account_token($1,'reset',$2) as token`,[ids.employee,'a'.repeat(64)])).token;
     await db.exec('reset role');
@@ -254,6 +254,44 @@ const setupHistory = async (db, sourceShift='off') => {
     assert.ok((await db.query('select * from public.employee_directory()')).rows.length>0);
     console.log('Actual Preview 24→26 upgrade OK: forward migrations only, no historical preflight, business/audit snapshot equality, password-only aal1 and legacy aal2 accepted');
   } finally {await db.close();}
+}
+
+// Populated migration25 → final26: recovery/audit/case/roster snapshots are
+// captured before the authenticator retirement and must be byte-equivalent
+// after the forward migration. This is separate from the hosted 24→26 path.
+{
+  const db = await createDb();
+  try {
+    const baseline25 = idx('20261027090100');
+    const final26 = idx('20261030031318');
+    assert.equal(final26, baseline25 + 1, 'final retirement must be the single forward migration after baseline25');
+    await db.exec('create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text primary key,name text)');
+    await apply(db, 0, baseline25);
+    const ids = await setupHistory(db, 'morning');
+    const requestId = '60000000-0000-4000-8000-000000000001';
+    await db.query(`insert into private.mfa_recovery_requests(request_id,actor_employee_id,employee_id,auth_user_id,factor_ids,reason,status)
+      values($1,$2,$3,$4,'{}'::uuid[],'Historical cleanup evidence fixture','failed')`, [requestId, ids.admin, ids.employee, ids.authUser]);
+    await db.query(`insert into public.audit_events(entity,entity_id,actor_employee_id,action,reason,before_data,after_data)
+      values('auth_mfa',$1,$2,'recovery_failed','Historical cleanup evidence',jsonb_build_object('request_id',$3::text),jsonb_build_object('status','failed'))`, [ids.employee, ids.admin, requestId]);
+    const snapshot = async () => (await scalar(db, `select jsonb_build_object(
+      'cases',(select jsonb_agg(to_jsonb(f) order by id) from public.spv_followups f),
+      'assignments',(select jsonb_agg(to_jsonb(a) order by id) from public.cashier_assignments a),
+      'employees',(select jsonb_agg(to_jsonb(e) order by id) from public.employees e),
+      'roles',(select jsonb_agg(to_jsonb(r) order by employee_id,role) from public.employee_roles r),
+      'recovery',(select jsonb_agg(to_jsonb(r) order by request_id) from private.mfa_recovery_requests r),
+      'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a)
+    ) as value`)).value;
+    const before = await snapshot();
+    await apply(db, final26, final26);
+    assert.deepEqual(await snapshot(), before, 'migration26 preserves populated recovery, audit, case, roster and employee snapshots');
+    await fixtureSession(db, ids.authUser);
+    await db.exec('set role authenticated');
+    assert.deepEqual((await scalar(db, 'select public.auth_access_context() as value')).value,
+      { employee_id: ids.admin, requires_mfa: false, current_level: 'aal1', allowed: true, reason: null },
+      'populated25→26 ends with password-only live-session access');
+    await db.exec('reset role');
+    console.log('Populated25→26 upgrade OK: recovery/audit/case/roster snapshot equality and password-only context preserved');
+  } finally { await db.close(); }
 }
 
 // Historical upgrade: prove the 12→13→m14 boundary, reproduce migration 14's

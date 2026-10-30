@@ -297,6 +297,11 @@ const asUser=async(id,role='authenticated')=>{
   await db.exec(`set role ${role}`);
 };
 await asUser(cashierAuth);
+const passwordOnlySession = await fixtureSession(db, cashierAuth);
+assert.notEqual(passwordOnlySession.sessionId, cashierAuth, 'fixture session UUID must not equal Auth user UUID');
+assert.equal((await scalar('select count(*)::int as count from auth.mfa_factors where user_id=$1',[cashierAuth])).count,0,
+  'final fixtureSession is password-only and does not create a factor');
+await db.exec('set role authenticated');
 let rows=(await db.query('select * from public.employees')).rows;
 assert.equal(rows.length,1,'employee cannot read other privateprofiles');
 assert.equal(rows[0].id,cashierId);

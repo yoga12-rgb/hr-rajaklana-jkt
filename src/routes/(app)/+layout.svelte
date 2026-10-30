@@ -57,6 +57,7 @@
     <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span><NotificationCenter/><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
       {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
+      {#if $app.sessionValidating}<div class="session-strip" role="status" aria-live="polite"><Icon name="refresh" size={16}/><span>Sesi sedang diverifikasi. Form dan data tetap terbuka; simpanan baru dilanjutkan setelah pemeriksaan selesai.</span></div>{/if}
       {#if $app.mode==='demo'}<div class="demo-strip"><span><Icon name="info" size={15}/><strong>Mode demo</strong> · Data contoh tersimpan di browser ini.</span><a href="/profile">Ganti akun contoh <Icon name="arrow-right" size={13}/></a></div>{/if}
       {#if !networkOnline}<div class="error">Internet terputus. Absensi dan penyimpanan data memerlukan koneksi internet.</div>{/if}
       {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" on:click={()=>actions.refresh()}>Coba lagi</button></div>{/if}
@@ -114,6 +115,8 @@ main { max-width: 1320px; margin: auto; padding: 27px 42px 0; }
 .preview-strip :global(svg) { flex-shrink: 0; }
 .preview-strip strong { display: block; font-size: 12px; }
 .preview-strip span { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+.session-strip { display: flex; align-items: center; gap: 9px; padding: 10px 13px; margin: -11px 0 22px; border: 1px solid var(--panel-border); border-radius: 10px; background: #fff9df; color: #665624; box-shadow: var(--inset); font-size: 11px; }
+.session-strip :global(svg) { flex-shrink: 0; }
 .demo-strip > span, .demo-strip a { display: flex; align-items: center; gap: 6px; }
 .demo-strip strong { font-weight: 600; }
 .demo-strip a { font-weight: 600; color: var(--accent); flex-shrink: 0; }

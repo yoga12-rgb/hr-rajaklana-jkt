@@ -54,8 +54,8 @@ jobs:
         run: npm run test:database:legacy
 
       # Keep the historical 23-migration rollback probe reproducible. The
-      # current catalog-only MFA/net readiness probe is separately executed
-      # against the final baseline by test:database's mfa-enforcement harness.
+      # final password-only catalog probe and mutation gates run from the
+      # maintained authenticator-removal harness in test:database.
       - name: Verify historical 23-migration probe contract
         run: node supabase/deployment/verify-readiness-preview.test.mjs
 

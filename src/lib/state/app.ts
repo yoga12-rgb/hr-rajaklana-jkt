@@ -41,6 +41,7 @@ let realtimeRetryAttempt = 0;
 let authRevision = 0;
 let liveAuthUserId: string | null = null;
 let liveAuthAccessToken: string | null = null;
+let sessionRevalidating = false;
 const demoFollowupReceipts = new Map<string, { fingerprint: string; result: SpvFollowup }>();
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -53,7 +54,12 @@ function readDemoToken(token: string) {
   return { links, link, employee };
 }
 const activeAccount = (employee: Employee | null | undefined) => employee?.status === 'active' && employee.accountStatus === 'active';
-const user = () => { const u = get(app).user; if (!u || !activeAccount(u)) throw new Error('Silakan masuk dengan akun aktif.'); return u; };
+const user = () => {
+  const u = get(app).user;
+  if (!u || !activeAccount(u)) throw new Error('Silakan masuk dengan akun aktif.');
+  if (configured && sessionRevalidating) throw new Error('Sesi sedang diverifikasi. Coba lagi sesaat.');
+  return u;
+};
 export const isAdmin = (employee: Employee | undefined | null = get(app).user) => employee?.roles.includes('admin_hr') ?? false;
 export const isApprover = (employee: Employee | undefined | null = get(app).user) => hasApproverAccess(employee, get(app).employees);
 export const isCashier = (employee: Employee | undefined | null = get(app).user) => !!employee && get(app).positions.some(p => p.id === employee.positionId && p.isCashier);
@@ -325,7 +331,8 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   // A known Auth session still needs employee/RLS validation. Keep protected
   // routes loading while clearing old account data, rather than briefly
   // presenting that pending validation as a completed signed-out state.
-  app.set({ ...initialDemo(), mode: 'live', dataRevision: (get(app).dataRevision ?? 0) + 1, initialized: !validatingSession, loading: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
+  sessionRevalidating = validatingSession;
+  app.set({ ...initialDemo(), mode: 'live', dataRevision: (get(app).dataRevision ?? 0) + 1, initialized: !validatingSession, loading: validatingSession, sessionValidating: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
   if (timer) clearTimeout(timer);
   timer = undefined;
   clearRealtimeRetry(true);
@@ -337,6 +344,12 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   realtimeTerminal = false;
   realtimeSubscribed = false;
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
+}
+function beginSessionRevalidation() {
+  sessionRevalidating = true;
+  app.update(state => state.mode === 'live' && state.user
+    ? { ...state, sessionValidating: true, error: null }
+    : state);
 }
 function clearRealtimeRetry(resetAttempt = false) {
   if (realtimeRetryTimer) clearTimeout(realtimeRetryTimer);
@@ -430,12 +443,14 @@ async function refreshNow() {
     if (revision !== authRevision) return;
     const nextAuthUserId = session?.user.id ?? null;
     const nextAccessToken = session?.access_token ?? null;
+    const sameValidatedAccount = Boolean(nextAuthUserId && nextAuthUserId === liveAuthUserId && get(app).initialized && get(app).user?.authUserId === nextAuthUserId);
     if (nextAuthUserId !== liveAuthUserId || (nextAuthUserId && liveAuthAccessToken && nextAccessToken !== liveAuthAccessToken)) {
       liveAuthUserId = nextAuthUserId;
       liveAuthAccessToken = nextAccessToken;
       authRevision += 1;
       revision = authRevision;
-      clearLiveState(null, nextAuthUserId !== null);
+      if (sameValidatedAccount) beginSessionRevalidation();
+      else clearLiveState(null, nextAuthUserId !== null);
     }
     if (!session) { if (revision === authRevision) clearLiveState(); return; }
     let access;
@@ -448,7 +463,9 @@ async function refreshNow() {
     const { data: { session: accessSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || accessSession?.user.id !== session.user.id) return;
     if (accessSession.access_token !== session.access_token) {
-      clearLiveState(null, true); refreshRequested = true; return;
+      if (accessSession?.user.id === session.user.id && get(app).user?.authUserId === session.user.id) beginSessionRevalidation();
+      else clearLiveState(null, true);
+      refreshRequested = true; return;
     }
     if (!access.allowed) { clearLiveState('Sesi akun tidak berlaku. Silakan masuk kembali.'); return; }
     const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
@@ -505,11 +522,16 @@ async function refreshNow() {
     const { data: { session: latestSession } } = await supabase.auth.getSession();
     if (revision !== authRevision || latestSession?.user.id !== session.user.id) return;
     if (latestSession.access_token !== session.access_token) {
-      clearLiveState(null, true); refreshRequested = true; return;
+      if (latestSession?.user.id === session.user.id && get(app).user?.authUserId === session.user.id) beginSessionRevalidation();
+      else clearLiveState(null, true);
+      refreshRequested = true; return;
     }
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    sessionRevalidating = false;
+    app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
-  } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
+  } catch (e) {
+    if (revision === authRevision) clearLiveState(e instanceof Error ? e.message : 'Data belum berhasil dimuat.');
+  }
   finally { refreshing = false; }
 }
 function validateGeo(input: ClockOutInput, outlet: Outlet): number {
@@ -556,8 +578,13 @@ export const actions = {
         supabase!.auth.onAuthStateChange((_event, session) => {
           const nextAuthUserId = session?.user.id ?? null;
           const nextAccessToken = session?.access_token ?? null;
+          const sameValidatedAccount = Boolean(nextAuthUserId && nextAuthUserId === liveAuthUserId && get(app).initialized && get(app).user?.authUserId === nextAuthUserId);
           if (nextAuthUserId !== liveAuthUserId || (nextAuthUserId && liveAuthAccessToken && nextAccessToken !== liveAuthAccessToken)) {
-            liveAuthUserId = nextAuthUserId; liveAuthAccessToken = nextAccessToken; authRevision += 1; clearLiveState(null, nextAuthUserId !== null);
+            liveAuthUserId = nextAuthUserId;
+            liveAuthAccessToken = nextAccessToken;
+            authRevision += 1;
+            if (sameValidatedAccount) beginSessionRevalidation();
+            else clearLiveState(null, nextAuthUserId !== null);
           }
           setTimeout(() => void refresh(), 0);
         });
