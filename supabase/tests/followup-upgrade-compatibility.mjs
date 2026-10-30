@@ -90,7 +90,7 @@ const setupHistory = async (db, sourceShift='off') => {
     const target=idx('20261027090100');
     assert.equal(previewBaseline,17,'Preview baseline must contain exactly 18 migrations');
     assert.notEqual(hardening,-1,'m22 operational hardening must remain present before m23');
-    assert.equal(target,migrationNames.length-1,'latest supervisor migration must remain the upgrade target');
+    assert.equal(target,24,'the historical Preview supervisor target remains migration 25; authenticator retirement is a separate forward step');
     await db.exec('create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text primary key,name text)');
     await apply(db,0,previewBaseline);
     const ids=await setupHistory(db,'morning');
@@ -220,8 +220,8 @@ const setupHistory = async (db, sourceShift='off') => {
 }
 
 // Actual hosted Preview baseline at the MFA/security checkpoint is 24. Unlike
-// historical upgrades, it receives exactly one additive hardening file
-// and must not rerun a bounded preflight or alter any operational snapshot.
+// historical upgrades, it receives forward migrations 25 and 26 and must not
+// rerun a bounded preflight or alter any operational snapshot.
 {
   const db=await createDb();
   try {
@@ -238,19 +238,21 @@ const setupHistory = async (db, sourceShift='off') => {
       'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a)
     ) as value`)).value;
     const before=await snapshot();
-    await apply(db,baseline+1,migrationNames.length-1);
+    const finalTarget=idx('20261030031318');
+    await apply(db,baseline+1,finalTarget);
     assert.deepEqual(await snapshot(),before,'actual Preview upgrade preserves all existing business snapshots/audit');
-    assert.equal((await scalar(db,'select count(*)::integer as count from supabase_migrations.schema_migrations')).count,25);
+    assert.equal((await scalar(db,'select count(*)::integer as count from supabase_migrations.schema_migrations')).count,26);
     await fixtureSession(db,ids.authUser,'authenticated','aal1');
     await db.exec('set role authenticated');
-    assert.equal((await scalar(db,'select public.auth_access_context() as value')).value.reason,'mfa_required');
-    await assert.rejects(db.query('select * from public.employee_directory()'),/Verifikasi dua langkah/);
+    assert.deepEqual((await scalar(db,'select public.auth_access_context() as value')).value,
+      {employee_id:ids.admin,requires_mfa:false,current_level:'aal1',allowed:true,reason:null});
+    assert.ok((await db.query('select * from public.employee_directory()')).rows.length>0);
     await db.exec('reset role');
     await fixtureSession(db,ids.authUser,'authenticated','aal2');
     await db.exec('set role authenticated');
     assert.equal((await scalar(db,'select public.auth_access_context() as value')).value.allowed,true);
     assert.ok((await db.query('select * from public.employee_directory()')).rows.length>0);
-    console.log('Actual Preview 24→25 upgrade OK: one additive file, no historical preflight, business/audit snapshot equality, privileged aal1 denied and verified aal2 allowed');
+    console.log('Actual Preview 24→26 upgrade OK: forward migrations only, no historical preflight, business/audit snapshot equality, password-only aal1 and legacy aal2 accepted');
   } finally {await db.close();}
 }
 
@@ -305,6 +307,6 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('rollback');
     assert.equal((await scalar(db,'select shift from public.spv_followups where id=$1',[ids.activeCase])).shift,'off',
       'refusing an out-of-scope preflight does not change the migrated case');
-    console.log('Historical 12→25 upgrade OK: migration 13 boundary covered; preflight absence reproduced; both bounded preflights applied twice; migrations 14–25 completed');
+    console.log('Historical 12→26 upgrade OK: migration 13 boundary covered; preflight absence reproduced; both bounded preflights applied twice; migrations 14–26 completed');
   } finally { await db.close(); }
 }

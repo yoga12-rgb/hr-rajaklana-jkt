@@ -11,7 +11,7 @@ import { POST as biometric } from '../../api/biometric.mjs';
 import { POST as push } from '../../api/push.mjs';
 
 type Access = {
-  employee_id: string | null; requires_mfa: boolean; current_level: string;
+  employee_id: string | null; requires_mfa: false; current_level: string;
   allowed: boolean; reason: string | null;
 };
 const env = { SUPABASE_URL: 'https://fixture.supabase.co', SUPABASE_ANON_KEY: 'fixture-public', SUPABASE_SERVICE_ROLE_KEY: 'fixture-service' };
@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
   vi.stubEnv('VAPID_PUBLIC_KEY', 'a'.repeat(87));
-  contexts['token.A'] = { employee_id: employeeA, requires_mfa: true, current_level: 'aal2', allowed: true, reason: null };
+  contexts['token.A'] = { employee_id: employeeA, requires_mfa: false, current_level: 'aal1', allowed: true, reason: null };
   contexts['token.B'] = { employee_id: employeeB, requires_mfa: false, current_level: 'aal1', allowed: true, reason: null };
   employeeOverride = null;
   getContext = async token => ({ data: contexts[token], error: null });
@@ -61,17 +61,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
-describe('service-backed API MFA enforcement', () => {
-  it.each([['biometric', biometric], ['push', push]] as const)('%s rejects a privileged aal1 request before service reads or actions', async (route, handler) => {
-    contexts['token.A'] = { ...contexts['token.A'], current_level: 'aal1', allowed: false, reason: 'mfa_required' };
-    const result = await handler(request('token.A', route, { action: 'verify', aal: 'aal2', requires_mfa: false }));
-    expect(result.status).toBe(403);
-    expect(await result.json()).toMatchObject({ code: 'mfa_required' });
-    expect(getUser).toHaveBeenCalledWith('token.A');
-    expect(selectEmployee).not.toHaveBeenCalled();
-    expect(adminRPC).not.toHaveBeenCalled(); expect(clientRPC).not.toHaveBeenCalled();
-  });
-
+describe('service-backed API password-only session enforcement', () => {
   it('allows a privileged aal2 request and an ordinary cashier aal1 request with their own identities', async () => {
     const hr = await authenticate(request('token.A'), env);
     const cashier = await authenticate(request('token.B'), env);
@@ -87,10 +77,10 @@ describe('service-backed API MFA enforcement', () => {
     expect(adminRPC).not.toHaveBeenCalled();
   });
 
-  it('rejects aal1 even if an inconsistent context says allowed, without trusting user metadata', async () => {
+  it('accepts aal1 when the verified context is allowed, without trusting user metadata', async () => {
     contexts['token.A'] = { ...contexts['token.A'], current_level: 'aal1', allowed: true };
-    await expect(authenticate(request(), env)).rejects.toMatchObject({ code: 'mfa_required', status: 403 });
-    expect(selectEmployee).not.toHaveBeenCalled();
+    const result = await authenticate(request(), env);
+    expect(result.employee.id).toBe(employeeA);
   });
 
   it.each(['inactive', 'session_revoked'])('denies a %s context before service access', async reason => {

@@ -22,7 +22,7 @@ import { assignmentFor, assertCashierAssignment, saveAssignmentInState, syncUnas
 import { disableDevicePush } from '../device-push';
 import { followupCaseKey, operationalSignals, validateRosterBatch } from '../cashier-spv';
 import { rpcError } from '../rpc-error';
-import { authAccessContext, tokenHintsAal2 } from '../auth-mfa';
+import { authAccessContext } from '../auth-mfa';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
@@ -40,6 +40,7 @@ let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let realtimeRetryAttempt = 0;
 let authRevision = 0;
 let liveAuthUserId: string | null = null;
+let liveAuthAccessToken: string | null = null;
 const demoFollowupReceipts = new Map<string, { fingerprint: string; result: SpvFollowup }>();
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -428,8 +429,10 @@ async function refreshNow() {
     const { data: { session } } = await supabase.auth.getSession();
     if (revision !== authRevision) return;
     const nextAuthUserId = session?.user.id ?? null;
-    if (nextAuthUserId !== liveAuthUserId) {
+    const nextAccessToken = session?.access_token ?? null;
+    if (nextAuthUserId !== liveAuthUserId || (nextAuthUserId && liveAuthAccessToken && nextAccessToken !== liveAuthAccessToken)) {
       liveAuthUserId = nextAuthUserId;
+      liveAuthAccessToken = nextAccessToken;
       authRevision += 1;
       revision = authRevision;
       clearLiveState(null, nextAuthUserId !== null);
@@ -447,12 +450,7 @@ async function refreshNow() {
     if (accessSession.access_token !== session.access_token) {
       clearLiveState(null, true); refreshRequested = true; return;
     }
-    if (!access.allowed) {
-      const requiresMfa = access.requiresMfa && access.reason === 'mfa_required';
-      clearLiveState(requiresMfa ? null : 'Sesi akun tidak berlaku. Silakan masuk kembali.');
-      if (requiresMfa) app.update(state => ({ ...state, mfaRequired: true, mfaUserId: session.user.id }));
-      return;
-    }
+    if (!access.allowed) { clearLiveState('Sesi akun tidak berlaku. Silakan masuk kembali.'); return; }
     const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
     const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
@@ -509,7 +507,7 @@ async function refreshNow() {
     if (latestSession.access_token !== session.access_token) {
       clearLiveState(null, true); refreshRequested = true; return;
     }
-    app.set({ mode: 'live', initialized: true, loading: false, user: current, mfaRequired: false, mfaProtected: access.requiresMfa, mfaUserId: session.user.id, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
   } catch (e) { if (revision === authRevision) app.update(s => ({ ...s, initialized: true, loading: false, error: e instanceof Error ? e.message : 'Data belum berhasil dimuat.' })); }
   finally { refreshing = false; }
@@ -557,9 +555,9 @@ export const actions = {
         // Register once, before getSession() or any user-scoped table fetch.
         supabase!.auth.onAuthStateChange((_event, session) => {
           const nextAuthUserId = session?.user.id ?? null;
-          if (nextAuthUserId !== liveAuthUserId) { liveAuthUserId = nextAuthUserId; authRevision += 1; clearLiveState(null, nextAuthUserId !== null); }
-          else if (nextAuthUserId && get(app).mfaProtected && !tokenHintsAal2(session?.access_token)) {
-            authRevision += 1; clearLiveState(null, true);
+          const nextAccessToken = session?.access_token ?? null;
+          if (nextAuthUserId !== liveAuthUserId || (nextAuthUserId && liveAuthAccessToken && nextAccessToken !== liveAuthAccessToken)) {
+            liveAuthUserId = nextAuthUserId; liveAuthAccessToken = nextAccessToken; authRevision += 1; clearLiveState(null, nextAuthUserId !== null);
           }
           setTimeout(() => void refresh(), 0);
         });
@@ -583,10 +581,10 @@ export const actions = {
     commit(s => { for (const n of s.notifications ?? []) if (n.employeeId === actor.id && (!notificationId || n.id === notificationId) && !n.readAt) n.readAt = new Date().toISOString(); });
   },
   async login(employeeNumber: string, password: string) {
-    if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user && !get(app).mfaRequired) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
+    if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {

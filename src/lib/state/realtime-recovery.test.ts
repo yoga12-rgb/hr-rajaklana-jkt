@@ -92,7 +92,7 @@ function installLiveClient() {
       return query;
     }),
     rpc: vi.fn(async (name: string) => ({ data: name === 'auth_access_context'
-      ? { employee_id: currentSession?.user.id === 'auth-cashier' ? 'employee-cashier' : 'employee-admin', requires_mfa: currentSession?.user.id !== 'auth-cashier', current_level: 'aal2', allowed: true, reason: null }
+      ? { employee_id: currentSession?.user.id === 'auth-cashier' ? 'employee-cashier' : 'employee-admin', requires_mfa: false, current_level: currentSession?.user.id === 'auth-admin' ? 'aal1' : 'aal2', allowed: true, reason: null }
       : name === 'leave_balance' ? { expired: false, remaining: 12 } : [], error: null })),
     storage: { from: vi.fn(() => ({ createSignedUrl: vi.fn(async () => ({ data: { signedUrl: '' }, error: null })) })) },
     channel: vi.fn(() => {
@@ -142,16 +142,6 @@ describe('live Realtime recovery', () => {
 
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
-  it('keeps a privileged password-only session available for MFA without reading protected tables', async () => {
-    currentSession = sessionFor('auth-admin', 'aal1');
-    mockSupabase.rpc.mockResolvedValue({ data: { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }, error: null });
-    const { app } = await openLiveApp();
-    expect(get(app)).toMatchObject({ user: null, mfaRequired: true, mfaUserId: 'auth-admin', employees: [], loading: false });
-    expect(mockSupabase.from).not.toHaveBeenCalled();
-    expect(mockSupabase.channel).not.toHaveBeenCalled();
-    expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
-  });
-
   it.each(['network', 'malformed'])('clears cached privileged data if access context becomes %s', async failure => {
     const { app, actions } = await openLiveApp();
     expect(get(app).user?.id).toBe('employee-admin');
@@ -167,19 +157,6 @@ describe('live Realtime recovery', () => {
     expect(mockSupabase.auth.signOut).not.toHaveBeenCalled();
   });
 
-  it('immediately clears privileged data on a same-account assurance downgrade', async () => {
-    const { app } = await openLiveApp();
-    expect(get(app).mfaProtected).toBe(true);
-    const downgraded = sessionFor('auth-admin', 'aal1');
-    currentSession = downgraded;
-    mockSupabase.rpc.mockResolvedValue({ data: { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }, error: null });
-    authListener?.('TOKEN_REFRESHED', downgraded);
-    expect(get(app)).toMatchObject({ user: null, initialized: false, loading: true, employees: [] });
-    await new Promise(resolve => setTimeout(resolve, 0));
-    await flush();
-    expect(get(app)).toMatchObject({ user: null, mfaRequired: true, mfaUserId: 'auth-admin', employees: [] });
-  });
-
   it('rejects an old privileged snapshot when the token is downgraded during startup', async () => {
     let announceRead!: () => void;
     const readStarted = new Promise<void>(resolve => { announceRead = resolve; });
@@ -191,17 +168,16 @@ describe('live Realtime recovery', () => {
     try {
       const initialization = actions.init();
       await readStarted;
-      expect(get(app).mfaProtected).not.toBe(true);
       currentSession = sessionFor('auth-admin', 'aal1');
       mockSupabase.rpc.mockImplementation(async (name: string) => ({ data: name === 'auth_access_context'
-        ? { employee_id: 'employee-admin', requires_mfa: true, current_level: 'aal1', allowed: false, reason: 'mfa_required' }
+        ? { employee_id: 'employee-admin', requires_mfa: false, current_level: 'aal1', allowed: false, reason: 'session_revoked' }
         : name === 'leave_balance' ? { expired: false, remaining: 12 } : [], error: null }));
       authListener?.('TOKEN_REFRESHED', currentSession);
       releaseDelayedEmployeeRead?.();
       await initialization;
       await new Promise(resolve => setTimeout(resolve, 0));
       await actions.refresh();
-      expect(get(app)).toMatchObject({ user: null, mfaRequired: true, employees: [] });
+      expect(get(app)).toMatchObject({ user: null, employees: [] });
       expect(snapshots).not.toContain('employee-admin');
       expect(mockSupabase.channel).not.toHaveBeenCalled();
     } finally { unsubscribe(); }

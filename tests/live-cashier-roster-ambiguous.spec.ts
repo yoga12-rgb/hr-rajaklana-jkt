@@ -83,7 +83,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
     if (path === '/auth/v1/user') { await respond(route, authUser); return; }
     if (path === '/auth/v1/token') { await respond(route, { ...session, expires_at: Math.floor(Date.now() / 1000) + 3600 }); return; }
-    if (path === '/rest/v1/rpc/auth_access_context') { await respond(route, { employee_id: adminId, requires_mfa: true, current_level: 'aal2', allowed: true, reason: null }); return; }
+    if (path === '/rest/v1/rpc/auth_access_context') { await respond(route, { employee_id: adminId, requires_mfa: false, current_level: 'aal2', allowed: true, reason: null }); return; }
     if (path === '/rest/v1/rpc/cashier_roster_batch_save') {
       const payload = route.request().postDataJSON() as RosterRpcPayload;
       rpcPayloads.push(structuredClone(payload));

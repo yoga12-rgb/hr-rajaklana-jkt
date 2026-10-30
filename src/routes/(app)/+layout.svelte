@@ -23,11 +23,10 @@
     { href:'/planning',label:'Perencanaan',icon:'chart' },
     ...(admin ? [{ href:'/supervisor',label:'Tindak lanjut',icon:'alert' },{ href:'/employees',label:'Karyawan',icon:'users' },{ href:'/organization',label:'Organisasi',icon:'building' },{ href:'/reports',label:'Rekap & riwayat',icon:'chart' }] : []),
     { href:'/profile',label:'Profil saya',icon:'user' },
-    { href:'/mfa',label:'Keamanan akun',icon:'shield' },
     { href:'/guide',label:'Panduan',icon:'file' }
   ];
-  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments','/employees','/supervisor','/planning','/mfa'].includes(n.href));
-  $: if ($app.initialized && !$app.user) void goto($app.mfaRequired?'/mfa':'/login', { replace:true });
+  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments','/employees','/supervisor','/planning'].includes(n.href));
+  $: if ($app.initialized && !$app.user) void goto('/login', { replace:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };
     const updateNetwork = () => { networkOnline = navigator.onLine; };

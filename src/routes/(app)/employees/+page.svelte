@@ -8,21 +8,14 @@
   import Modal from '#lib/components/Modal.svelte';
   import Feedback from '#lib/components/Feedback.svelte';
   import { dateLabel, initials, todayJakarta } from '#lib/components/format';
-  import { supabase } from '#lib/state/client';
-  import { completeMfaRecoveryPending, mfaRecoveryPendingKey, mfaRecoveryScope, persistMfaRecoveryPending, readMfaRecoveryPending, type MfaRecoveryPending, type MfaRecoveryScope } from '../../../lib/mfa-recovery-pending';
 
   let search = '', outletFilter = '', departmentFilter = '', statusFilter = 'active';
   let editing = false, selected: Employee | null = null, saving = false, message = '', failed = false;
   let linkResult: { url: string; message: string; expiresAt: string } | null = null;
-  let recovery: (MfaRecoveryPending & { fullName: string; scopeKey: string; attempted: boolean }) | null = null;
-  let recoveryBusy = false, recoveryError = '', recoveryStorageError = '';
-  let recoveryScope: MfaRecoveryScope | null = null, pendingRecovery: MfaRecoveryPending | null = null;
-  let recoveryIdentity = '', recoveryGeneration = 0;
   const weekdays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
   const blank = (): Partial<Employee> => ({ fullName: '', phone: '', departmentId: '', positionId: '', outletId: '', managerId: null, joinDate: todayJakarta(), status: 'active', employmentType: 'permanent', roles: ['employee'], canMiddleShift: false, weeklyOffDays: [0], approvalMode: 'internal', address: '', birthDate: '', gender: '', emergencyName: '', emergencyPhone: '' });
   let form = blank();
   $: admin = isAdmin($app.user ?? undefined);
-  $: syncRecoveryAccount($app.user, admin, $app.mode, $app.mfaRequired);
   $: rows = $app.employees.filter((employee) => (!search || `${employee.fullName} ${employee.employeeNumber}`.toLowerCase().includes(search.toLowerCase())) && (!outletFilter || employee.outletId === outletFilter) && (!departmentFilter || employee.departmentId === departmentFilter) && (!statusFilter || employee.status === statusFilter));
   $: positions = $app.positions.filter((position) => position.departmentId === form.departmentId && (position.active || position.id === form.positionId));
   const departmentName = (id: string) => $app.departments.find((item) => item.id === id)?.name ?? '—';
@@ -30,37 +23,6 @@
   const outletName = (id: string) => $app.outlets.find((item) => item.id === id)?.name ?? '—';
   const accountLabel: Record<string, string> = { not_invited: 'Belum diundang', invited: 'Menunggu aktivasi', active: 'Aktif', disabled: 'Dinonaktifkan' };
 
-  function syncRecoveryAccount(user: Employee | null, authorized: boolean, mode: 'live' | 'demo', mfaRequired?: boolean) {
-    let next: MfaRecoveryScope | null = null;
-    try {
-      if (authorized && mode === 'live' && !mfaRequired && user?.authUserId)
-        next = mfaRecoveryScope(import.meta.env.PUBLIC_APP_ENV, import.meta.env.PUBLIC_SUPABASE_URL, user.authUserId, user.id);
-    } catch { /* A malformed identity cannot access another account's draft. */ }
-    const identity = next ? mfaRecoveryPendingKey(next) : '';
-    if (identity === recoveryIdentity) return;
-    recoveryGeneration += 1; recoveryIdentity = identity; recoveryScope = next;
-    recovery = null; pendingRecovery = null; recoveryBusy = false; recoveryError = ''; recoveryStorageError = '';
-    selected = null; editing = false; linkResult = null; message = '';
-    if (next) {
-      try { pendingRecovery = readMfaRecoveryPending(sessionStorage, next); }
-      catch (error) { recoveryStorageError = error instanceof Error ? error.message : 'Penyimpanan pemulihan belum dapat dibaca.'; }
-    }
-  }
-  function resumeRecovery() {
-    if (!recoveryScope || !pendingRecovery || !admin || $app.mfaRequired) return;
-    recovery = { ...pendingRecovery, fullName: $app.employees.find(employee => employee.id === pendingRecovery?.employeeId)?.fullName ?? 'karyawan pada permintaan tersimpan', scopeKey: mfaRecoveryPendingKey(recoveryScope), attempted: true };
-    selected = null; recoveryError = '';
-  }
-  function openRecovery(employee: Employee) {
-    if (!recoveryScope || recoveryStorageError || !admin || $app.mfaRequired) return;
-    if (pendingRecovery) {
-      resumeRecovery();
-      recoveryError = 'Selesaikan permintaan tersimpan terlebih dahulu. Sasaran, alasan, dan nomor permintaan awal tetap digunakan.';
-      return;
-    }
-    recovery = { employeeId: employee.id, fullName: employee.fullName, scopeKey: mfaRecoveryPendingKey(recoveryScope), requestId: crypto.randomUUID(), reason: '', attempted: false };
-    selected = null; recoveryError = '';
-  }
 
   function edit(employee: Employee | null) { form = employee ? { ...employee, roles: [...employee.roles], weeklyOffDays: [...employee.weeklyOffDays] } : blank(); selected = null; editing = true; message = ''; linkResult = null; }
   function toggleRole(role: Role, checked: boolean) { const roles = form.roles ?? ['employee']; form = { ...form, roles: checked ? [...new Set([...roles, role])] : roles.filter((item) => item !== role) }; }
@@ -68,53 +30,12 @@
   async function save() { saving = true; message = ''; try { if (!form.departmentId || !form.positionId || !form.outletId) throw new Error('Pilih departemen, jabatan, dan outlet terlebih dahulu.'); await actions.saveEmployee(form); editing = false; failed = false; message = form.id ? 'Data karyawan berhasil diperbarui.' : 'Karyawan berhasil didaftarkan. Buat tautan aktivasi dari profilnya.'; } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Data belum berhasil disimpan.'; } finally { saving = false; } }
   async function issue(purpose: 'activate' | 'reset') { if (!selected) return; saving = true; message = ''; try { linkResult = await actions.issueLink(selected.id, purpose); failed = false; } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Tautan belum berhasil dibuat.'; } finally { saving = false; } }
   async function copyInvite() { if (!linkResult) return; try { await navigator.clipboard.writeText(linkResult.message); message = 'Pesan undangan disalin. Kirim manual melalui WhatsApp.'; failed = false; } catch { failed = true; message = 'Tidak dapat menyalin otomatis. Salin pesan undangan di bawah.'; } }
-  async function recoverSecondFactor() {
-    if (!recovery || !supabase || recoveryBusy || !recoveryScope || !admin || $app.mfaRequired
-      || recovery.scopeKey !== mfaRecoveryPendingKey(recoveryScope)) return;
-    const request = { ...recovery, attempted: true };
-    const scope = { ...recoveryScope }, generation = recoveryGeneration;
-    const payload = { employeeId: request.employeeId, requestId: request.requestId, reason: request.reason };
-    recoveryBusy = true; recoveryError = '';
-    try {
-      // A failed or unavailable storage write blocks the request before any
-      // recovery call. Reload/retry must retain this exact key and payload.
-      persistMfaRecoveryPending(sessionStorage, scope, payload);
-      pendingRecovery = payload; recovery = request;
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (generation !== recoveryGeneration || recoveryIdentity !== request.scopeKey || !admin || $app.mfaRequired) return;
-      if (sessionError || session?.user.id !== scope.authUserId) throw new Error('Sesi akun berubah. Login kembali sebelum melanjutkan permintaan tersimpan.');
-      const { data, error } = await supabase.functions.invoke('hr-api', { body: { action: 'recover_mfa',
-        employee_id: request.employeeId, request_id: request.requestId, reason: request.reason },
-        headers: { Authorization: `Bearer ${session.access_token}` } });
-      if (error) {
-        const response = (error as { context?: Response }).context;
-        let detail: { error?: string } = {};
-        try { if (response) detail = await response.json(); } catch { /* Keep generic failure. */ }
-        throw new Error(detail.error || 'Pemulihan belum selesai. Coba lagi dengan permintaan yang sama.');
-      }
-      if (!data?.ok || data.request_id !== request.requestId) throw new Error('Pemulihan belum dapat dikonfirmasi. Coba lagi dengan permintaan yang sama.');
-      if (generation !== recoveryGeneration || recovery?.requestId !== request.requestId || recoveryIdentity !== request.scopeKey) return;
-      completeMfaRecoveryPending(sessionStorage, scope, payload, data);
-      recovery = null; pendingRecovery = null; failed = false;
-      message = 'Faktor lama sudah dipulihkan dan sesi terkait dicabut. Karyawan harus login dan mendaftarkan verifikasi dua langkah kembali.';
-    } catch (error) {
-      if (generation === recoveryGeneration && recovery?.requestId === request.requestId && recoveryIdentity === request.scopeKey)
-        recoveryError = error instanceof Error ? error.message : 'Pemulihan belum berhasil.';
-    } finally { if (generation === recoveryGeneration) recoveryBusy = false; }
-  }
 </script>
 
 <PageHeading eyebrow="TIM JABODETABEK" title="Data karyawan" description="Satu tempat untuk mengenal tim dan mengelola informasi kerjanya.">
   {#if admin}<button class="btn btn-primary" on:click={() => edit(null)}><Icon name="plus" size={18}/>Tambah karyawan</button>{/if}
 </PageHeading>
 <Feedback {message} error={failed}/>
-{#if admin && recoveryScope}
-  <Feedback message={recoveryStorageError} error={true}/>
-  {#if pendingRecovery}
-    <section class="panel" aria-label="Pemulihan MFA tersimpan"><p>Ada permintaan pemulihan verifikasi dua langkah yang belum dikonfirmasi. Lanjutkan dengan sasaran, alasan, dan nomor permintaan awal.</p><button class="btn btn-secondary" disabled={recoveryBusy} on:click={resumeRecovery}>Lanjutkan pemulihan tersimpan</button></section>
-  {/if}
-{/if}
-
 {#if !admin}<EmptyState icon="shield" title="Akses khusus Admin HR" description="Informasi pribadi Anda tersedia pada halaman Profil."/>{:else}
   <div class="overview"><div><span class="count">{$app.employees.filter((e) => e.status === 'active').length}</span><span>karyawan aktif</span></div><div><span class="count">{$app.departments.filter((d) => d.active).length}</span><span>departemen</span></div><div><span class="count">{$app.outlets.filter((o) => o.active).length}</span><span>outlet</span></div><div class="overview-note"><Icon name="shield" size={18}/><span>Data pribadi hanya untuk pihak berwenang</span></div></div>
   <section class="panel employee-panel">
@@ -128,24 +49,8 @@
     <div class="profile-head"><span class="avatar large">{initials(selected.fullName)}</span><div><h3>{selected.fullName}</h3><p>{selected.employeeNumber} · {positionName(selected.positionId)}</p><StatusPill label={selected.status === 'active' ? 'Karyawan aktif' : 'Karyawan nonaktif'} tone={selected.status === 'active' ? 'green' : 'muted'}/></div></div>
     <dl class="details"><div><dt>Departemen</dt><dd>{departmentName(selected.departmentId)}</dd></div><div><dt>Outlet</dt><dd>{outletName(selected.outletId)}</dd></div><div><dt>Atasan langsung</dt><dd>{selected.managerId ? displayName(selected.managerId) : selected.approvalMode === 'external' ? 'Persetujuan eksternal' : 'Belum ditetapkan'}</dd></div><div><dt>Tanggal masuk</dt><dd>{dateLabel(selected.joinDate)}</dd></div><div><dt>WhatsApp</dt><dd>{selected.phone || '—'}</dd></div><div><dt>Saldo cuti tahun ini</dt><dd>{leaveBalance(selected.id)} hari</dd></div><div><dt>Hari libur tetap</dt><dd>{selected.weeklyOffDays.map((day) => weekdays[day]).join(', ') || 'Belum diatur'}</dd></div><div><dt>Hubungan kerja</dt><dd>Tetap</dd></div><div><dt>Alamat</dt><dd>{selected.address || 'Belum dilengkapi'}</dd></div><div><dt>Kontak darurat</dt><dd>{selected.emergencyName || 'Belum dilengkapi'}{selected.emergencyPhone ? ` · ${selected.emergencyPhone}` : ''}</dd></div></dl>
     <div class="profile-actions"><button class="btn btn-secondary" on:click={() => edit(selected)}><Icon name="edit" size={16}/>Edit data</button>{#if selected.status === 'active'}<button class="btn btn-primary" disabled={saving} on:click={() => issue(selected?.accountStatus === 'active' ? 'reset' : 'activate')}><Icon name="lock" size={16}/>{selected.accountStatus === 'active' ? 'Tautan pemulihan' : 'Buat tautan aktivasi'}</button>{/if}</div>
-    {#if admin && recoveryScope && selected.status === 'active' && selected.authUserId && selected.id !== $app.user?.id}
-      <button class="btn btn-secondary" disabled={!!recoveryStorageError} on:click={() => { if (selected) openRecovery(selected); }}>Pulihkan verifikasi dua langkah</button>
-    {/if}
     {#if linkResult}<div class="invite"><strong>Siap dikirim melalui WhatsApp</strong><p>Tautan berlaku sampai {dateLabel(linkResult.expiresAt)} {new Date(linkResult.expiresAt).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' })} WIB.</p><textarea class="textarea" aria-label="Pesan undangan WhatsApp" readonly rows="5" value={linkResult.message}></textarea><button class="btn btn-primary" on:click={copyInvite}>Salin pesan</button></div>{/if}
     <Feedback {message} error={failed}/>
-  {/if}
-</Modal>
-
-<Modal open={recovery !== null} title="Pulihkan verifikasi dua langkah" description="Hanya untuk karyawan yang kehilangan seluruh faktor autentikator." onclose={() => { if (!recoveryBusy) recovery = null; }}>
-  {#if recovery}
-    <p>Pastikan identitas {recovery.fullName} telah dikonfirmasi melalui prosedur HR. Faktor yang tercatat pada permintaan ini akan dihapus dan sesi terkait akan dicabut. Karyawan tetap wajib mendaftarkan autentikator kembali.</p>
-    <form on:submit|preventDefault={recoverSecondFactor}>
-      <label class="field">Alasan dan hasil verifikasi identitas<textarea class="textarea" bind:value={recovery.reason} minlength="10" maxlength="1000" required disabled={recovery.attempted || recoveryBusy}></textarea></label>
-      <p class="hint">Pemulihan diri sendiri tidak tersedia. Admin HR yang memproses harus telah menyelesaikan verifikasi dua langkah. Seluruh proses dicatat pada riwayat audit.</p>
-      {#if recovery.attempted}<p class="hint">Permintaan awal tersimpan untuk akun ini pada tab dan lingkungan yang sama. Menutup dialog atau memuat ulang tidak membuat permintaan baru.</p>{/if}
-      <Feedback message={recoveryError} error={true}/>
-      <div class="form-actions"><button type="button" class="btn btn-secondary" disabled={recoveryBusy} on:click={() => recovery = null}>Tutup</button><button class="btn btn-primary" disabled={recoveryBusy || recovery.reason.trim().length < 10}>{recoveryBusy ? 'Memproses…' : recovery.attempted ? 'Coba lagi permintaan yang sama' : 'Konfirmasi pemulihan'}</button></div>
-    </form>
   {/if}
 </Modal>
 

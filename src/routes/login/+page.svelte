@@ -10,9 +10,8 @@
     const suggestedNumber = page.state.employeeNumber;
     if (suggestedNumber && /^RK\d{6,}$/.test(suggestedNumber)) number = suggestedNumber;
   });
-  $: if ($app.initialized && $app.mfaRequired) void goto('/mfa', { replace:true });
-  $: if ($app.initialized && $app.user && !$app.mfaRequired) void goto('/dashboard', { replace:true });
-  async function login() { busy=true;error='';try{await actions.login(number,password);password='';await goto($app.mfaRequired?'/mfa':'/dashboard');}catch(e){error=e instanceof Error?e.message:'Belum berhasil masuk.';}finally{busy=false;} }
+  $: if ($app.initialized && $app.user) void goto('/dashboard', { replace:true });
+  async function login() { busy=true;error='';try{await actions.login(number,password);password='';await goto('/dashboard');}catch(e){error=e instanceof Error?e.message:'Belum berhasil masuk.';}finally{busy=false;} }
   async function demo(employeeId:string) { busy=true;try{await actions.switchDemoUser(employeeId);await goto('/dashboard');}finally{busy=false;} }
 </script>
 <svelte:head><title>Masuk · Rajaklana HR</title></svelte:head>

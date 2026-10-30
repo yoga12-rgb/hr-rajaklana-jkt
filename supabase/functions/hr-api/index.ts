@@ -3,7 +3,6 @@ import { corsHeaders } from 'npm:@supabase/supabase-js@2.117.2/cors';
 import { configureOrigins, guardOriginRequest } from './origins.ts';
 import { classifyLoginEmployeeFailure, classifyPasswordLoginFailure } from './login-errors.ts';
 import { newPasswordError } from './password-policy.ts';
-import { MfaRecoveryError, recoverMfa } from './mfa-recovery.ts';
 
 // Service credentials never leave this worker. Public actions have narrow inputs;
 // admin actions additionally use getUser and the database's role checks.
@@ -97,24 +96,9 @@ Deno.serve(async (req: Request) => {
       if (employeeFailure) throw new ApiError(employeeFailure.message, employeeFailure.status);
       result = { session: data.session, user: data.user };
     } else if (action === 'recover_mfa') {
-      const client = await authenticated(req);
-      const employeeId = required(body, 'employee_id', 36);
-      const requestId = required(body, 'request_id', 36);
-      const reason = required(body, 'reason', 1000);
-      if (!/^[0-9a-f-]{36}$/i.test(employeeId) || !/^[0-9a-f-]{36}$/i.test(requestId) || reason.length < 10) {
-        throw new ApiError('Karyawan, nomor permintaan, dan alasan pemulihan MFA harus lengkap');
-      }
-      await rateLimit(req, action, employeeId);
-      try {
-        result = await recoverMfa(
-          (name, args) => client.rpc(name, args),
-          (name, args) => admin.rpc(name, args),
-          admin.auth.admin.mfa, employeeId, requestId, reason
-        );
-      } catch (error) {
-        throw new ApiError(error instanceof MfaRecoveryError ? error.message : 'Pemulihan MFA belum berhasil',
-          error instanceof MfaRecoveryError ? error.status : 503);
-      }
+      // Kept as a fixed tombstone so old clients cannot silently invoke the
+      // former factor-deletion path while they are being updated.
+      throw new ApiError('Pemulihan autentikator sudah dihentikan. Login menggunakan nomor karyawan dan kata sandi.', 410);
     } else if (action === 'issue_activation' || action === 'issue_reset') {
       const frontendOrigin = baseOrigin();
       const client = await authenticated(req);
