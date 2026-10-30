@@ -9,23 +9,24 @@ Dokumen ini mencatat bukti eksekusi panduan [guide-penutupan-tiga-temuan-autenti
 
 | Milestone | Status | Bukti utama | Sisa |
 | --- | --- | --- | --- |
-| ARF-00 | selesai lokal | Reproduksi AR-01 baseline, mutation baseline AR-02, inventory fixture AR-03 | Hosted catalog perlu probe ulang setelah rilis |
-| ARF-01 | selesai lokal | same-account token rotation mempertahankan `initialized/user`, form/camera contract tetap mounted; race/account switch tetap fail-closed | Smoke sesi pengguna nyata di Preview belum dilakukan pada turn ini |
-| ARF-02 | selesai lokal | Probe read-only final + mutation gates ACL, RLS, Storage, history, inherited PUBLIC recovery grant | Hosted probe read-only menunggu SHA rilis |
-| ARF-03 | selesai lokal | fixture default aal1 tanpa faktor, session UUID berbeda, legacy aal2 eksplisit, session mismatch/malformed/revoked, suite Storage/API existing | Role workflow hosted belum diuji dengan akun nyata |
+| ARF-00 | selesai | Reproduksi AR-01 baseline, mutation baseline AR-02, inventory fixture AR-03; baseline Preview terverifikasi | Tidak ada |
+| ARF-01 | selesai lokal + Preview | same-account token rotation mempertahankan `initialized/user`, form/camera tetap mounted; transient refresh failure tidak lagi me-logout sesi tervalidasi; race/account switch tetap fail-closed | Smoke sesi pengguna nyata di Preview belum dilakukan pada turn ini |
+| ARF-02 | selesai lokal + hosted | Probe read-only final + mutation gates ACL, RLS, Storage, history, inherited PUBLIC recovery grant; probe hosted identik lulus | Tidak ada untuk tiga temuan |
+| ARF-03 | selesai lokal + CI | fixture default aal1 tanpa faktor, session UUID berbeda, legacy aal2 eksplisit, session mismatch/malformed/revoked, suite Storage/API existing | Role workflow hosted belum diuji dengan akun nyata |
 | ARF-04 | selesai lokal | operator network, cleanup manifest/dry-run/retry, populated25→26 equality, 18→25, actual24→26, 12→26 preflight | Managed pg_net owner hosted tetap temuan terpisah |
-| ARF-05 | selesai lokal | check, unit, database, legacy, historical23, build, audit, demo/PWA, live-mock; semua browser gate tanpa skip/flaky | CI remote menunggu push |
-| ARF-06 | menunggu rilis | Source siap dan target sudah dibatasi | Push/CI/Preview probe perlu dilakukan sesudah commit |
-| ARF-07 | terbuka sebagian | Tiga temuan memiliki perubahan dan bukti lokal | Hosted/device/PVR-02 dan AUTH-06/AUTH-04 historis tetap dipisahkan |
+| ARF-05 | selesai lokal + CI | check, unit, database, legacy, historical23, build, audit, demo/PWA, live-mock; semua browser gate tanpa skip/flaky | Tidak ada |
+| ARF-06 | selesai Preview | Push `bab91d2`, CI run `41005538379` hijau, Vercel deployment READY dan alias Preview aktif, hosted probe read-only lulus | Tidak ada untuk target Preview |
+| ARF-07 | terbuka sebagian | Tiga temuan tertutup pada implementasi, CI, deployment, dan hosted contract | Perangkat/PVR-02, AUTH-06 dan AUTH-04 historis tetap dipisahkan |
 
 ## ARF-00 — baseline dan reproduksi
 
-- Branch tetap `codex/preview`; HEAD awal `4cafee36d4586e98e3753060b49eaee2a7582418`.
+- Branch tetap `codex/preview`; HEAD awal `4cafee36d4586e98e3753060b49eaee2a7582418`, lalu perbaikan regresi refresh dipush sebagai `bab91d2e15524176195cf39a4eb3afcdb5cc2c20`.
 - Baseline lokal berisi 26 migration; migration retirement lokal `20261030031318_retire_application_authenticator.sql`. Tidak ada file migration applied yang diubah.
 - Preview yang menjadi sasaran: project `hr-rajaklana-preview`, ref `lypsqrwjzrmuyqtdcegr`, organisasi `bvwgekyfibloctfslgdf`. Mapping timestamp hosted yang berbeda dari lokal tetap diperlakukan sebagai mapping, bukan diperbaiki.
 - Reproduksi AR-01 di `src/lib/state/realtime-recovery.test.ts` sebelumnya menghasilkan `initialized=false,user=null` saat token akun sama berubah. Reproduksi sekarang dipertahankan sebagai tes red/green dan memeriksa state saat pembacaan employee ditunda.
 - Baseline AR-02 sebelumnya menerima grant INSERT operasional, policy employees hilang, predicate Storage `true`, dan nama migration salah dengan jumlah tetap26. Semua skenario dipindahkan menjadi mutation gate pada harness authenticator-removal.
 - AR-03 menginventaris default fixture lama aal2/factor dan caller upgrade historis yang membutuhkan MFA eksplisit.
+- CI pada commit `469a12a` menemukan regresi Chromium: refresh data sementara setelah konflik baseline mengosongkan sesi tervalidasi. Perbaikannya mempertahankan shell/draft untuk sesi tervalidasi, tetapi tetap fail-closed saat validasi Auth atau pergantian akun gagal.
 
 ## ARF-01 — state sesi
 
@@ -41,6 +42,9 @@ Bukti:
 ```text
 npm.cmd test -- src/lib/state/realtime-recovery.test.ts --maxWorkers=1
 21 tests passed
+
+Chromium live-mock replay/conflict suite (konfigurasi CI)
+18 passed, 0 skipped/unexpected/flaky
 ```
 
 Tes baru memastikan `initialized=true`, user tetap sama dan `sessionValidating=true` selama delayed employee read, lalu kembali false setelah context terbaru sah.
@@ -117,17 +121,24 @@ Populated25→26 membandingkan isi deterministik recovery (`pending/failed/compl
 | Demo/PWA browser | 22 passed, 0 skipped/unexpected/flaky |
 | Live-mock browser | 18 passed, 0 skipped/unexpected/flaky |
 
-Demo/PWA dijalankan pada production build lokal dengan URL/key Supabase kosong. Live-mock dijalankan terpisah pada dev server dengan `PUBLIC_SUPABASE_URL=http://127.0.0.1:54329` dan key fixture; tidak ada hosted credential.
+Demo/PWA dijalankan pada production build lokal dengan URL/key Supabase kosong. Live-mock dijalankan terpisah pada dev server dengan `PUBLIC_SUPABASE_URL=http://127.0.0.1:54329` dan key fixture; tidak ada hosted credential. Konfigurasi CI Chromium yang sama juga lulus setelah `bab91d2`.
 
-## ARF-06 — rilis Preview (checkpoint berikutnya)
+## ARF-06 — rilis Preview
 
-Sebelum push, verifikasi ulang branch/ref/project/target team dan review staged diff. Push hanya `codex/preview`; jangan replay migration26 atau menjalankan preflight historis pada Preview baseline26. Setelah CI selesai, catat SHA, run, deployment URL/ref dan jalankan probe final hosted `READ ONLY`.
+Target dan identitas diverifikasi ulang sebelum rilis. Tidak ada migration yang dijalankan ulang pada hosted Preview dan tidak ada reset/penghapusan data.
+
+- GitHub Actions run `41005538379` untuk SHA `bab91d2e15524176195cf39a4eb3afcdb5cc2c20`: `Check, test, database, build`, `Browser demo-pwa`, dan `Browser live-mock` semuanya completed/success. [Run CI](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41005538379).
+- Vercel deployment `dpl_CfdZooTiRXriy89zonwQedDUNj64` (`hr-rajaklana-af269lkxr-hr-rajaklana.vercel.app`) berstatus `READY`, target `preview`, alias `https://hr-rajaklana-jkt-preview.vercel.app` dan branch alias `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`.
+- Smoke HTTP read-only ke alias `/login`: status 200, tanpa mengirim kredensial.
+- Supabase Preview terverifikasi: ref `lypsqrwjzrmuyqtdcegr`, nama `hr-rajaklana-preview`, organisasi `bvwgekyfibloctfslgdf`, `ACTIVE_HEALTHY`. Probe `verify-authenticator-removed-preview.sql` lulus tanpa result/error. Katalog hosted: 26 migration, latest `20261030033256 / retire_application_authenticator`, `private.employee_requires_mfa` tidak ada, total/verified TOTP `0/0`, recovery rows `0`, employee rows `3`, audit rows `29`.
+
+Supabase advisors masih menampilkan warning owner-managed yang tidak termasuk tiga temuan ini (misalnya `pg_net` di schema `public` dan SECURITY DEFINER RPC yang memang menjadi boundary API); tidak diubah dalam scope ini.
 
 ## ARF-07 — status dan item terbuka
 
-Tiga temuan dapat ditutup pada level implementasi lokal setelah SHA rilis dan hosted probe cocok. Status yang tidak boleh digabung:
+Tiga temuan tertutup pada level implementasi, CI, Preview deployment, dan hosted contract. Status yang tidak boleh digabung:
 
-- Hosted user workflow/role/Storage nyata: belum diklaim pada checkpoint ini.
+- Hosted user workflow/role/Storage nyata: kontrak hosted dan deployment sudah diverifikasi read-only; smoke akun pengguna nyata belum diklaim pada checkpoint ini.
 - PVR-02 iPhone/iPad, offline/update/tab lama: ditunda pengguna dan tetap terbuka.
 - AUTH-06 effective TOTP toggle Preview: perlu verifikasi scoped terpisah; endpoint `/auth/v1/settings` bukan bukti.
 - AUTH-04 cleanup historis: observed absence tidak sama dengan bukti freeze/drain/manifest masa lalu.
