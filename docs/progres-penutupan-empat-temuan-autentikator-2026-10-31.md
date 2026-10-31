@@ -134,6 +134,12 @@ remains postponed by the user and is not counted as a local gate failure.
   `display: "standalone"`, and a JavaScript service worker containing the expected
   shell/cache/offline handlers. No protection bypass was disabled and no long-lived
   bypass secret was requested.
+- The documentation-only follow-up commit `3d2e4ec640fa825283829df90d697fe43755ceeb`
+  also completed CI successfully in run `41169578838`: check/test/database/build,
+  demo-PWA, and live-mock browser jobs all concluded `success`. Its Preview
+  deployment `dpl_DEt8JqV3FRZmZ8gyzwNcDCRjPxgf` is `READY`; the stable alias was
+  fetched again through authenticated `vercel curl` and still returned the shell
+  marker.
 
 ### AUR-08 hosted/Preview checkpoint
 
