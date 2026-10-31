@@ -268,20 +268,60 @@ const setupHistory = async (db, sourceShift='off') => {
     await db.exec('create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text primary key,name text)');
     await apply(db, 0, baseline25);
     const ids = await setupHistory(db, 'morning');
-    const requestId = '60000000-0000-4000-8000-000000000001';
-    await db.query(`insert into private.mfa_recovery_requests(request_id,actor_employee_id,employee_id,auth_user_id,factor_ids,reason,status)
-      values($1,$2,$3,$4,'{}'::uuid[],'Historical cleanup evidence fixture','failed')`, [requestId, ids.admin, ids.employee, ids.authUser]);
-    await db.query(`insert into public.audit_events(entity,entity_id,actor_employee_id,action,reason,before_data,after_data)
-      values('auth_mfa',$1,$2,'recovery_failed','Historical cleanup evidence',jsonb_build_object('request_id',$3::text),jsonb_build_object('status','failed'))`, [ids.employee, ids.admin, requestId]);
+    const recoveryRows = [
+      ['60000000-0000-4000-8000-000000000001','pending',null,'pending'],
+      ['60000000-0000-4000-8000-000000000002','failed',null,'failed'],
+      ['60000000-0000-4000-8000-000000000003','completed',"'2026-10-20T10:00:00Z'",'completed']
+    ];
+    for (const [requestId,status,completedAt,label] of recoveryRows) {
+      const timestamp = completedAt ? `,${completedAt}::timestamptz` : ',null';
+      await db.query(`insert into private.mfa_recovery_requests(request_id,actor_employee_id,employee_id,auth_user_id,factor_ids,reason,status,completed_at)
+        values($1,$2,$3,$4,array['70000000-0000-4000-8000-00000000000${label === 'pending' ? '1' : label === 'failed' ? '2' : '3'}']::uuid[],$5,$6${timestamp})`,
+        [requestId, ids.admin, ids.employee, ids.authUser, `Historical cleanup ${label} fixture`, status]);
+      await db.query(`insert into public.audit_events(entity,entity_id,actor_employee_id,action,reason,before_data,after_data)
+        values('auth_mfa',$1,$2,$3,'Historical cleanup evidence',jsonb_build_object('request_id',$4::text),jsonb_build_object('status',$5::text))`,
+        [ids.employee, ids.admin, `recovery_${label}`, requestId, status]);
+    }
+    const receiptRows = [
+      ['private.spv_followup_receipts','80000000-0000-4000-8000-000000000001','SPV follow-up'],
+      ['private.supervisor_configuration_receipts','80000000-0000-4000-8000-000000000002','configuration'],
+      ['private.supervisor_planning_receipts','80000000-0000-4000-8000-000000000003','planning'],
+      ['private.outlet_issue_receipts','80000000-0000-4000-8000-000000000004','outlet issue'],
+      ['private.shift_handover_receipts','80000000-0000-4000-8000-000000000005','handover'],
+      ['private.shift_exchange_receipts','80000000-0000-4000-8000-000000000006','exchange']
+    ];
+    for (const [table,key,kind] of receiptRows) {
+      await db.query(`insert into ${table}(actor_employee_id,idempotency_key,request_hash,result)
+        values($1,$2,md5($3),jsonb_build_object('fixture',$3,'status','completed'))`, [ids.admin,key,kind]);
+    }
+    await db.query(`insert into public.cashier_roster_batches(actor_employee_id,idempotency_key,request_hash,week_start,result)
+      values($1,'80000000-0000-4000-8000-000000000007',md5('roster'), '2026-10-12',jsonb_build_object('fixture','roster','status','completed'))`, [ids.admin]);
     const snapshot = async () => (await scalar(db, `select jsonb_build_object(
       'cases',(select jsonb_agg(to_jsonb(f) order by id) from public.spv_followups f),
       'assignments',(select jsonb_agg(to_jsonb(a) order by id) from public.cashier_assignments a),
       'employees',(select jsonb_agg(to_jsonb(e) order by id) from public.employees e),
       'roles',(select jsonb_agg(to_jsonb(r) order by employee_id,role) from public.employee_roles r),
       'recovery',(select jsonb_agg(to_jsonb(r) order by request_id) from private.mfa_recovery_requests r),
-      'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a)
+      'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a),
+      'spv_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.spv_followup_receipts r),
+      'configuration_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.supervisor_configuration_receipts r),
+      'planning_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.supervisor_planning_receipts r),
+      'issue_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.outlet_issue_receipts r),
+      'handover_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.shift_handover_receipts r),
+      'exchange_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.shift_exchange_receipts r),
+      'roster_batches',(select jsonb_agg(to_jsonb(r) order by id) from public.cashier_roster_batches r)
     ) as value`)).value;
     const before = await snapshot();
+    for (const [label,query] of [
+      ['recovery', 'select count(*)::int as count from private.mfa_recovery_requests'],
+      ['spv receipt', 'select count(*)::int as count from private.spv_followup_receipts'],
+      ['configuration receipt', 'select count(*)::int as count from private.supervisor_configuration_receipts'],
+      ['planning receipt', 'select count(*)::int as count from private.supervisor_planning_receipts'],
+      ['issue receipt', 'select count(*)::int as count from private.outlet_issue_receipts'],
+      ['handover receipt', 'select count(*)::int as count from private.shift_handover_receipts'],
+      ['exchange receipt', 'select count(*)::int as count from private.shift_exchange_receipts'],
+      ['roster batch', 'select count(*)::int as count from public.cashier_roster_batches']
+    ]) assert.ok((await scalar(db,query)).count > 0, `${label} fixture must be non-empty before migration26`);
     await apply(db, final26, final26);
     assert.deepEqual(await snapshot(), before, 'migration26 preserves populated recovery, audit, case, roster and employee snapshots');
     await fixtureSession(db, ids.authUser);

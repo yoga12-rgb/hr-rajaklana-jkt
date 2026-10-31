@@ -574,4 +574,41 @@ describe('live Realtime recovery', () => {
     expect(get(app).employees).toHaveLength(1);
     expect(channels).toHaveLength(2);
   });
+
+  it.each([
+    ['aal1 token-only rotation', 'aal1', 'aal1'],
+    ['legacy aal2 to aal1 rotation', 'aal2', 'aal1']
+  ])('replaces the channel after %s without unmounting the validated shell', async (_label, initialAal, nextAal) => {
+    currentSession = sessionFor('auth-admin', initialAal);
+    const { app, actions } = await openLiveApp();
+    const firstChannel = channels[0];
+    expect(get(app)).toMatchObject({ initialized: true, user: { id: 'employee-admin' }, sessionValidating: false });
+
+    currentSession = sessionFor('auth-admin', nextAal, 'token-rotated');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await flush();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app)).toMatchObject({ initialized: true, user: { id: 'employee-admin' }, sessionValidating: false });
+    expect(channels).toHaveLength(2);
+    const replacement = channels[1];
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(firstChannel);
+
+    mockSupabase.from.mockClear();
+    vi.useFakeTimers();
+    try {
+      // The old callback is stale and must not trigger a read after rotation.
+      firstChannel.on.mock.calls[0][2]();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(mockSupabase.from).not.toHaveBeenCalled();
+
+      // The replacement callback has the current revision and must refresh.
+      replacement.on.mock.calls[0][2]();
+      await vi.advanceTimersByTimeAsync(350);
+      await flush();
+      expect(mockSupabase.from).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

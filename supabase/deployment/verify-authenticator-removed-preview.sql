@@ -10,6 +10,7 @@ declare
   v_signature text;
   v_oid oid;
   v_auth oid := (select oid from pg_roles where rolname = 'authenticated');
+  v_normalized text;
 begin
   if v_auth is null then raise exception 'authenticated role is missing'; end if;
   if to_regclass('supabase_migrations.schema_migrations') is null then
@@ -54,8 +55,29 @@ begin
     if has_function_privilege('anon',v_oid,'EXECUTE') then
       raise exception 'anonymous EXECUTE is not permitted for %', v_signature;
     end if;
+    if v_signature in ('private.raw_employee_id()','private.session_access_context()','private.require_employee()','private.require_hr()')
+      and has_function_privilege('authenticated',v_oid,'EXECUTE') then
+      raise exception 'internal helper EXECUTE is not permitted for authenticated: %', v_signature;
+    end if;
   end loop;
-  if not exists(select 1 from pg_proc where oid='private.employee_id()'::regprocedure and prosrc ~* 'session_allowed')
+  if not has_function_privilege('authenticated','private.employee_id()'::regprocedure,'EXECUTE')
+    or not has_function_privilege('authenticated','private.session_allowed()'::regprocedure,'EXECUTE')
+    or not has_function_privilege('authenticated','public.auth_access_context()'::regprocedure,'EXECUTE') then
+    raise exception 'password-only identity helper grants are missing';
+  end if;
+  if not exists(select 1 from pg_proc where oid='private.raw_employee_id()'::regprocedure
+      and prosrc ~* 'auth\.uid\(\)' and prosrc ~* 'status\s*=\s*''active'''
+      and prosrc ~* 'account_status\s*=\s*''active''' and prosrc !~* 'select\s+true')
+    or not exists(select 1 from pg_proc where oid='private.session_access_context()'::regprocedure
+      and prosrc ~* 'auth\.sessions' and prosrc ~* 'auth\.uid\(\)'
+      and prosrc ~* 'not_after' and prosrc ~* 'session_revoked'
+      and prosrc ~* 'requires_mfa' and prosrc ~* 'v_reason\s+is\s+null'
+      and prosrc !~* '''allowed''\s*,\s*true' and prosrc !~* 'allowed\s*:=\s*true')
+    or not exists(select 1 from pg_proc where oid='private.session_allowed()'::regprocedure
+      and prosrc ~* 'session_access_context' and prosrc ~* 'allowed' and prosrc ~* '::boolean'
+      and prosrc !~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)'
+      and prosrc !~* '\m(or|coalesce|case|when)\M')
+    or not exists(select 1 from pg_proc where oid='private.employee_id()'::regprocedure and prosrc ~* 'session_allowed')
     or not exists(select 1 from pg_proc where oid='private.require_employee()'::regprocedure and prosrc ~* 'session_access_context')
     or not exists(select 1 from pg_proc where oid='private.require_hr()'::regprocedure and prosrc ~* 'require_employee')
     or not exists(select 1 from pg_proc where oid='public.auth_access_context()'::regprocedure and prosrc ~* 'session_access_context') then
@@ -79,26 +101,23 @@ begin
       raise exception 'public table/RLS missing: %',v_table;
     end if;
     if not exists(select 1 from pg_policy p where p.polrelid=v_oid and p.polname='privileged_mfa_session'
-      and not p.polpermissive and v_auth=any(p.polroles)
-      and pg_get_expr(p.polqual,p.polrelid) ~* 'private\.session_allowed\(\)'
-      and pg_get_expr(p.polwithcheck,p.polrelid) ~* 'private\.session_allowed\(\)'
-      and pg_get_expr(p.polqual,p.polrelid) !~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)'
-      and pg_get_expr(p.polwithcheck,p.polrelid) !~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)') then
+      and not p.polpermissive and p.polcmd='*' and p.polroles = array[v_auth]::oid[]
+      and regexp_replace(lower(coalesce(pg_get_expr(p.polqual,p.polrelid),'')),'\s+','','g') = '(selectprivate.session_allowed()assession_allowed)'
+      and regexp_replace(lower(coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'')),'\s+','','g') = '(selectprivate.session_allowed()assession_allowed)') then
       raise exception 'restrictive live-session policy missing or weakened on %',v_table;
     end if;
     if exists(select 1 from pg_policy p where p.polrelid=v_oid and p.polname='privileged_mfa_session'
-      and (p.polpermissive or pg_get_expr(p.polqual,p.polrelid) ~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)'
-        or pg_get_expr(p.polwithcheck,p.polrelid) ~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)')) then
+      and (p.polpermissive or p.polcmd<>'*' or p.polroles <> array[v_auth]::oid[]
+        or regexp_replace(lower(coalesce(pg_get_expr(p.polqual,p.polrelid),'')),'\s+','','g') <> '(selectprivate.session_allowed()assession_allowed)'
+        or regexp_replace(lower(coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'')),'\s+','','g') <> '(selectprivate.session_allowed()assession_allowed)')) then
       raise exception 'live-session policy is permissive/always-true on %',v_table;
     end if;
   end loop;
   if not exists(select 1 from pg_class where oid='storage.objects'::regclass and relrowsecurity)
     or not exists(select 1 from pg_policy p where p.polrelid='storage.objects'::regclass and p.polname='privileged_mfa_session'
-      and not p.polpermissive and v_auth=any(p.polroles)
-      and pg_get_expr(p.polqual,p.polrelid) ~* 'private\.session_allowed\(\)'
-      and pg_get_expr(p.polwithcheck,p.polrelid) ~* 'private\.session_allowed\(\)'
-      and pg_get_expr(p.polqual,p.polrelid) !~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)'
-      and pg_get_expr(p.polwithcheck,p.polrelid) !~* '(^|[^[:alnum:]_])true([^[:alnum:]_]|$)') then
+      and not p.polpermissive and p.polcmd='*' and p.polroles = array[v_auth]::oid[]
+      and regexp_replace(lower(coalesce(pg_get_expr(p.polqual,p.polrelid),'')),'\s+','','g') = '(selectprivate.session_allowed()assession_allowed)'
+      and regexp_replace(lower(coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'')),'\s+','','g') = '(selectprivate.session_allowed()assession_allowed)') then
     raise exception 'Storage restrictive live-session policy is missing or weakened';
   end if;
 

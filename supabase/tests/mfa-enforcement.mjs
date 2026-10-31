@@ -39,7 +39,12 @@ try {
     revoke all on function net.owner_only() from public,anon,authenticated,service_role;
   `);
   const migrationDir=new URL('../migrations/',import.meta.url);
-  for (const name of (await readdir(migrationDir)).filter(n=>n.endsWith('.sql')).sort()) {
+  const historical25Version='20261027090100';
+  const historical25Migrations=(await readdir(migrationDir)).filter(n=>n.endsWith('.sql')).sort()
+    .filter(n=>n.slice(0,n.indexOf('_')) <= historical25Version);
+  assert.equal(historical25Migrations.at(-1)?.slice(0,historical25Migrations.at(-1).indexOf('_')),historical25Version,
+    'historical MFA harness must stop exactly at migration25 before retirement migration26');
+  for (const name of historical25Migrations) {
     const sql=(await readFile(new URL(name,migrationDir),'utf8')).replace('create extension if not exists pgcrypto with schema extensions;','');
     await db.exec(sql);
     await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)',[name.slice(0,name.indexOf('_')),name.slice(name.indexOf('_')+1,-4)]);

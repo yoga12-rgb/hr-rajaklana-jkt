@@ -5,6 +5,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const allowedFactorTypes = new Set(['totp']);
 const canonical = value => JSON.stringify(value, Object.keys(value).sort());
@@ -94,4 +95,12 @@ async function main() {
   console.log(JSON.stringify({ operationKey: result.operationKey, projectRef: result.projectRef, userId: result.userId, status: result.status, execute: false }));
 }
 
-if (import.meta.url === `file://${process.argv[1]?.replaceAll('\\', '/')}`) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+// `import.meta.url` is always a URL.  Comparing it to a hand-built `file://`
+// string works on POSIX by accident, but misses the extra slash/drive-letter
+// form emitted by Windows (`file:///C:/...`).  Resolve the actual argv path
+// through the platform URL helper so direct invocation behaves identically on
+// Windows and Linux while importing this module remains side-effect free.
+const invokedPath = process.argv[1];
+if (invokedPath && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+}

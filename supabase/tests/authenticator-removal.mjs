@@ -37,7 +37,9 @@ try {
   await db.exec(`
     create table public.__auth_fixture_marker(id uuid primary key);
     insert into auth.users(id,email) values('10000000-0000-4000-8000-000000000001','fixture@example.invalid');
+    insert into auth.users(id,email) values('10000000-0000-4000-8000-000000000002','fixture-b@example.invalid');
     insert into auth.sessions(id,user_id,aal) values('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','aal1');
+    insert into auth.sessions(id,user_id,aal) values('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','aal1');
   `);
   const dep = (await scalar("insert into public.departments(name) values('Final fixture') returning id")).id;
   const pos = (await scalar("insert into public.positions(name,department_id,is_cashier) values('Final fixture',$1,false) returning id", [dep])).id;
@@ -66,9 +68,15 @@ try {
   assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked', 'malformed session id fails closed');
   await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal1', session_id:'20000000-0000-0000-0000-000000000099' })]);
   assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked', 'session/user mismatch fails closed');
-  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-0000-0000-000000000099', role:'authenticated', aal:'aal1', session_id:'20000000-0000-0000-0000-000000000099' })]);
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal1', session_id:'20000000-0000-4000-8000-000000000002' })]);
+  await db.exec('reset role');
+  assert.equal((await scalar('select user_id from auth.sessions where id=(current_setting(\'request.jwt.claims\',true)::jsonb->>\'session_id\')::uuid')).user_id,'10000000-0000-4000-8000-000000000002',
+    'mismatch fixture must point at a real session owned by a different Auth user');
+  await db.exec('set role authenticated');
+  assert.equal((await scalar('select public.auth_access_context() as value')).value.reason,'session_revoked','real cross-user session binding fails closed');
   await db.exec('reset role');
   await db.query("update auth.sessions set not_after=now()-interval '1 second' where id='20000000-0000-4000-8000-000000000001'");
+  await db.query("select set_config('request.jwt.claims',$1,false)", [JSON.stringify({ sub:'10000000-0000-4000-8000-000000000001', role:'authenticated', aal:'aal1', session_id:'20000000-0000-4000-8000-000000000001' })]);
   await db.exec('set role authenticated');
   assert.equal((await scalar('select public.auth_access_context() as value')).value.reason, 'session_revoked');
   await db.exec('reset role');
@@ -92,6 +100,34 @@ try {
   await probeRejects(/Storage restrictive live-session policy/, 'probe rejects an always-true Storage predicate');
   await db.exec('drop policy privileged_mfa_session on storage.objects');
   await db.exec('create policy privileged_mfa_session on storage.objects as restrictive to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+
+  // Semantic policy bypasses must be rejected even when the live-session
+  // helper name is retained in an always-allow expression.
+  await db.exec('drop policy privileged_mfa_session on storage.objects');
+  await db.exec('create policy privileged_mfa_session on storage.objects as restrictive to authenticated using ((select private.session_allowed()) or 1=1) with check ((select private.session_allowed()) or 1=1)');
+  await probeRejects(/Storage restrictive live-session policy/, 'probe rejects Storage OR 1=1 bypass');
+  await db.exec('drop policy privileged_mfa_session on storage.objects');
+  await db.exec('create policy privileged_mfa_session on storage.objects as restrictive to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+
+  // Command/role shape is part of the contract; an UPDATE-only policy is not
+  // equivalent to the all-command restrictive guard.
+  await db.exec('drop policy privileged_mfa_session on public.employees');
+  await db.exec('create policy privileged_mfa_session on public.employees as restrictive for update to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+  await probeRejects(/restrictive live-session policy missing or weakened on employees/, 'probe rejects UPDATE-only live-session policy');
+  await db.exec('drop policy privileged_mfa_session on public.employees');
+  await db.exec('create policy privileged_mfa_session on public.employees as restrictive to authenticated using ((select private.session_allowed())) with check ((select private.session_allowed()))');
+
+  // Internal session helpers must not become a callable authenticated API.
+  await db.exec('grant execute on function private.raw_employee_id() to authenticated');
+  await probeRejects(/internal helper EXECUTE/, 'probe rejects authenticated raw helper grant');
+  await db.exec('revoke execute on function private.raw_employee_id() from authenticated');
+
+  // A helper body that returns a constant true is rejected even if its name
+  // and SECURITY DEFINER/search_path metadata remain intact.
+  const originalSessionAllowedDefinition = (await scalar("select pg_get_functiondef('private.session_allowed()'::regprocedure) as definition")).definition;
+  await db.exec("create or replace function private.session_allowed() returns boolean language sql stable security definer set search_path='' as $$ select true $$");
+  await probeRejects(/actor\/HR helper chain/, 'probe rejects constant-true session_allowed helper');
+  await db.exec(originalSessionAllowedDefinition);
 
   await db.query("update supabase_migrations.schema_migrations set name='wrong_foundation' where version=(select min(version) from supabase_migrations.schema_migrations)");
   await probeRejects(/ordered 26-name contract/, 'probe rejects a wrong migration name with the same count');

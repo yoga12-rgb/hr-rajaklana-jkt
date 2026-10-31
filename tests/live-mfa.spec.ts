@@ -12,12 +12,13 @@ async function respond(route: Route, data: unknown, status = 200) {
   const rows = Array.isArray(data) ? data : null;
   await route.fulfill({ status, contentType: 'application/json', headers: rows ? { 'content-range': rows.length ? `0-${rows.length - 1}/${rows.length}` : '*/0' } : {}, body: JSON.stringify(data) });
 }
-async function fixture(page: Page, revoked = false) {
+async function fixture(page: Page, revoked = false, legacyFactor = false) {
   let protectedReads = 0, factorCalls = 0;
   const now = new Date().toISOString();
   const user = { id: authId, aud: 'authenticated', role: 'authenticated', email: 'password-only@example.test', app_metadata: { provider: 'email', providers: ['email'] }, user_metadata: {}, created_at: now,
-    // Historical factor is intentionally present to prove it is not an access gate.
-    factors: [{ id: 'legacy-factor', factor_type: 'totp', status: 'verified', friendly_name: 'Historis' }] };
+    // The default fixture is genuinely factor-free. The legacy test opts into a
+    // verified historical factor to prove it remains informational only.
+    factors: legacyFactor ? [{ id: 'legacy-factor', factor_type: 'totp', status: 'verified', friendly_name: 'Historis' }] : [] };
   const session = { access_token: jwt(), refresh_token: 'synthetic-refresh', token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, user };
   const tables: Record<string, Record<string, unknown>[]> = {
     employees: [{ id: employeeId, employee_number: 'RK000001', full_name: 'Akun Password Only', whatsapp: '081200000000', department_id: 'department', position_id: 'position', outlet_id: 'outlet', starts_on: '2020-01-01', status: 'active', account_status: 'active', auth_user_id: authId, weekly_off_days: [] }],
@@ -58,7 +59,7 @@ test('admin with no factor reaches Dashboard using password only and never calls
 });
 
 test('legacy verified factor does not create an OTP challenge or enrollment route', async ({ page }) => {
-  const mock = await fixture(page); await login(page); await expect(page).toHaveURL(/\/dashboard$/);
+  const mock = await fixture(page, false, true); await login(page); await expect(page).toHaveURL(/\/dashboard$/);
   await page.goto('/mfa'); await expect(page).toHaveURL(/\/dashboard$/); expect(mock.factorCalls).toBe(0);
 });
 

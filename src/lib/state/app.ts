@@ -39,6 +39,11 @@ let realtimeSubscribed = false;
 let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let realtimeRetryAttempt = 0;
 let authRevision = 0;
+// The channel callback guards are tied to the auth revision that created the
+// subscription. A same-account token rotation must therefore replace the
+// channel after the new session has been validated; otherwise callbacks keep
+// rejecting every event with the old revision forever.
+let realtimeAuthRevision = 0;
 let liveAuthUserId: string | null = null;
 let liveAuthAccessToken: string | null = null;
 let sessionRevalidating = false;
@@ -343,6 +348,7 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   realtimeReplacementPending = false;
   realtimeTerminal = false;
   realtimeSubscribed = false;
+  realtimeAuthRevision = 0;
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
 }
 function beginSessionRevalidation() {
@@ -379,18 +385,27 @@ function scheduleRealtimeReplacement(target: NonNullable<typeof channel>, genera
 }
 function createRealtimeChannel(userId: string, revision: number) {
   if (!supabase || revision !== authRevision || realtimeReplacementPending) return;
-  if (channel && realtimeUserId === userId) return;
+  if (channel && realtimeUserId === userId && realtimeAuthRevision === revision) return;
   if (channel) {
     const previous = channel;
     channel = null;
     realtimeUserId = null;
     realtimeGeneration += 1;
     realtimeSubscribed = false;
-    void supabase.removeChannel(previous).catch(() => undefined);
+    realtimeTerminal = false;
+    realtimeReplacementPending = true;
+    app.update(state => ({ ...state, connected: false }));
+    void supabase.removeChannel(previous).catch(() => undefined).finally(() => {
+      realtimeReplacementPending = false;
+      if (revision !== authRevision || !navigator.onLine || channel || !supabase) return;
+      createRealtimeChannel(userId, revision);
+    });
+    return;
   }
   const target = supabase.channel(`hr-${userId}`), generation = ++realtimeGeneration;
   channel = target;
   realtimeUserId = userId;
+  realtimeAuthRevision = revision;
   realtimeTerminal = false;
   try {
     for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups', 'outlet_issues', 'shift_handovers', 'shift_exchange_requests', 'staffing_interval_requirements']) {
@@ -626,7 +641,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; commit(s => { s.user = null; }); } },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
