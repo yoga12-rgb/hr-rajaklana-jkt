@@ -137,5 +137,4 @@ jobs:
           fi
 
       - name: Reject skipped or incomplete browser results
-        run: |
         run: node supabase/tests/check-browser-report.mjs test-results/ci-browser.json '${{ matrix.suite }}'
