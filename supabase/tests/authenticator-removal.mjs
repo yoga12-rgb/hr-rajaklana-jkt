@@ -95,18 +95,39 @@ try {
   const freshUnusedPath = `${storageAuthId}/sec31-denied-delete.jpg`;
   await db.exec('reset role');
   await db.query('insert into storage.objects(id,bucket_id,name) values($1,$2,$3)', [freshUnusedId, 'attendance-selfies', freshUnusedPath]);
-  const assertDeniedStorage = async (label, changeBefore = async () => {}, restoreAfter = async () => {}, sessionId = '20000000-0000-4000-8000-000000000001') => {
+  const assertStoragePositive = async (label, objectId, objectPath) => {
+    await db.exec('reset role');
+    await db.query('insert into storage.objects(id,bucket_id,name) values($1,$2,$3)', [objectId, 'attendance-selfies', objectPath]);
+    await setAuthSession(storageAuthId, storageSessionId);
+    assert.equal((await scalar('select public.auth_access_context() as value')).value.allowed, true, label + ': same target account/session must be allowed');
+    assert.equal((await db.query('select id from storage.objects where id=$1', [objectId])).rows.length, 1, label + ': valid target session can SELECT its own object');
+    assert.equal((await db.query('select id from storage.objects where name=$1', [otherUserPath])).rows.length, 0, label + ': another account remains isolated');
+    const ownInsertPath = storageAuthId + '/' + crypto.randomUUID() + '.jpg';
+    await db.query('insert into storage.objects(bucket_id,name) values($1,$2)', ['attendance-selfies', ownInsertPath]);
+    await db.query('delete from storage.objects where id=$1', [objectId]);
+    await db.exec('reset role');
+    assert.equal((await scalar('select count(*)::int as count from storage.objects where id=$1', [objectId])).count, 0, label + ': dedicated unused target was removable');
+    await db.query('delete from storage.objects where bucket_id=$1 and name=$2', ['attendance-selfies', ownInsertPath]);
+  };
+  const assertDeniedStorage = async (label, changeBefore = async () => {}, restoreAfter = async () => {}, sessionId = storageSessionId, expectedReason = 'session_revoked') => {
+    const targetId = crypto.randomUUID(), targetPath = storageAuthId + '/sec31-' + crypto.randomUUID() + '.jpg';
+    await assertStoragePositive(label + ' positive baseline', targetId, targetPath);
     await changeBefore();
-    const before = (await scalar('select count(*)::int as count from storage.objects')).count;
+    const beforeRows = (await db.query('select id,bucket_id,name from storage.objects order by id')).rows;
     await setAuthSession(storageAuthId, sessionId === 'omit' ? undefined : sessionId);
-    assert.equal((await db.query('select id from storage.objects')).rows.length, 0, `${label}: revoked session cannot SELECT Storage`);
+    const denied = (await scalar('select public.auth_access_context() as value')).value;
+    assert.equal(denied.allowed, false, label + ': intended guard must deny context');
+    assert.equal(denied.reason, expectedReason, label + ': denial must come from the intended guard');
+    assert.equal((await db.query('select id from storage.objects')).rows.length, 0, label + ': denied session cannot SELECT Storage');
     await assert.rejects(db.query('insert into storage.objects(bucket_id,name) values($1,$2)',
-      ['attendance-selfies', `${storageAuthId}/${crypto.randomUUID()}.jpg`]), /row-level security/i, `${label}: revoked session cannot INSERT Storage`);
+      ['attendance-selfies', storageAuthId + '/' + crypto.randomUUID() + '.jpg']), /row-level security/i, label + ': denied session cannot INSERT Storage');
     await db.query('delete from storage.objects');
     await db.exec('reset role');
-    assert.equal((await scalar('select count(*)::int as count from storage.objects')).count, before, `${label}: DELETE without WHERE/RETURNING leaves all objects unchanged`);
-    assert.equal((await scalar('select count(*)::int as count from storage.objects where id=$1', [freshUnusedId])).count, 1, `${label}: exact target evidence remains`);
+    assert.deepEqual((await db.query('select id,bucket_id,name from storage.objects order by id')).rows, beforeRows,
+      label + ': DELETE without WHERE/RETURNING must leave every object ID and owner unchanged');
     await restoreAfter();
+    const restoredId = crypto.randomUUID(), restoredPath = storageAuthId + '/sec31-restored-' + crypto.randomUUID() + '.jpg';
+    await assertStoragePositive(label + ' restored', restoredId, restoredPath);
   };
   await assertDeniedStorage('missing session_id', async () => {}, async () => {}, 'omit');
   await assertDeniedStorage('malformed session_id', async () => {}, async () => {}, 'not-a-uuid');
@@ -119,10 +140,10 @@ try {
     () => db.query('insert into auth.sessions(id,user_id,aal) values($1,$2,\'aal1\')', [storageSessionId, storageAuthId]));
   await assertDeniedStorage('inactive employee',
     () => db.query('update public.employees set status=\'inactive\' where id=$1', [employeeB]),
-    () => db.query('update public.employees set status=\'active\' where id=$1', [employeeB]));
+    () => db.query('update public.employees set status=\'active\' where id=$1', [employeeB]), storageSessionId, 'inactive');
   await assertDeniedStorage('disabled account',
     () => db.query('update public.employees set account_status=\'disabled\' where id=$1', [employeeB]),
-    () => db.query('update public.employees set account_status=\'active\' where id=$1', [employeeB]));
+    () => db.query('update public.employees set account_status=\'active\' where id=$1', [employeeB]), storageSessionId, 'inactive');
   await setAuthSession(storageAuthId, storageSessionId);
   await db.query('delete from storage.objects where id=$1', [freshUnusedId]);
   assert.equal((await scalar('select count(*)::int as count from storage.objects where id=$1', [freshUnusedId])).count, 0, 'restored valid session regains legitimate unused-photo cleanup');
@@ -241,6 +262,47 @@ try {
   await db.exec(originalRequireHrDefinition);
   await db.query("insert into public.employee_roles(employee_id,role) values($1,'admin_hr')", [employee]);
   await db.exec(probe);
+
+  // The old whole-source lower() comparison treated JSON keys inside string
+  // literals as case-insensitive. This mutation is behaviorally active: with a
+  // revoked session, require_employee returns an employee instead of 42501.
+  const uppercaseContextDefinition = originalContextDefinition.replaceAll("'reason'", "'REASON'").replaceAll("'allowed'", "'ALLOWED'");
+  assert.notEqual(uppercaseContextDefinition, originalContextDefinition, 'uppercase-key mutation must change the source');
+  await db.exec(uppercaseContextDefinition);
+  await db.exec('reset role');
+  await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false),set_config('request.jwt.claims',$2,false)",
+    ['10000000-0000-4000-8000-000000000001', JSON.stringify({ sub: '10000000-0000-4000-8000-000000000001', role: 'authenticated', aal: 'aal1', session_id: '20000000-0000-4000-8000-000000000099' })]);
+  assert.equal((await scalar('select private.require_employee() as actor')).actor, employee,
+    'uppercase JSON-key mutation must reproduce the revoked-session employee bypass');
+  await probeRejects(/helper definition differs from independent reviewed contract: private\.session_access_context/, 'probe rejects case changes inside authorization JSON keys');
+  await db.exec(originalContextDefinition);
+  await db.exec(probe);
+
+  // require_hr must depend on the role-filter helper as well as the employee
+  // session chain. The non-HR account proves the mutation actually grants access.
+  const originalHasRoleDefinition = (await scalar("select pg_get_functiondef('private.has_role(text)'::regprocedure) as definition")).definition;
+  await db.exec("create or replace function private.has_role(p_role text) returns boolean language sql stable security definer set search_path='' as $$ select true $$");
+  await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false),set_config('request.jwt.claims',$2,false)",
+    [storageAuthId, JSON.stringify({ sub: storageAuthId, role: 'authenticated', aal: 'aal1', session_id: storageSessionId })]);
+  assert.equal((await scalar('select private.require_hr() as actor')).actor, employeeB,
+    'always-true has_role mutation must reproduce a non-HR require_hr bypass');
+  await probeRejects(/helper definition differs from independent reviewed contract: private\.has_role/, 'probe rejects weakened transitive role helper');
+  await db.exec(originalHasRoleDefinition);
+  await db.exec(probe);
+
+  // Closed ACL alone does not prove both retired RPC bodies are tombstones.
+  // Mutation tests run on this disposable PGlite catalog only.
+  for (const retired of [
+    { signature: 'public.auth_mfa_recovery_authorize(uuid,uuid,text)', definition: "select pg_get_functiondef('public.auth_mfa_recovery_authorize(uuid,uuid,text)'::regprocedure) as definition", replace: "create or replace function public.auth_mfa_recovery_authorize(p_employee_id uuid,p_request_id uuid,p_reason text) returns jsonb language plpgsql security definer set search_path='' as $$ begin return jsonb_build_object('ok',true); end; $$", invoke: "select public.auth_mfa_recovery_authorize(null,null,'probe') as value" },
+    { signature: 'public.auth_mfa_recovery_complete(uuid,boolean)', definition: "select pg_get_functiondef('public.auth_mfa_recovery_complete(uuid,boolean)'::regprocedure) as definition", replace: "create or replace function public.auth_mfa_recovery_complete(p_request_id uuid,p_succeeded boolean) returns jsonb language plpgsql security definer set search_path='' as $$ begin return jsonb_build_object('ok',true); end; $$", invoke: 'select public.auth_mfa_recovery_complete(null,false) as value' }
+  ]) {
+    const original = (await scalar(retired.definition)).definition;
+    await db.exec(retired.replace);
+    assert.deepEqual((await scalar(retired.invoke)).value, { ok: true }, retired.signature + ' body mutation must be active');
+    await probeRejects(/retired recovery tombstone body differs from exact contract/, 'probe rejects active ' + retired.signature + ' body while its ACL remains closed');
+    await db.exec(original);
+    await db.exec(probe);
+  }
 
   await db.query("update supabase_migrations.schema_migrations set name='wrong_foundation' where version=(select min(version) from supabase_migrations.schema_migrations)");
   await probeRejects(/ordered 26-name contract/, 'probe rejects a wrong migration name with the same count');

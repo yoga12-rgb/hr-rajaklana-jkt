@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 
 const DEMO_PASSWORD = 'DemoRajaklana123!';
 
+function browserAcceptance(testInfo: { annotations: { type: string; description?: string }[] }, ...contracts: string[]) {
+  for (const contract of contracts) testInfo.annotations.push({ type: 'browser-acceptance', description: `demo-pwa|${contract}` });
+}
+
 async function login(page: Page, role: 'Admin HR' | 'Head Baker' | 'Kasir' = 'Admin HR') {
   await page.goto('/login');
   await expect(page.getByText('Data contoh, tanpa koneksi Supabase.')).toBeVisible();
@@ -547,7 +551,8 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByRole('dialog').getByText('Tanpa potong cuti', { exact: true })).toBeVisible();
   });
 
-  test('cashier attendance requires inside GPS and new camera selfie; clock out checks location again', async ({ page, context }) => {
+  test('cashier attendance requires inside GPS and new camera selfie; clock out checks location again', async ({ page, context }, testInfo) => {
+    browserAcceptance(testInfo, 'camera/GPS biometric clock-in|real camera and browser geolocation satisfy same-account attendance flow; clock-out checks GPS again');
     // Test-only browser camera: this host's Edge fake camera ends before it
     // emits frames. A canvas video stream exercises the app's real preview,
     // drawImage, JPEG capture and selfie validation without a physical camera.
@@ -701,6 +706,7 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
   });
 
   test('production PWA installs a shell cache, excludes dynamic responses and opens offline', async ({ page, context }, testInfo) => {
+    browserAcceptance(testInfo, 'PWA offline shell|service worker controls root scope, caches static shell only, and opens offline route');
     test.skip(process.env.E2E_PWA !== '1', 'Service workers run on production builds; set E2E_PWA=1 with a preview URL.');
     await login(page, 'Kasir');
     const manifestHref = await page.locator('link[rel="manifest"]').getAttribute('href');

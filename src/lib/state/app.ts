@@ -160,7 +160,22 @@ function auditDemoFollowupContextChanges(state: AppState, before: SpvFollowup[],
   }
 }
 function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini hanya untuk Admin HR.'); }
-function fail(error: unknown): never { throw new Error(error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error ? String(error.message) : 'Permintaan belum berhasil. Coba kembali.'); }
+function fail(error: unknown, responseStatus?: number): never {
+  const source = typeof error === 'object' && error ? error as Record<string, unknown> : null;
+  const message = error instanceof Error ? error.message : source && 'message' in source ? String(source.message) : 'Permintaan belum berhasil. Coba kembali.';
+  throw Object.assign(new Error(message), source ? {
+    code: typeof source.code === 'string' ? source.code : undefined,
+    status: responseStatus ?? (typeof source.status === 'number' ? source.status : undefined)
+  } : {});
+}
+function isTransientReadFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const details = error as Error & { code?: string; status?: number };
+  if (details.code === '42501' || details.status === 401 || details.status === 403) return false;
+  if (details.status === 0 || (details.status !== undefined && details.status >= 500 && details.status <= 599)) return true;
+  return error instanceof TypeError && /fetch|network|connection/i.test(error.message)
+    || /failed to fetch|network error|temporarily unavailable|timed? out|timeout|connection reset/i.test(error.message);
+}
 async function rpc(name: string, args: Record<string, unknown>) {
   if (!supabase) throw new Error('Supabase belum dikonfigurasi.');
   const { data, error, status } = await supabase.rpc(name, args);
@@ -445,8 +460,8 @@ async function readAll(table: string, fields = '*'): Promise<any[]> {
   for (let offset = 0; ; offset += 1000) {
     let query = supabase.from(table).select(fields).order(table === 'employee_roles' ? 'employee_id' : 'id');
     if (table === 'employee_roles') query = query.order('role');
-    const { data, error } = await query.range(offset, offset + 999);
-    if (error) fail(error);
+    const { data, error, status } = await query.range(offset, offset + 999);
+    if (error) fail(error, status);
     rows.push(...(data ?? []));
     if (!data || data.length < 1000) return rows;
   }
@@ -455,6 +470,7 @@ async function refreshNow() {
   if (!supabase || refreshing) return; refreshing = true;
   let revision = authRevision;
   let sessionUserId: string | null = null;
+  let contextValidatedSession: { userId: string; accessToken: string } | null = null;
   try {
     const { data: { session } } = await supabase.auth.getSession();
     sessionUserId = session?.user.id ?? null;
@@ -486,6 +502,7 @@ async function refreshNow() {
       refreshRequested = true; return;
     }
     if (!access.allowed) { clearLiveState('Sesi akun tidak berlaku. Silakan masuk kembali.'); return; }
+    contextValidatedSession = { userId: session.user.id, accessToken: session.access_token };
     const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
     const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
@@ -551,13 +568,30 @@ async function refreshNow() {
     if (revision === authRevision) {
       const message = e instanceof Error ? e.message : 'Data belum berhasil dimuat.';
       const current = get(app);
-      // A refresh can fail after the account and access context were already
-      // validated (for example, a transient table read during conflict
-      // reconciliation). Keep the validated shell and its local draft alive
-      // so the user can review/retry. Auth/session validation failures still
-      // clear the account above or while sessionValidating is true.
-      if (current.mode === 'live' && current.initialized && current.user?.authUserId === sessionUserId && !current.sessionValidating) {
-        app.update(state => ({ ...state, connected: false, error: message }));
+      // A transient data read failure after a latest, allowed Auth context can
+      // retain the same account's UI/draft. Keep mutations closed during token
+      // revalidation; never infer permissions from this cached snapshot.
+      if (contextValidatedSession && current.mode === 'live' && current.initialized
+        && current.user?.authUserId === contextValidatedSession.userId
+        && sessionUserId === contextValidatedSession.userId && isTransientReadFailure(e)) {
+        try {
+          const { data: { session: latestSession } } = await supabase.auth.getSession();
+          if (revision !== authRevision) return;
+          if (!latestSession || latestSession.user.id !== contextValidatedSession.userId) {
+            clearLiveState('Sesi akun berubah. Silakan masuk kembali.');
+          } else if (latestSession.access_token !== contextValidatedSession.accessToken) {
+            beginSessionRevalidation();
+            refreshRequested = true;
+          } else {
+            // Keep the previously rendered page mounted. Authorization stays
+            // closed by the private sessionRevalidating gate until a retry
+            // validates the current access token and role snapshot.
+            sessionRevalidating = true;
+            app.update(state => ({ ...state, connected: false, sessionValidating: false, error: message }));
+          }
+        } catch {
+          if (revision === authRevision) clearLiveState('Sesi belum dapat diverifikasi. Coba lagi.');
+        }
       } else {
         clearLiveState(message);
       }

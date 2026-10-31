@@ -4,6 +4,9 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 // the Auth user response, but the application must never call the MFA API.
 const backend = 'http://127.0.0.1:54329';
 const authId = 'auth-password-only-synthetic', employeeId = 'employee-password-only-synthetic';
+function browserAcceptance(testInfo: { annotations: { type: string; description?: string }[] }, ...contracts: string[]) {
+  for (const contract of contracts) testInfo.annotations.push({ type: 'browser-acceptance', description: `live-mock|${contract}` });
+}
 function jwt(user = authId, session = 'synthetic-session', aal = 'aal1') {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ sub: user, aud: 'authenticated', role: 'authenticated', aal, session_id: session, exp: Math.floor(Date.now() / 1000) + 3600 })}.synthetic-signature`;
@@ -63,7 +66,8 @@ test('legacy verified factor does not create an OTP challenge or enrollment rout
   await page.goto('/mfa'); await expect(page).toHaveURL(/\/dashboard$/); expect(mock.factorCalls).toBe(0);
 });
 
-test('revoked live session fails closed before protected reads', async ({ page }) => {
+test('revoked live session fails closed before protected reads', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR07|revoked live session redirects to login with zero protected reads and no MFA API calls');
   const mock = await fixture(page, true); await login(page);
   await expect(page).toHaveURL(/\/login$/); await expect(page.getByRole('alert')).toContainText('Sesi akun tidak berlaku');
   expect(mock.protectedReads).toBe(0); expect(mock.factorCalls).toBe(0);

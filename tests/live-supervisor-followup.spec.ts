@@ -3,6 +3,8 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 const backend = 'http://127.0.0.1:54329';
 const adminId = 'hr-admin-followup';
 const adminAuthId = 'auth-admin-followup';
+const otherAuthId = 'auth-other-followup';
+const otherEmployeeId = 'employee-other-followup';
 const outletId = 'outlet-followup';
 const caseId = 'followup-old-case';
 
@@ -21,6 +23,18 @@ type UpdatePayload = {
 function jwt(payload: Record<string, unknown>) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode(payload)}.simulated-signature`;
+}
+
+function browserAcceptance(testInfo: { annotations: { type: string; description?: string }[] }, ...contracts: string[]) {
+  for (const contract of contracts) testInfo.annotations.push({ type: 'browser-acceptance', description: `live-mock|${contract}` });
+}
+
+function requestAuthId(route: Route) {
+  const authorization = route.request().headers().authorization ?? '';
+  const token = authorization.replace(/^Bearer\s+/i, '').split('.')[1];
+  if (!token) return null;
+  try { return (JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as { sub?: string }).sub ?? null; }
+  catch { return null; }
 }
 
 async function respond(route: Route, data: unknown, status = 200) {
@@ -132,15 +146,21 @@ async function openFollowupMock(page: Page) {
   let commitCount = 0;
   let followupPageReads = 0;
   let tokenRefreshCount = 0;
+  let authLogoutCount = 0;
   let nextTokenGate: { entered: () => void; gate: Promise<void> } | null = null;
   let nextContextGate: { entered: () => void; gate: Promise<void> } | null = null;
+  let failEmployeeReads = false;
+  let contextAllowed = true;
+  let protectedReadCount = 0;
+  let protectedWriteCount = 0;
   let loseNextCommittedResponse = true;
   const tables: Record<string, Record<string, unknown>[]> = {
     employees: [
       { id: adminId, employee_number: 'RK000001', full_name: 'Admin Follow-up', whatsapp: '081200000001', department_id: 'department-followup', position_id: 'position-cashier', outlet_id: outletId, starts_on: '2020-01-01', status: 'active', account_status: 'active', auth_user_id: adminAuthId },
+      { id: otherEmployeeId, employee_number: 'RK000003', full_name: 'Kasir Akun B', whatsapp: '081200000003', department_id: 'department-followup', position_id: 'position-cashier', outlet_id: outletId, starts_on: '2020-01-01', status: 'active', account_status: 'active', auth_user_id: otherAuthId },
       { id: 'cashier-followup', employee_number: 'RK000002', full_name: 'Kasir Lama', whatsapp: '081200000002', department_id: 'department-followup', position_id: 'position-cashier', outlet_id: outletId, starts_on: '2020-01-01', status: 'active', account_status: 'active', weekly_off_days: [] }
     ],
-    employee_roles: [{ employee_id: adminId, role: 'admin_hr' }],
+    employee_roles: [{ employee_id: adminId, role: 'admin_hr' }, { employee_id: otherEmployeeId, role: 'employee' }],
     departments: [{ id: 'department-followup', name: 'Operasional', code: 'OPS', active: true }],
     positions: [{ id: 'position-admin', name: 'Admin HR', department_id: 'department-followup', active: true, is_cashier: false },
       { id: 'position-cashier', name: 'Kasir', department_id: 'department-followup', active: true, is_cashier: true }],
@@ -155,7 +175,16 @@ async function openFollowupMock(page: Page) {
   await page.context().route(`${backend}/**`, async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
-    if (path === '/auth/v1/user') { await respond(route, authUser); return; }
+    if (path === '/auth/v1/user') {
+      const subject = requestAuthId(route);
+      await respond(route, subject === otherAuthId ? { ...authUser, id: otherAuthId, email: 'other-followup@example.test' } : authUser);
+      return;
+    }
+    if (path === '/auth/v1/logout') {
+      authLogoutCount += 1;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
     if (path === '/auth/v1/token') {
       tokenRefreshCount += 1;
       const hold = nextTokenGate; nextTokenGate = null;
@@ -168,14 +197,18 @@ async function openFollowupMock(page: Page) {
     if (path === '/rest/v1/rpc/auth_access_context') {
       const hold = nextContextGate; nextContextGate = null;
       if (hold) { hold.entered(); await hold.gate; }
-      await respond(route, { employee_id: adminId, requires_mfa: false, current_level: 'aal1', allowed: true, reason: null }); return;
+      const subject = requestAuthId(route);
+      await respond(route, { employee_id: subject === otherAuthId ? otherEmployeeId : adminId, requires_mfa: false,
+        current_level: 'aal1', allowed: contextAllowed, reason: contextAllowed ? null : 'session_revoked' }); return;
     }
     if (path === '/rest/v1/rpc/spv_followup_page') {
       followupPageReads += 1;
-      await respond(route, { items: [structuredClone(followup)], total: 1, has_more: false, next_cursor: null, as_of: new Date().toISOString() });
+      const visible = requestAuthId(route) === otherAuthId ? [] : [structuredClone(followup)];
+      await respond(route, { items: visible, total: visible.length, has_more: false, next_cursor: null, as_of: new Date().toISOString() });
       return;
     }
     if (path === '/rest/v1/rpc/spv_followup_update_v2') {
+      protectedWriteCount += 1;
       const payload = route.request().postDataJSON() as UpdatePayload;
       requests.push(structuredClone(payload));
       const fingerprint = JSON.stringify(payload);
@@ -207,11 +240,21 @@ async function openFollowupMock(page: Page) {
       await respond(route, structuredClone(followup));
       return;
     }
+    if (path === '/rest/v1/rpc/hr_save_employee_with_roles') {
+      protectedWriteCount += 1;
+      await respond(route, null);
+      return;
+    }
     if (path.startsWith('/rest/v1/rpc/')) {
       await respond(route, path.endsWith('/leave_balance') ? { remaining: 12, expired: false } : []);
       return;
     }
     if (path.startsWith('/rest/v1/')) {
+      protectedReadCount += 1;
+      if (path === '/rest/v1/employees' && failEmployeeReads) {
+        await respond(route, { code: 'MOCK_TRANSIENT_READ', message: 'Synthetic transient protected read failure.' }, 503);
+        return;
+      }
       await respond(route, tables[path.slice('/rest/v1/'.length)] ?? []);
       return;
     }
@@ -232,6 +275,13 @@ async function openFollowupMock(page: Page) {
     commits: () => commitCount,
     followupPageReads: () => followupPageReads,
     tokenRefreshes: () => tokenRefreshCount,
+    authLogoutRequests: () => authLogoutCount,
+    protectedReads: () => protectedReadCount,
+    protectedWrites: () => protectedWriteCount,
+    failEmployeeReads() { failEmployeeReads = true; },
+    restoreEmployeeReads() { failEmployeeReads = false; },
+    revokeAdminRole() { tables.employee_roles = tables.employee_roles.filter(row => row.employee_id !== adminId || row.role !== 'admin_hr'); },
+    setContextAllowed(value: boolean) { contextAllowed = value; },
     holdNextTokenRefresh() {
       const entered = deferred(), gate = deferred();
       nextTokenGate = { entered: entered.resolve, gate: gate.promise };
@@ -279,7 +329,13 @@ test('follow-up survives committed response loss, reload and exact retry, then r
   expect(mock.requests.at(-1)?.p_idempotency_key).not.toBe(mock.requests[0].p_idempotency_key);
 });
 
-test('SEC31 browser SDK keeps the case draft and live camera through two rotations during delayed Realtime removal, then accepts the newest event and exact persisted retry', async ({ page, context }) => {
+test('SEC31 browser SDK keeps the case draft and live camera through two rotations during delayed Realtime removal, then accepts the newest event and exact persisted retry', async ({ page, context }, testInfo) => {
+  browserAcceptance(testInfo,
+    'BR03a|live camera video and track identity remain connected during token rotation',
+    'BR03b|captured selfie blob preview and captured context survive token rotation',
+    'BR04|two token rotations during delayed channel removal leave one current owner and accept newest event',
+    'BR05|terminal Realtime close joins replacement and its event triggers a data read',
+    'BR10|follow-up retry after rotation and reload sends original payload/key and commits once');
   const realtime = await installRealtimeMock(page);
   const mock = await openFollowupMock(page);
   await expect.poll(() => realtime.joined()).toBeGreaterThan(0);
@@ -389,7 +445,10 @@ test('SEC31 browser SDK keeps the case draft and live camera through two rotatio
   await cameraPage.close();
 });
 
-test('SEC31 browser SDK refresh leaves populated leave and employee forms mounted with their original input nodes', async ({ page }) => {
+test('SEC31 browser SDK refresh leaves populated leave and employee forms mounted with their original input nodes', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo,
+    'BR01|leave form textarea and dialog remain mounted and action is rejected during session validation',
+    'BR02|employee inputs and draft remain mounted after token rotation');
   const mock = await openFollowupMock(page);
   await page.goto('/leave');
   await page.getByRole('button', { name: 'Buat pengajuan' }).click();
@@ -434,4 +493,140 @@ test('SEC31 browser SDK refresh leaves populated leave and employee forms mounte
   await expect(employeeName).toHaveValue('Calon karyawan yang sedang didaftarkan');
   await expect(employeePhone).toHaveValue('081299999991');
   expect(await employeeNameNode!.evaluate(element => element.isConnected && [...document.querySelectorAll('input')].includes(element as HTMLInputElement))).toBe(true);
+});
+
+test('SEC31 keeps same-account UI read-only after a transient protected read failure and retries against current context', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR08|allowed token rotation plus employees 503 retains form, blocks protected write, and retry succeeds');
+  const mock = await openFollowupMock(page);
+  await page.goto('/leave');
+  await page.getByRole('button', { name: 'Buat pengajuan' }).click();
+  const reason = page.getByLabel('Alasan', { exact: true });
+  await reason.fill('Draft tetap tersimpan saat baca sementara gagal');
+  const reasonNode = await reason.elementHandle();
+  expect(reasonNode).not.toBeNull();
+  // Keep the outage active across Auth/Realtime automatic refreshes so this
+  // reproducer can assert the retained error state before explicit recovery.
+  mock.failEmployeeReads();
+  const rotated = await rotateAppSession(page);
+  expect(rotated.userId).toBe(adminAuthId);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('alert')).toContainText('Synthetic transient protected read failure');
+  await expect(page.getByRole('heading', { name: 'Buat pengajuan' })).toBeVisible();
+  await expect(reason).toHaveValue('Draft tetap tersimpan saat baca sementara gagal');
+  expect(await reasonNode!.evaluate(element => element.isConnected)).toBe(true);
+  const blocked = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/app.ts';
+    const { actions } = await import(/* @vite-ignore */ modulePath);
+    try { await actions.saveEmployee({ fullName: 'Stale role must not save' }); return null; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  });
+  expect(blocked).toContain('Sesi sedang diverifikasi');
+  expect(mock.protectedWrites()).toBe(0);
+  mock.restoreEmployeeReads();
+  await dialog.getByRole('button', { name: 'Coba lagi', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Buat pengajuan' })).toBeVisible();
+  await expect(page.getByLabel('Alasan', { exact: true })).toHaveValue('Draft tetap tersimpan saat baca sementara gagal');
+});
+
+test('SEC31 ordinary data refresh failure retains the form but cannot authorize from the cached admin role', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR08|ordinary same-token employees 503 retains form, blocks cached admin action, and retry applies revoked role');
+  const mock = await openFollowupMock(page);
+  await page.goto('/leave');
+  await page.getByRole('button', { name: 'Buat pengajuan' }).click();
+  const reason = page.getByLabel('Alasan', { exact: true });
+  await reason.fill('Draft disimpan selama penyegaran biasa gagal');
+  const reasonNode = await reason.elementHandle();
+  expect(reasonNode).not.toBeNull();
+  mock.failEmployeeReads();
+  await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/app.ts';
+    const { actions } = await import(/* @vite-ignore */ modulePath);
+    await actions.refresh();
+  });
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('alert')).toContainText('Synthetic transient protected read failure');
+  await expect(reason).toHaveValue('Draft disimpan selama penyegaran biasa gagal');
+  expect(await reasonNode!.evaluate(element => element.isConnected)).toBe(true);
+  const blocked = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/app.ts';
+    const { actions } = await import(/* @vite-ignore */ modulePath);
+    try { await actions.saveEmployee({ fullName: 'Stale admin must not save', phone: '081299999999', joinDate: '2025-01-01', departmentId: 'department-followup', positionId: 'position-cashier', outletId: 'outlet-followup', roles: [] }); return null; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  });
+  expect(blocked).toContain('Sesi sedang diverifikasi');
+  expect(mock.protectedWrites()).toBe(0);
+
+  mock.revokeAdminRole();
+  mock.restoreEmployeeReads();
+  await dialog.getByRole('button', { name: 'Coba lagi', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Karyawan', exact: true })).toHaveCount(0);
+  await expect(reason).toHaveValue('Draft disimpan selama penyegaran biasa gagal');
+  const denied = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/app.ts';
+    const { actions } = await import(/* @vite-ignore */ modulePath);
+    try { await actions.saveEmployee({ fullName: 'Revoked admin must not save', phone: '081299999999', joinDate: '2025-01-01', departmentId: 'department-followup', positionId: 'position-cashier', outletId: 'outlet-followup', roles: [] }); return null; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  });
+  expect(denied).toContain('Tindakan ini hanya untuk Admin HR');
+  expect(mock.protectedWrites()).toBe(0);
+});
+
+test('SEC31 denies retry after role/session revocation during retained transient UI', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR08|transient read retry with revoked latest permission clears access and performs no protected write');
+  const mock = await openFollowupMock(page);
+  await page.goto('/leave');
+  await page.getByRole('button', { name: 'Buat pengajuan' }).click();
+  mock.failEmployeeReads();
+  await rotateAppSession(page);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('alert')).toContainText('Synthetic transient protected read failure');
+  const writesBeforeRetry = mock.protectedWrites();
+  const readsBeforeRetry = mock.protectedReads();
+  mock.setContextAllowed(false);
+  mock.restoreEmployeeReads();
+  await dialog.getByRole('button', { name: 'Coba lagi', exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  expect(mock.protectedWrites()).toBe(writesBeforeRetry);
+  expect(mock.protectedReads()).toBe(readsBeforeRetry);
+});
+
+test('SEC31 ignores a late account-A context after account B replaces it', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR06|late account-A Auth context cannot replace or expose data after SDK session switches to account B');
+  const mock = await openFollowupMock(page);
+  const held = mock.holdNextAuthContext();
+  const rotating = rotateAppSession(page);
+  await held.entered;
+  const otherAccessToken = jwt({ sub: otherAuthId, aud: 'authenticated', role: 'authenticated', aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600, switched: 1 });
+  const switchResult = await page.evaluate(async ({ accessToken }) => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    const { supabase } = await import(/* @vite-ignore */ modulePath);
+    const { data, error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: 'account-b-refresh' });
+    return { id: data.session?.user.id, error: error?.message ?? null };
+  }, { accessToken: otherAccessToken });
+  expect(switchResult).toEqual({ id: otherAuthId, error: null });
+  held.release();
+  expect((await rotating).userId).toBe(adminAuthId);
+  await expect(page.locator('.account strong')).toHaveText('Kasir Akun B');
+  await expect(page.getByText(`KASUS missing_clockin:assignment-old`, { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Kasir Lama', { exact: true })).toHaveCount(0);
+  expect(mock.protectedWrites()).toBe(0);
+});
+
+test('SEC31 ignores delayed account-A validation after logout', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR06|late Auth context after logout cannot republish the signed-out account');
+  const mock = await openFollowupMock(page);
+  const readsBeforeRotation = mock.protectedReads();
+  const held = mock.holdNextAuthContext();
+  const rotating = rotateAppSession(page);
+  await held.entered;
+  await page.getByRole('button', { name: 'Keluar akun', exact: true }).click();
+  await expect.poll(() => mock.authLogoutRequests()).toBe(1);
+  await expect(page).toHaveURL(/\/login$/);
+  held.release();
+  await rotating;
+  await expect(page).toHaveURL(/\/login$/);
+  expect(mock.protectedReads()).toBe(readsBeforeRotation);
+  expect(mock.protectedWrites()).toBe(0);
 });

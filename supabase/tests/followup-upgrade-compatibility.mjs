@@ -403,6 +403,19 @@ const setupHistory = async (db, sourceShift='off') => {
       'assignments',(select jsonb_agg(to_jsonb(a) order by id) from public.cashier_assignments a),
       'employees',(select jsonb_agg(to_jsonb(e) order by id) from public.employees e),
       'roles',(select jsonb_agg(to_jsonb(r) order by employee_id,role) from public.employee_roles r),
+      'issue_categories',(select jsonb_agg(to_jsonb(c) order by id) from public.supervisor_issue_categories c),
+      'issue_routes',(select jsonb_agg(to_jsonb(r) order by id) from public.supervisor_issue_routes r),
+      'capabilities',(select jsonb_agg(to_jsonb(c) order by id) from public.supervisor_capabilities c),
+      'staffing_requirements',(select jsonb_agg(to_jsonb(r) order by id) from public.staffing_requirements r),
+      'staffing_interval_requirements',(select jsonb_agg(to_jsonb(r) order by id) from public.staffing_interval_requirements r),
+      'outlet_issues',(select jsonb_agg(to_jsonb(i) order by id) from public.outlet_issues i),
+      'outlet_issue_events',(select jsonb_agg(to_jsonb(e) order by id) from public.outlet_issue_events e),
+      'shift_handovers',(select jsonb_agg(to_jsonb(h) order by id) from public.shift_handovers h),
+      'shift_handover_versions',(select jsonb_agg(to_jsonb(v) order by id) from public.shift_handover_versions v),
+      'shift_handover_events',(select jsonb_agg(to_jsonb(e) order by id) from public.shift_handover_events e),
+      'shift_exchange_requests',(select jsonb_agg(to_jsonb(r) order by id) from public.shift_exchange_requests r),
+      'shift_exchange_events',(select jsonb_agg(to_jsonb(e) order by id) from public.shift_exchange_events e),
+      'notifications',(select jsonb_agg(to_jsonb(n) order by id) from public.notifications n),
       'recovery',(select jsonb_agg(to_jsonb(r) order by request_id) from private.mfa_recovery_requests r),
       'audit',(select jsonb_agg(to_jsonb(a) order by id) from public.audit_events a),
       'spv_receipts',(select jsonb_agg(to_jsonb(r) order by id) from private.spv_followup_receipts r),
@@ -445,38 +458,69 @@ const setupHistory = async (db, sourceShift='off') => {
       'the final26 target session is aal1 with no factor linkage');
     await db.exec('reset role');
 
+    const beforeReplaySnapshot=await snapshot();
     const replayed={};
+    const assertReplayUnchanged=async label=>assert.deepEqual(await snapshot(),beforeReplaySnapshot,
+      `${label} replay cannot add a business write, audit, notification, event, or second receipt`);
     replayed.followup=(await runRpc(ids.authUser,'aal1',
       'select public.spv_followup_update_v2($1,$2,$3,$4,$5,$6,$7,$8,$9) as result',
       [requests.followup.id,requests.followup.revision,requests.followup.key,requests.followup.status,requests.followup.owner,requests.followup.note,
         requests.followup.resolution,requests.followup.due,requests.followup.reason])).result;
+    await assertReplayUnchanged('follow-up');
     replayed.configuration=(await runRpc(ids.authUser,'aal1',
       'select public.supervisor_issue_category_save_v2(null,null,$1,$2,$3,true) as result',
       [requests.configuration.key,requests.configuration.code,requests.configuration.name])).result;
+    await assertReplayUnchanged('configuration');
     replayed.planning=(await runRpc(ids.authUser,'aal1',
       'select public.staffing_interval_requirement_save_v2(null,null,$1,$2,$3,$4,$5,$6,$7,$8,$9) as result',
       [requests.planning.key,requests.planning.outlet,requests.planning.weekday,requests.planning.starts,requests.planning.ends,
         requests.planning.minimum,requests.planning.from,requests.planning.until,requests.planning.reason])).result;
+    await assertReplayUnchanged('planning');
     replayed.issue=(await runRpc(cashierAuth,'aal1',
       'select public.outlet_issue_submit($1,$2,$3,$4,null,null,$5) as result',
       [requests.issue.outlet,requests.issue.category,requests.issue.description,requests.issue.urgency,requests.issue.key])).result;
+    await assertReplayUnchanged('issue');
     replayed.handover=(await runRpc(cashierAuth,'aal1',
       'select public.shift_handover_save_v2(null,null,$1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) as result',
       [requests.handover.key,requests.handover.outlet,requests.handover.workDate,requests.handover.senderAssignment,requests.handover.recipient,
         requests.handover.recipientAssignment,requests.handover.pendingWork,requests.handover.condition,requests.handover.notes,requests.handover.reason])).result;
+    await assertReplayUnchanged('handover');
     replayed.exchange=(await runRpc(cashierAuth,'aal1',
       'select public.shift_exchange_submit($1,$2,$3,$4,$5) as result',
       [requests.exchange.type,requests.exchange.assignment,requests.exchange.peer,requests.exchange.reason,requests.exchange.key])).result;
+    await assertReplayUnchanged('exchange');
     replayed.roster=(await runRpc(ids.authUser,'aal1',
       'select public.cashier_roster_batch_save($1,$2,$3::jsonb) as result',
       [requests.roster.week,requests.roster.key,JSON.stringify(requests.roster.changes)])).result;
+    await assertReplayUnchanged('roster');
     assert.deepEqual(replayed,originalResults,'all seven original RPC keys/payloads replay their exact migration25 result after26 using aal1 sessions');
-    const beforeReplaySnapshot=await snapshot();
     await assert.rejects(runRpc(ids.authUser,'aal1',
       'select public.supervisor_issue_category_save_v2(null,null,$1,$2,$3,true) as result',
       [requests.configuration.key,requests.configuration.code,'payload changed after migration26']),/Kunci konfigurasi/,
       'the original key cannot be replayed with a changed payload after26');
     assert.deepEqual(await snapshot(),beforeReplaySnapshot,'receipt replays and key/payload rejection add no business write, audit, or second receipt');
+
+    const functionDefinition=(await scalar(db,`select pg_get_functiondef(
+      'public.supervisor_issue_category_save_v2(uuid,bigint,uuid,text,text,boolean)'::regprocedure) as value`)).value;
+    const replayReturn='return v_receipt.result;';
+    assert.ok(functionDefinition.includes(replayReturn),'configuration RPC source is available for disposable replay-mutant fixture');
+    const mutantDefinition=functionDefinition.replace(replayReturn,
+      `insert into public.audit_events(entity,entity_id,actor_employee_id,action,reason,before_data,after_data)
+      values('supervisor_issue_category',v_receipt.id,v_actor,'created','synthetic duplicate replay side effect',null,null);
+     ${replayReturn}`);
+    assert.notEqual(mutantDefinition,functionDefinition,'the disposable mutant changes the real replay branch');
+    try {
+      await db.exec(mutantDefinition);
+      const mutationBaseline=await snapshot();
+      const mutantResult=(await runRpc(ids.authUser,'aal1',
+        'select public.supervisor_issue_category_save_v2(null,null,$1,$2,$3,true) as result',
+        [requests.configuration.key,requests.configuration.code,requests.configuration.name])).result;
+      assert.deepEqual(mutantResult,originalResults.configuration,'mutant still returns the original recorded result');
+      const mutantSnapshot=await snapshot();
+      assert.notDeepEqual(mutantSnapshot,mutationBaseline,'the behavioral snapshot detects a duplicate audit side effect on receipt replay');
+      assert.throws(()=>assert.deepEqual(mutantSnapshot,mutationBaseline),/deep-equal|not deep-equal|Expected values/,
+        'the same equality gate used by the seven-replay acceptance is red for the active duplicate-side-effect mutant');
+    } finally { await db.exec(functionDefinition); }
     console.log('Populated25→26 upgrade OK: linked recovery states, RPC-created receipts for all seven workflows, full snapshot equality, original key/payload replay under aal1 and changed-payload rejection');
   } finally { await db.close(); }
 }

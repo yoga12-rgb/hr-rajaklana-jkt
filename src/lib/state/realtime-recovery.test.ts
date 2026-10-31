@@ -26,6 +26,7 @@ let documentListeners: Map<string, () => void>;
 let subscribeThrows = false;
 let authListener: ((event: string, session: typeof currentSession | null) => void) | null = null;
 let failEmployeeReadForUser: string | null = null;
+let failEmployeeReadStatus = 503;
 let delayNextEmployeeRead = false;
 let employeeReadStarted: (() => void) | null = null;
 let releaseDelayedEmployeeRead: (() => void) | null = null;
@@ -41,6 +42,7 @@ function installLiveClient() {
   currentSession = sessionFor('auth-admin');
   authListener = null;
   failEmployeeReadForUser = null;
+  failEmployeeReadStatus = 503;
   delayNextEmployeeRead = false;
   employeeReadStarted = null;
   releaseDelayedEmployeeRead = null;
@@ -77,7 +79,7 @@ function installLiveClient() {
             });
           }
           if (table === 'employees' && currentSession?.user.id === failEmployeeReadForUser) {
-            return { data: null, error: new Error('Pembacaan akun B gagal di mock.') };
+            return { data: null, error: Object.assign(new Error('Pembacaan akun B gagal di mock.'), { status: failEmployeeReadStatus }) };
           }
           if (filterEmployeeRowsForSession && table === 'employees') {
             return { data: currentSession?.user.id === 'auth-cashier' ? [cashierEmployeeRow] : liveTables.employees ?? [], error: null };
@@ -620,6 +622,69 @@ describe('live Realtime recovery', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     await flush();
     expect(get(app)).toMatchObject({ initialized: true, loading: false, user: { id: 'employee-admin' }, sessionValidating: false });
+  });
+
+  it('retains the same-account shell after latest allowed context when a table read fails, but keeps writes gated', async () => {
+    const { actions, app } = await openLiveApp();
+    const originalUser = get(app).user;
+    failEmployeeReadForUser = 'auth-admin';
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotated-token-data-error');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: originalUser, sessionValidating: false });
+    expect(get(app).error).toContain('Pembacaan akun B gagal di mock.');
+    await expect(actions.submitLeave({ type: 'annual', startDate: '2026-11-10', endDate: '2026-11-10', reason: 'Uji gate', extent: 'full_day' }))
+      .rejects.toThrow('Sesi sedang diverifikasi');
+    expect(mockSupabase.rpc.mock.calls.some((call: unknown[]) => call[0] === 'leave_submit')).toBe(false);
+
+    failEmployeeReadForUser = null;
+    const previousRoles = liveTables.employee_roles;
+    liveTables.employee_roles = [];
+    await actions.refresh();
+    expect(get(app)).toMatchObject({ initialized: true, user: { authUserId: 'auth-admin', roles: [] }, sessionValidating: false, error: null });
+    await expect(actions.saveEmployee({})).rejects.toThrow('Tindakan ini hanya untuk Admin HR.');
+    expect(mockSupabase.rpc.mock.calls.some((call: unknown[]) => call[0] === 'employee_save')).toBe(false);
+    liveTables.employee_roles = previousRoles;
+  });
+
+  it('blocks cached admin actions after an ordinary refresh read failure until the latest role snapshot is revalidated', async () => {
+    const { actions, app } = await openLiveApp();
+    const originalUser = get(app).user;
+    mockSupabase.rpc.mockClear();
+    failEmployeeReadForUser = 'auth-admin';
+
+    await actions.refresh();
+
+    expect(get(app)).toMatchObject({ initialized: true, loading: false, user: originalUser, sessionValidating: false });
+    expect(get(app).error).toContain('Pembacaan akun B gagal di mock.');
+    await expect(actions.saveEmployee({ fullName: 'Tidak boleh memakai role cache' }))
+      .rejects.toThrow('Sesi sedang diverifikasi');
+    expect(mockSupabase.rpc.mock.calls.some((call: unknown[]) => call[0] === 'employee_save')).toBe(false);
+
+    failEmployeeReadForUser = null;
+    const previousRoles = liveTables.employee_roles;
+    liveTables.employee_roles = [];
+    await actions.refresh();
+    expect(get(app)).toMatchObject({ initialized: true, user: { authUserId: 'auth-admin', roles: [] }, sessionValidating: false, error: null });
+    await expect(actions.saveEmployee({})).rejects.toThrow('Tindakan ini hanya untuk Admin HR.');
+    expect(mockSupabase.rpc.mock.calls.some((call: unknown[]) => call[0] === 'employee_save')).toBe(false);
+    liveTables.employee_roles = previousRoles;
+  });
+
+  it('fails closed when a same-account table read returns an authorization denial', async () => {
+    const { actions, app } = await openLiveApp();
+    failEmployeeReadForUser = 'auth-admin';
+    failEmployeeReadStatus = 403;
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotated-token-forbidden');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app)).toMatchObject({ user: null, employees: [], sessionValidating: false });
+    await expect(actions.submitLeave({ type: 'annual', startDate: '2026-11-10', endDate: '2026-11-10', reason: 'Uji gate', extent: 'full_day' }))
+      .rejects.toThrow('Silakan masuk dengan akun aktif.');
+    expect(mockSupabase.rpc.mock.calls.some((call: unknown[]) => call[0] === 'leave_submit')).toBe(false);
   });
 
   it('clears a null session, reloads the same account and keeps same-user token refresh stable', async () => {

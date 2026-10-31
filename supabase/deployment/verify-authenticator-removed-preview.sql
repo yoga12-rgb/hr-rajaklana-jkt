@@ -14,6 +14,10 @@ declare
   v_normalized text;
   v_actual text;
   v_contract record;
+  v_recovery_count bigint;
+  v_recovery_count_after bigint;
+  v_audit_count bigint;
+  v_audit_count_after bigint;
 begin
   if v_auth is null then raise exception 'authenticated role is missing'; end if;
   if to_regclass('supabase_migrations.schema_migrations') is null then
@@ -80,7 +84,7 @@ begin
   end if;
   foreach v_signature in array array[
     'private.raw_employee_id()','private.session_access_context()','private.session_allowed()',
-    'private.employee_id()','private.require_employee()','private.require_hr()',
+    'private.employee_id()','private.has_role(text)','private.require_employee()','private.require_hr()',
     'public.auth_access_context()'
   ] loop
     v_oid := to_regprocedure(v_signature);
@@ -88,7 +92,9 @@ begin
       and coalesce(array_to_string(p.proconfig,';'),'') ~ '(^|;)search_path=(""|$)') then
       raise exception 'security helper/definer/search_path contract missing for %', v_signature;
     end if;
-    if has_function_privilege('anon',v_oid,'EXECUTE') then
+    if has_function_privilege('anon',v_oid,'EXECUTE')
+      and (split_part(v_signature,'.',1)<>'private' or v_signature<>'private.has_role(text)'
+        or has_schema_privilege('anon','private','USAGE')) then
       raise exception 'anonymous EXECUTE is not permitted for %', v_signature;
     end if;
     if v_signature in ('private.raw_employee_id()','private.session_access_context()','private.require_employee()','private.require_hr()')
@@ -101,24 +107,75 @@ begin
     or not has_function_privilege('authenticated','public.auth_access_context()'::regprocedure,'EXECUTE') then
     raise exception 'password-only identity helper grants are missing';
   end if;
-  -- Compare each security helper with an independently reviewed final26
-  -- source contract. This literal allowlist is not derived from the database
-  -- definition being checked. Whitespace and line comments are ignored;
-  -- executable tokens and operators remain significant.
+  -- Compare each security helper with independently reviewed source contracts.
+  -- Only leading/trailing body whitespace is removed; literals, internal
+  -- whitespace, comments, operators and identifier case remain byte-sensitive.
+  -- Keep each source body aligned with the final migration/foundation contract.
   for v_contract in
     select * from (values
-      ('private.raw_employee_id()', $helper$select e.id from public.employees e where e.auth_user_id=auth.uid() and e.status='active' and e.account_status='active';$helper$),
-      ('private.session_access_context()', $helper$declare v_actor uuid:=private.raw_employee_id(); v_claims jsonb; v_level text; v_session uuid; v_reason text; begin begin v_claims:=coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb; exception when others then v_claims:='{}'::jsonb; end; v_level:=case when v_claims->>'aal'='aal2' then 'aal2' else 'aal1' end; if v_actor is null then v_reason:='inactive'; else begin v_session:=(v_claims->>'session_id')::uuid; exception when others then v_session:=null; end; if v_session is null or not exists(select 1 from auth.sessions s where s.id=v_session and s.user_id=auth.uid() and (s.not_after is null or s.not_after>statement_timestamp())) then v_reason:='session_revoked'; end if; end if; return jsonb_build_object('employee_id',v_actor,'requires_mfa',false,'current_level',v_level,'allowed',v_reason is null,'reason',v_reason); end;$helper$),
+      ('private.raw_employee_id()', $helper$select e.id from public.employees e
+  where e.auth_user_id=auth.uid() and e.status='active' and e.account_status='active';$helper$),
+      ('private.session_access_context()', $helper$declare
+  v_actor uuid:=private.raw_employee_id();
+  v_claims jsonb;
+  v_level text;
+  v_session uuid;
+  v_reason text;
+begin
+  begin
+    v_claims:=coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb;
+  exception when others then
+    v_claims:='{}'::jsonb;
+  end;
+  -- AAL remains informational for compatibility with old tabs. It is not an
+  -- authorization input after the product decision to use password-only login.
+  v_level:=case when v_claims->>'aal'='aal2' then 'aal2' else 'aal1' end;
+  if v_actor is null then
+    v_reason:='inactive';
+  else
+    begin v_session:=(v_claims->>'session_id')::uuid;
+    exception when others then v_session:=null; end;
+    if v_session is null or not exists(
+      select 1 from auth.sessions s
+      where s.id=v_session and s.user_id=auth.uid()
+        and (s.not_after is null or s.not_after>statement_timestamp())
+    ) then
+      v_reason:='session_revoked';
+    end if;
+  end if;
+  return jsonb_build_object(
+    'employee_id',v_actor,
+    'requires_mfa',false,
+    'current_level',v_level,
+    'allowed',v_reason is null,
+    'reason',v_reason
+  );
+end;$helper$),
       ('private.session_allowed()', $helper$select (private.session_access_context()->>'allowed')::boolean;$helper$),
       ('private.employee_id()', $helper$select case when private.session_allowed() then private.raw_employee_id() else null end;$helper$),
-      ('private.require_employee()', $helper$declare v_context jsonb:=private.session_access_context(); begin if v_context->>'reason'='session_revoked' then raise exception 'Sesi tidak berlaku. Silakan login kembali' using errcode='42501'; elsif not (v_context->>'allowed')::boolean then raise exception 'Akun karyawan tidak aktif' using errcode='42501'; end if; return (v_context->>'employee_id')::uuid; end;$helper$),
-      ('private.require_hr()', $helper$declare v_actor uuid:=private.require_employee(); begin if not private.has_role('admin_hr') then raise exception 'Akses Admin HR diperlukan' using errcode='42501'; end if; return v_actor; end;$helper$),
+      ('private.has_role(text)', $helper$select exists(select 1 from public.employee_roles where employee_id = private.employee_id() and role = p_role);$helper$),
+      ('private.require_employee()', $helper$declare v_context jsonb:=private.session_access_context();
+begin
+  if v_context->>'reason'='session_revoked' then
+    raise exception 'Sesi tidak berlaku. Silakan login kembali' using errcode='42501';
+  elsif not (v_context->>'allowed')::boolean then
+    raise exception 'Akun karyawan tidak aktif' using errcode='42501';
+  end if;
+  return (v_context->>'employee_id')::uuid;
+end;$helper$),
+      ('private.require_hr()', $helper$declare v_actor uuid:=private.require_employee();
+begin
+  if not private.has_role('admin_hr') then
+    raise exception 'Akses Admin HR diperlukan' using errcode='42501';
+  end if;
+  return v_actor;
+end;$helper$),
       ('public.auth_access_context()', $helper$select private.session_access_context();$helper$)
     ) as expected(signature, source)
   loop
-    select regexp_replace(lower(regexp_replace(p.prosrc, '--[^\r\n]*', '', 'g')), '\s+', '', 'g')
+    select regexp_replace(p.prosrc, '^\s+|\s+$', '', 'g')
       into v_actual from pg_proc p where p.oid=to_regprocedure(v_contract.signature);
-    if v_actual is distinct from regexp_replace(lower(v_contract.source), '\s+', '', 'g') then
+    if v_actual is distinct from regexp_replace(v_contract.source, '^\s+|\s+$', '', 'g') then
       raise exception 'helper definition differs from independent reviewed contract: %', v_contract.signature;
     end if;
   end loop;
@@ -211,12 +268,53 @@ begin
   ] loop
     v_oid := to_regprocedure(v_signature);
     if v_oid is null then raise exception 'retired recovery function missing: %',v_signature; end if;
+    if not exists(select 1 from pg_proc p where p.oid=v_oid and p.prosecdef and p.prorettype='jsonb'::regtype
+      and p.prolang=(select oid from pg_language where lanname='plpgsql')
+      and coalesce(array_to_string(p.proconfig,';'),'') ~ '(^|;)search_path=(""|$)') then
+      raise exception 'retired recovery tombstone metadata differs from contract: %',v_signature;
+    end if;
     if has_function_privilege('anon',v_oid,'EXECUTE')
       or has_function_privilege('authenticated',v_oid,'EXECUTE')
       or has_function_privilege('service_role',v_oid,'EXECUTE') then
       raise exception 'retired recovery function is executable through an effective grant: %',v_signature;
     end if;
   end loop;
+  if exists(
+    select 1 from (values
+      ('public.auth_mfa_recovery_authorize(uuid,uuid,text)'::text,
+       $tombstone$begin
+  raise exception 'Pemulihan autentikator sudah dihentikan. Login menggunakan nomor karyawan dan kata sandi.' using errcode='0A000';
+end;$tombstone$),
+      ('public.auth_mfa_recovery_complete(uuid,boolean)'::text,
+       $tombstone$begin
+  raise exception 'Pemulihan autentikator sudah dihentikan.' using errcode='0A000';
+end;$tombstone$)
+    ) expected(signature,source)
+    join pg_proc p on p.oid=to_regprocedure(expected.signature)
+    where regexp_replace(p.prosrc, '^\s+|\s+$', '', 'g')
+      is distinct from regexp_replace(expected.source, '^\s+|\s+$', '', 'g')
+  ) then
+    raise exception 'retired recovery tombstone body differs from exact contract';
+  end if;
+  -- Invoke both owner-only tombstones inside exception subtransactions. Their
+  -- exact bodies raise 0A000 before any recovery/audit side effect.
+  select count(*) into v_recovery_count from private.mfa_recovery_requests;
+  select count(*) into v_audit_count from public.audit_events;
+  begin
+    perform public.auth_mfa_recovery_authorize(null,null,'contract probe');
+    raise exception 'recovery authorize tombstone returned instead of raising 0A000';
+  exception when feature_not_supported then null;
+  end;
+  begin
+    perform public.auth_mfa_recovery_complete(null,false);
+    raise exception 'recovery complete tombstone returned instead of raising 0A000';
+  exception when feature_not_supported then null;
+  end;
+  select count(*) into v_recovery_count_after from private.mfa_recovery_requests;
+  select count(*) into v_audit_count_after from public.audit_events;
+  if v_recovery_count_after <> v_recovery_count or v_audit_count_after <> v_audit_count then
+    raise exception 'recovery tombstone changed recovery or audit history';
+  end if;
   if not exists(select 1 from pg_class where oid='private.mfa_recovery_requests'::regclass) then
     raise exception 'historical recovery table was removed';
   end if;

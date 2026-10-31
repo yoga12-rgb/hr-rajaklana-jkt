@@ -34,6 +34,11 @@ type RequirementPayload = {
   p_effective_until: string | null;
   p_reason: string;
 };
+type CategoryPayload = { p_id: string | null; p_expected_revision: number | null; p_idempotency_key: string; p_code: string; p_name: string; p_active: boolean };
+
+function browserAcceptance(testInfo: { annotations: { type: string; description?: string }[] }, ...contracts: string[]) {
+  for (const contract of contracts) testInfo.annotations.push({ type: 'browser-acceptance', description: `live-mock|${contract}` });
+}
 
 function jwt(payload: Record<string, unknown>) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -54,6 +59,16 @@ function localDate() {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit'
   }).format(new Date());
+}
+
+async function rotateAppSession(page: Page) {
+  return page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    const { supabase } = await import(/* @vite-ignore */ modulePath);
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session) throw new Error(`Supabase SDK refresh failed: ${error?.name ?? 'missing session'}`);
+    return { userId: data.session.user.id, accessToken: data.session.access_token };
+  });
 }
 
 async function signIn(page: Page, destination: string) {
@@ -79,14 +94,20 @@ async function openSupervisorMock(page: Page) {
   const category = { id: categoryId, code: 'perangkat_kasir', name: 'Perangkat kasir', active: true, created_by: adminId, created_at: now, updated_at: now };
   const issueRequests: IssuePayload[] = [];
   const requirementRequests: RequirementPayload[] = [];
+  const categoryRequests: CategoryPayload[] = [];
   const issueReceipts = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
   const requirementReceipts = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
+  const categoryReceipts = new Map<string, { fingerprint: string; result: Record<string, unknown> }>();
   const issues: Record<string, unknown>[] = [];
   const requirements: Record<string, unknown>[] = [];
+  const categories: Record<string, unknown>[] = [category];
   let issueCommits = 0;
   let requirementCommits = 0;
+  let categoryCommits = 0;
+  let tokenRefreshCount = 0;
   let loseIssueResponse = true;
   let loseRequirementResponse = true;
+  let loseCategoryResponse = true;
 
   const tables: Record<string, Record<string, unknown>[]> = {
     employees: [
@@ -110,15 +131,37 @@ async function openSupervisorMock(page: Page) {
     const path = new URL(route.request().url()).pathname;
     if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
     if (path === '/auth/v1/user') { await respond(route, authUser); return; }
-    if (path === '/auth/v1/token') { await respond(route, { ...session, expires_at: Math.floor(Date.now() / 1000) + 3600 }); return; }
+    if (path === '/auth/v1/token') {
+      tokenRefreshCount += 1;
+      const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+      await respond(route, { ...session, access_token: jwt({ sub: adminAuthId, aud: 'authenticated', role: 'authenticated', aal: 'aal2', exp: expiresAt, rotation: tokenRefreshCount }),
+        refresh_token: `simulated-supervisor-live-mock-refresh-${tokenRefreshCount}`, expires_at: expiresAt }); return;
+    }
     if (path === '/rest/v1/rpc/auth_access_context') { await respond(route, { employee_id: adminId, requires_mfa: false, current_level: 'aal2', allowed: true, reason: null }); return; }
 
     if (path === '/rest/v1/rpc/employee_directory') { await respond(route, []); return; }
     if (path === '/rest/v1/rpc/leave_balance') { await respond(route, { remaining: 12, expired: false }); return; }
     if (path === '/rest/v1/rpc/spv_followup_page') { await respond(route, { items: [], total: 0, has_more: false, next_cursor: null, as_of: now }); return; }
-    if (path === '/rest/v1/rpc/supervisor_issue_category_page') { await respond(route, { items: [category] }); return; }
+    if (path === '/rest/v1/rpc/supervisor_issue_category_page') { await respond(route, { items: structuredClone(categories) }); return; }
     if (path === '/rest/v1/rpc/supervisor_operation_configuration_page') {
-      await respond(route, { categories: [category], routes: [], capabilities: [], as_of: now }); return;
+      await respond(route, { categories: structuredClone(categories), routes: [], capabilities: [], as_of: now }); return;
+    }
+    if (path === '/rest/v1/rpc/supervisor_issue_category_save_v2') {
+      const payload = route.request().postDataJSON() as CategoryPayload;
+      categoryRequests.push(structuredClone(payload));
+      const fingerprint = JSON.stringify(payload);
+      const previous = categoryReceipts.get(payload.p_idempotency_key);
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) { await respond(route, { code: 'P0001', message: 'Kunci konfigurasi sudah dipakai untuk perubahan lain' }, 400); return; }
+        await respond(route, structuredClone(previous.result)); return;
+      }
+      categoryCommits += 1;
+      const result = { id: `category-${categoryCommits}`, code: payload.p_code, name: payload.p_name, active: payload.p_active,
+        created_by: adminId, revision: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      categories.push(result);
+      categoryReceipts.set(payload.p_idempotency_key, { fingerprint, result: structuredClone(result) });
+      if (loseCategoryResponse) { loseCategoryResponse = false; await route.abort('internetdisconnected'); return; }
+      await respond(route, structuredClone(result)); return;
     }
     if (path === '/rest/v1/rpc/outlet_issue_page') {
       await respond(route, { items: structuredClone(issues), total: issues.length, has_more: false, next_cursor: null, as_of: new Date().toISOString(), categories: [category] }); return;
@@ -186,8 +229,10 @@ async function openSupervisorMock(page: Page) {
   return {
     issueRequests,
     requirementRequests,
+    categoryRequests,
     issueCommits: () => issueCommits,
     requirementCommits: () => requirementCommits,
+    categoryCommits: () => categoryCommits,
     requirements,
     bumpRequirement() {
       const row = requirements[0];
@@ -201,7 +246,8 @@ async function openSupervisorMock(page: Page) {
 
 test.skip(!process.env.E2E_LIVE_SUPABASE_MOCK, 'Requires the isolated Vite server configured for the Supabase mock.');
 
-test('Operations replays one committed issue after response loss and a reload', async ({ page }) => {
+test('Operations replays one committed issue after response loss and a reload', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR10|issue retry after committed response loss and reload preserves exact idempotency key and payload');
   const mock = await openSupervisorMock(page);
   await signIn(page, '/operations');
   await expect(page.getByRole('heading', { name: 'Operasi outlet', exact: true })).toBeVisible();
@@ -230,7 +276,8 @@ test('Operations replays one committed issue after response loss and a reload', 
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.includes(':operations:') && key.includes(':issue-submit:')))).toEqual([]);
 });
 
-test('Planning restores an ambiguous interval request, retries its exact body, then preserves an edit during an external refresh conflict', async ({ page }) => {
+test('Planning restores an ambiguous interval request, retries its exact body, then preserves an edit during an external refresh conflict', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR11-PLAN|planning retry after token rotation and reload preserves original key/body; external revision conflict keeps newer local edit');
   const mock = await openSupervisorMock(page);
   await signIn(page, '/planning');
   await expect(page.getByRole('heading', { name: 'Perencanaan & ringkasan', exact: true })).toBeVisible();
@@ -242,6 +289,13 @@ test('Planning restores an ambiguous interval request, retries its exact body, t
   expect(mock.requirementCommits()).toBe(1);
   expect(mock.requirementRequests).toHaveLength(1);
   const original = structuredClone(mock.requirementRequests[0]);
+  const previousToken = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    return (await (await import(/* @vite-ignore */ modulePath)).supabase.auth.getSession()).data.session?.access_token;
+  });
+  const rotated = await rotateAppSession(page);
+  expect(rotated.userId).toBe(adminAuthId);
+  expect(rotated.accessToken).not.toBe(previousToken);
 
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Perencanaan & ringkasan', exact: true })).toBeVisible();
@@ -263,4 +317,39 @@ test('Planning restores an ambiguous interval request, retries its exact body, t
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('Kebutuhan interval berubah di sesi lain', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Minimum kasir')).toHaveValue('7');
+});
+
+test('Configuration restores and retries the original category request after token rotation and reload', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR11-CFG|configuration category retry after token rotation and reload preserves original key/payload and commits once');
+  const mock = await openSupervisorMock(page);
+  await signIn(page, '/operations');
+  const nav = page.getByRole('navigation', { name: 'Modul operasi' });
+  await nav.getByRole('button', { name: /Konfigurasi/ }).click();
+  await expect(page.getByRole('heading', { name: 'Tambah kategori kendala', exact: true })).toBeVisible();
+  await page.getByLabel('Kode kategori', { exact: true }).fill('alat_pending');
+  await page.getByLabel('Nama kategori', { exact: true }).fill('Perangkat tersimpan setelah respons hilang');
+  await page.getByRole('button', { name: 'Simpan kategori', exact: true }).click();
+  await expect(page.getByText('Penyimpanan kategori belum mempunyai hasil pasti', { exact: true })).toBeVisible();
+  expect(mock.categoryCommits()).toBe(1);
+  expect(mock.categoryRequests).toHaveLength(1);
+  const original = structuredClone(mock.categoryRequests[0]);
+  const previousToken = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    return (await (await import(/* @vite-ignore */ modulePath)).supabase.auth.getSession()).data.session?.access_token;
+  });
+  const rotated = await rotateAppSession(page);
+  expect(rotated.userId).toBe(adminAuthId);
+  expect(rotated.accessToken).not.toBe(previousToken);
+
+  await page.reload();
+  const restoredNav = page.getByRole('navigation', { name: 'Modul operasi' });
+  await restoredNav.getByRole('button', { name: /Konfigurasi/ }).click();
+  await expect(page.getByRole('heading', { name: 'Tambah kategori kendala', exact: true })).toBeVisible();
+  await expect(page.getByText('Penyimpanan kategori belum mempunyai hasil pasti', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Coba lagi kategori yang sama', exact: true }).click();
+  await expect(page.getByText('alat_pending · revisi 1', { exact: true })).toBeVisible();
+  expect(mock.categoryCommits()).toBe(1);
+  expect(mock.categoryRequests).toHaveLength(2);
+  expect(mock.categoryRequests[1]).toEqual(original);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.includes(':operations:') && key.includes('config-category')))).toEqual([]);
 });

@@ -7,6 +7,10 @@ const cashierId = 'cashier-test';
 const outletId = 'outlet-test';
 type RosterRpcPayload = { p_idempotency_key: string; p_week_start: string; p_changes: Record<string, unknown>[] };
 
+function browserAcceptance(testInfo: { annotations: { type: string; description?: string }[] }, ...contracts: string[]) {
+  for (const contract of contracts) testInfo.annotations.push({ type: 'browser-acceptance', description: `live-mock|${contract}` });
+}
+
 function jwt(payload: Record<string, unknown>) {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode(payload)}.simulated-signature`;
@@ -32,6 +36,16 @@ async function respond(route: Route, data: unknown, status = 200) {
   });
 }
 
+async function rotateAppSession(page: Page) {
+  return page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    const { supabase } = await import(/* @vite-ignore */ modulePath);
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session) throw new Error(`Supabase SDK refresh failed: ${error?.name ?? 'missing session'}`);
+    return { userId: data.session.user.id, accessToken: data.session.access_token };
+  });
+}
+
 async function openRosterMock(page: Page, loseResponse = false, failReconciliationRead = false, commitBeforeLoss = true, options: { weekNotification?: boolean } = {}) {
   const weekStart = nextMonday();
   const followingWeek = new Date(new Date(`${weekStart}T12:00:00Z`).getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
@@ -49,6 +63,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   let failRefreshAfterBaselineConflict = false;
   let heldNextBatch: { received: () => void; gate: Promise<void>; outcome: 'success' | 'baseline-conflict' } | null = null;
   let heldNextEmployeeRead: { received: () => void; gate: Promise<void> } | null = null;
+  let tokenRefreshCount = 0;
   const now = new Date().toISOString();
   const authUser = {
     id: adminAuthId, aud: 'authenticated', role: 'authenticated', email: 'admin@example.test',
@@ -82,7 +97,14 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     const path = url.pathname;
     if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
     if (path === '/auth/v1/user') { await respond(route, authUser); return; }
-    if (path === '/auth/v1/token') { await respond(route, { ...session, expires_at: Math.floor(Date.now() / 1000) + 3600 }); return; }
+    if (path === '/auth/v1/token') {
+      tokenRefreshCount += 1;
+      const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+      await respond(route, { ...session,
+        access_token: jwt({ sub: adminAuthId, aud: 'authenticated', role: 'authenticated', aal: 'aal2', exp: expiresAt, rotation: tokenRefreshCount }),
+        refresh_token: `simulated-refresh-token-${tokenRefreshCount}`, expires_at: expiresAt });
+      return;
+    }
     if (path === '/rest/v1/rpc/auth_access_context') { await respond(route, { employee_id: adminId, requires_mfa: false, current_level: 'aal2', allowed: true, reason: null }); return; }
     if (path === '/rest/v1/rpc/cashier_roster_batch_save') {
       const payload = route.request().postDataJSON() as RosterRpcPayload;
@@ -275,7 +297,8 @@ test('live UI reconciles a committed weekly roster when the save response is los
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('rajaklana-hr-roster-draft-v1:')))).toEqual([]);
 });
 
-test('live UI persists and replays the original payload/key after reload when reconciliation failed', async ({ page }) => {
+test('live UI persists and replays the original payload/key after rotation and reload when reconciliation failed', async ({ page }, testInfo) => {
+  browserAcceptance(testInfo, 'BR09|ambiguous roster receipt keeps original baseline/key/body through token rotation, reload, and retry');
   const mock = await openRosterMock(page, true, true);
   await mock.shift.selectOption('morning');
   await page.getByLabel('Alasan perubahan batch').fill('Commit berhasil tetapi respons dan refresh hilang');
@@ -285,6 +308,13 @@ test('live UI persists and replays the original payload/key after reload when re
   expect(mock.getCommitCount()).toBe(1);
   expect(mock.rpcPayloads).toHaveLength(1);
   const originalRequest = structuredClone(mock.rpcPayloads[0]);
+  const originalSession = await page.evaluate(async () => {
+    const modulePath: string = '/src/lib/state/client.ts';
+    return (await (await import(/* @vite-ignore */ modulePath)).supabase.auth.getSession()).data.session?.access_token;
+  });
+  const rotated = await rotateAppSession(page);
+  expect(rotated.userId).toBe(adminAuthId);
+  expect(rotated.accessToken).not.toBe(originalSession);
   expect(mock.savedAssignments).toHaveLength(1);
 
   await page.reload();

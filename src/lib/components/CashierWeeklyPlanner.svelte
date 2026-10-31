@@ -282,7 +282,25 @@
     }
     finally { if (activeSave === operation) { saving = false; activeSave = null; } }
   }
-  async function retryPendingAttempt() { await save(); }
+  async function retryPendingAttempt() {
+    // A previous transient read error intentionally leaves the UI mounted but
+    // keeps mutations behind the private session/permission gate. Revalidate
+    // the current account and latest data before replaying the persisted
+    // original request; never infer authorization from the retained snapshot.
+    const before = get(app);
+    if (before.error || before.sessionValidating) {
+      const accountId = before.user?.id;
+      if (!accountId) return;
+      await actions.refresh();
+      const refreshed = get(app);
+      if (refreshed.user?.id !== accountId || refreshed.error || refreshed.sessionValidating) {
+        failed = true;
+        message = 'Sesi atau data belum berhasil diverifikasi. Percobaan lama tetap tersimpan; coba lagi setelah koneksi pulih.';
+        return;
+      }
+    }
+    await save();
+  }
   function selectWeek(nextWeek: string) {
     if (!persistDraft()) return;
     weekStart = nextWeek;
