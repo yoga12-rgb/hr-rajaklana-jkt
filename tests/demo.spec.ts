@@ -155,7 +155,8 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
 
     await page.goto('/assignments');
     await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
-    const cashierShift = page.getByLabel(/Shift Sari Lestari,/).nth(1);
+    // On Sunday only today remains editable in the current week's grid.
+    const cashierShift = page.getByLabel(/Shift Sari Lestari,/).first();
     await cashierShift.selectOption('morning');
     const cashierOutlet = page.getByLabel(/Outlet Sari Lestari,/).first();
     await expect(cashierOutlet).toBeVisible();
