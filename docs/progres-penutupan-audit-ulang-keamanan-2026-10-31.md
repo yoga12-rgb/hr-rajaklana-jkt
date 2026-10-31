@@ -1,7 +1,7 @@
 # Progres penutupan audit ulang keamanan — 31 Oktober 2026
 
-Status: **implementasi lokal dan gate Windows PASS; release Preview, Ubuntu CI,
-workflow hosted, serta perangkat nyata masih OPEN/DEFERRED**. Dokumen ini adalah
+Status: **implementasi lokal, Windows/Linux CI, dan deployment Preview PASS;
+workflow akun hosted OPEN, perangkat nyata DEFERRED**. Dokumen ini adalah
 catatan kerja untuk panduan utama. Completeness machine-readable berada di
 [`evidence-sar31-acceptance-2026-10-31.json`](evidence-sar31-acceptance-2026-10-31.json).
 
@@ -59,9 +59,9 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
 | SAR31-05 | PASS_LOCAL | Storage positive-negative-restored dengan row-set/evidence preservation |
 | SAR31-06 | PASS_LOCAL | populated25→26 full snapshot sebelum tujuh replay; 18→26, 24→26 dan historical12/13→26 tetap fixture terpisah; batas21/preflight diverifikasi lokal |
 | SAR31-07 | PASS_LOCAL | Live-mock26 lulus seluruh16 browser contracts; demo-PWA22 lulus dua acceptance PWA; checker negatif lulus |
-| SAR31-08 | PASS_LOCAL/WINDOWS; LINUX OPEN | Check, unit, database, historical legacy fixture, readiness, build, audit, live-mock, PWA dan diff check lulus; CI Ubuntu belum berjalan |
-| SAR31-09 | PARTIAL | Supabase Preview identitas/history dan SQL probe final read-only lulus; deployment Preview dan workflow akun hosted menunggu commit/push serta assertion hosted |
-| SAR31-10 | PARTIAL | Review manual menemukan dan menutup path traversal di operator; diff bersih whitespace dan tidak mengubah migration; review/close menunggu CI/Preview dan workflow hosted |
+| SAR31-08 | PASS (Windows + Ubuntu) | Check, unit, database, historical legacy fixture, readiness, build, audit, live-mock, PWA, diff check dan tiga job GitHub Ubuntu lulus pada SHA `7958fd46…` |
+| SAR31-09 | PASS (CI/Preview); workflow hosted OPEN | Commit `7958fd46d0c231a1f51e04fb872f3dca71b550dc` ada pada `codex/preview`; GitHub run41205825954 sukses di tiga job; Vercel deployment exact SHA Ready dan tiga route/aset smoke200 |
+| SAR31-10 | PASS_LOCAL/CI/Preview; workflow hosted OPEN | Manual review menutup path traversal key, CI tiga job pass, Preview source SHA dan smoke cocok; belum ada akun browser untuk assertion real workflow |
 
 ## Gate dan hasil aktual
 
@@ -94,6 +94,23 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
   `deepmerge` melalui dependency Svelte, tanpa moderate/high/critical; tidak ada
   `--force`/mass update.
 - `git diff --check` — PASS; belum ada migration file yang berubah.
+- GitHub Actions run [`41205825954`](https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41205825954)
+  untuk SHA `7958fd46d0c231a1f51e04fb872f3dca71b550dc` — PASS: `Check, test,
+  database, build`, `Browser live-mock`, dan `Browser demo-pwa` semuanya sukses
+  pada Ubuntu. Ini menutup gate Linux subprocess/CI untuk source SHA tersebut.
+- Commit source `7958fd46d0c231a1f51e04fb872f3dca71b550dc` telah dipush hanya ke
+  `codex/preview`; tidak ada Production/main push.
+- Vercel project ID `prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb`, team
+  `team_S1Sn08iaksD0GQF4kk49kTkH`; deployment
+  `dpl_DVh5cwhuHDfmxTJ6sdgEuKHV5kwj` di
+  [`hr-rajaklana-j6ed3b8s0-hr-rajaklana.vercel.app`](https://hr-rajaklana-j6ed3b8s0-hr-rajaklana.vercel.app)
+  berstatus READY. Metadata GitHub SHA/ref adalah `7958fd46…` / `codex/preview`,
+  dengan branch alias `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`.
+  Field Vercel `target` bernilai `null`; target tidak disimpulkan dari READY saja.
+- Smoke memakai `vercel curl` autentik untuk exact deployment: `/login` HTTP200
+  dan membawa SPA hydration entry, `/manifest.webmanifest` HTTP200 dan JSON valid,
+  `/service-worker.js` HTTP200 dengan body nonkosong. Tidak ada proteksi SSO yang
+  dimatikan. Artifact ada di `.codex-test-tmp/sar31/hosted-smoke/`.
 - Fingerprint file source/test final: application `a3441083e10d78529f3852eb49cc15dc945ec415d9901fc28c45327c3d55a41d`,
   cleanup `14bfd9719146731419ed222aa1f788558c594cf6193a0b70923b27b8dbacf9d0`,
   database/probe `0f03a44ca900f007a46ef63d1af29cdbf942423a578e9e780d9f8240d716c4a6`,
@@ -126,8 +143,8 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
 | --- | --- |
 | Implementasi lokal | PASS pada gate di atas, termasuk perbaikan retry dan validasi key cleanup |
 | Supabase Preview deployment/schema | Identitas serta 26 ordered migrations terverifikasi; final probe SELECT/DO dalam `BEGIN READ ONLY` selesai tanpa error dan tanpa hasil row. Tidak ada deployment/migration aplikasi |
-| Vercel Preview deployment | OPEN sampai commit/push `codex/preview`, verifikasi source SHA dan smoke URL |
-| GitHub CI | OPEN sampai workflow Ubuntu selesai; deployment `Ready` tidak akan dipakai sebagai bukti CI atau workflow |
+| Vercel Preview deployment | PASS untuk source SHA `7958fd46…`; Git branch ref/alias dan route/aset smoke telah diperiksa. Vercel MCP list mengembalikan403, sehingga fallback CLI resmi dipakai pada project/team ID yang sudah diverifikasi |
+| GitHub CI | PASS untuk SHA `7958fd46…`; ketiga Ubuntu job sukses. Tidak menyimpulkan workflow akun hosted dari CI |
 | Hosted user workflow | OPEN; belum menjalankan login/session/role real pada Preview. Perlu sesi pengguna melalui UI resmi setelah pekerjaan mandiri selesai |
 | Cleanup Auth factors | Hanya tool/test sintetis. Tidak ada hosted adapter, enrollment, delete atau cleanup faktor nyata |
 | Managed `pg_net` | Local operator proof pass; managed owner sah belum tersedia/terbukti, jadi handoff hosted OPEN. Tidak ada owner/membership/grant mutation |
@@ -144,9 +161,10 @@ fixture disposable terpisah. Tidak ada applied migration yang diedit, upgrade/
 reset/deletion data hosted, repair history, Auth factor nyata, service-role
 replacement untuk tes RLS, atau perubahan Production/main.
 
-Keputusan berikutnya hanya setelah local gate lengkap: commit/push perubahan task
-dan dua dokumen evidence/progress ke `codex/preview`; lalu catat SHA commit, GitHub
-CI per job, Vercel deployment source SHA/target/status, dan smoke. Jika hosted
-workflow memerlukan sesi Admin HR, minta interaksi aplikasi setelah seluruh langkah
-mandiri selesai. Jangan meminta password, token, OTP, seed, QR, atau secret melalui
-chat.
+Semua pekerjaan mandiri yang tersedia sudah selesai: code commit dipush ke
+`codex/preview`, CI Ubuntu sukses, source SHA Preview Ready dan smoke route/aset
+lulus. Satu acceptance hosted yang tersisa memerlukan login Admin HR pada Preview;
+browser sesi aplikasi tidak tersedia dalam workspace ini. Setelah pengguna login
+melalui halaman resmi, validasi data account/role dan dashboard tanpa mengirim
+perubahan data. Jangan meminta password, token, OTP, seed, QR, atau secret melalui
+chat. PVR-02 tetap terpisah dan DEFERRED.

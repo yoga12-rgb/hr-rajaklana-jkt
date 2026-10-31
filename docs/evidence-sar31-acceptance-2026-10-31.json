@@ -31,6 +31,39 @@
     "allChangedCodeAndTestFilesSha256": "d94be977ac9656183da38f8985258c8bca8b05f52d1c09c3f2adf2117c7aa769",
     "note": "SHA-256 is computed over sorted relative path + NUL + exact file bytes + NUL for the named files. It fingerprints the tested worktree before the documentation/release commit."
   },
+  "releaseEvidence": {
+    "codeCommit": "7958fd46d0c231a1f51e04fb872f3dca71b550dc",
+    "branch": "codex/preview",
+    "pushed": true,
+    "githubActions": {
+      "runId": 41205825954,
+      "url": "https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41205825954",
+      "headSha": "7958fd46d0c231a1f51e04fb872f3dca71b550dc",
+      "conclusion": "success",
+      "jobs": [
+        { "name": "Check, test, database, build", "conclusion": "success" },
+        { "name": "Browser live-mock", "conclusion": "success" },
+        { "name": "Browser demo-pwa", "conclusion": "success" }
+      ]
+    },
+    "vercelPreview": {
+      "projectId": "prj_gI60oWK0qyBOl5J4RB9yRw4mWhGb",
+      "teamId": "team_S1Sn08iaksD0GQF4kk49kTkH",
+      "deploymentId": "dpl_DVh5cwhuHDfmxTJ6sdgEuKHV5kwj",
+      "url": "https://hr-rajaklana-j6ed3b8s0-hr-rajaklana.vercel.app",
+      "state": "READY",
+      "githubCommitSha": "7958fd46d0c231a1f51e04fb872f3dca71b550dc",
+      "githubCommitRef": "codex/preview",
+      "branchAlias": "hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app",
+      "targetField": null,
+      "environmentEvidence": "Vercel CLI list was filtered to preview; exact Git ref and branch alias confirm Preview. API target=null is recorded as-is, not treated as production or as a pass by itself.",
+      "smoke": [
+        { "path": "/login", "status": 200, "assertion": "SPA hydration entry present; not a Vercel protection page", "artifact": ".codex-test-tmp/sar31/hosted-smoke/login.html" },
+        { "path": "/manifest.webmanifest", "status": 200, "assertion": "manifest parses and contains app name/start_url", "artifact": ".codex-test-tmp/sar31/hosted-smoke/manifest.json" },
+        { "path": "/service-worker.js", "status": 200, "assertion": "service worker response is nonempty and not a protection page", "artifact": ".codex-test-tmp/sar31/hosted-smoke/service-worker.js" }
+      ]
+    }
+  },
   "acceptanceCompleteness": {
     "auditFindingsExpected": 10,
     "auditFindingsRecorded": 10,
@@ -219,8 +252,8 @@
     "demoPwa": { "status": "PASS", "actual": "22 passed, skipped=0, flaky=0, unexpected=0", "report": ".codex-test-tmp/sar31/run-11/reports/demo-pwa.json" },
     "diffCheck": { "status": "PASS", "actual": "git diff --check clean; no migration file changed" },
     "dependencyAudit": { "status": "PASS_WITH_LOW_FINDINGS", "actual": "npm audit --audit-level=moderate exited 0; four low findings in deepmerge via Svelte dependency chain, no moderate/high/critical; no forced updates" },
-    "linuxSubprocessAndCI": { "status": "OPEN", "actual": "Ubuntu workflow must complete after pushing codex/preview" },
-    "vercelPreviewDeployment": { "status": "OPEN", "actual": "not released yet" },
+    "linuxSubprocessAndCI": { "status": "PASS", "actual": "GitHub Actions run 41205825954 on exact SHA 7958fd46d0c231a1f51e04fb872f3dca71b550dc: all three Ubuntu jobs succeeded, including browser live-mock and demo-pwa" },
+    "vercelPreviewDeployment": { "status": "PASS", "actual": "Vercel deployment dpl_DVh5cwhuHDfmxTJ6sdgEuKHV5kwj READY for exact Preview ref codex/preview/SHA 7958fd46; /login, manifest and service worker each returned HTTP 200 via authenticated Vercel curl" },
     "hostedUserWorkflow": { "status": "OPEN", "actual": "no real account operation run in this task" },
     "managedPgNet": { "status": "OPEN", "actual": "local operator capability only; managed owner/handoff required" },
     "pvr02Device": { "status": "DEFERRED", "actual": "no real iPhone/PWA/offline/device verification" }
