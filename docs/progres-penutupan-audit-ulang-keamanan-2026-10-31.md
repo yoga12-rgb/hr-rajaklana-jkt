@@ -1,7 +1,7 @@
 # Progres penutupan audit ulang keamanan — 31 Oktober 2026
 
-Status: **implementasi lokal, Windows/Linux CI, dan deployment Preview PASS;
-workflow akun hosted OPEN, perangkat nyata DEFERRED**. Dokumen ini adalah
+Status: **implementasi lokal, Windows/Linux CI, deployment Preview, dan login/
+Dashboard hosted terkonfirmasi PASS; perangkat nyata DEFERRED**. Dokumen ini adalah
 catatan kerja untuk panduan utama. Completeness machine-readable berada di
 [`evidence-sar31-acceptance-2026-10-31.json`](evidence-sar31-acceptance-2026-10-31.json).
 
@@ -36,15 +36,15 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
 
 | Acceptance | Sumber/test | Perintah/env | Expected → actual | Source SHA256 | Artifact/status | Dampak remote/residual |
 | --- | --- | --- | --- | --- | --- | --- |
-| AR31-01 | `realtime-recovery.test.ts`; browser `live-supervisor-followup.spec.ts` BR08 | `npm test -- --maxWorkers=1`; live-mock Windows | UI/form tetap terpasang pada transient 503; mutasi ditolak sampai context terbaru → unit + browser pass, write counter 0 ketika gate tertutup, role cabut tercermin sesudah retry | app `a3441083…d55a41d` | `run-10/reports/live.json`; PASS_LOCAL | Linux CI dan workflow akun hosted OPEN |
-| AR31-02 | `authenticator-removal.mjs`; verifier exact helper/literal/mutation matrix | `npm run test:database`; PGlite disposable | Uppercase/literal/whitespace/negasi/decoy tidak lolos → mutation aktif ditolak, baseline restore, aggregate pass | database `0f03a44c…716c4a6` | test+probe; PASS_LOCAL | Hosted verifier read-only saja; Linux CI OPEN |
-| AR31-03 | `authenticator-removal.mjs`; dependency `has_role(text)`, metadata/ACL, non-HR controls | `npm run test:database`; PGlite disposable | Always-true/filter/helper route ditolak → probe menolak mutation dan memulihkan fixture | database `0f03a44c…716c4a6` | test+probe; PASS_LOCAL | Tanpa hosted mutation; CI OPEN |
-| AR31-04 | `cleanup-auth-factors.subprocess.test.mjs` | `npm run test:database` → `test:auth-cleanup`; native Windows | Dua child writer pada target sama hanya memberi satu lease → subprocess pass, loser tidak melakukan provider I/O | cleanup `14bfd971…acf9d0` | subprocess test; PASS_WINDOWS | Linux concurrency menunggu CI; NFS/distributed lock tidak didukung |
-| AR31-05 | `cleanup-auth-factors.test.mjs` | `npm run test:database`; native Windows/local store | Project/user/key/ordered plan/CAS terikat; drift/truncation/path tidak mengubah receipt → pass; malformed traversal key ditolak sebelum lock/registry/provider I/O | cleanup `14bfd971…acf9d0` | operator test; PASS_LOCAL | Tidak ada hosted cleanup adapter |
-| AR31-06 | cleanup unit + subprocess tests | `npm run test:database`; provider sintetis | partial/list/delete/persist/crash/retry mempertahankan intent/observations dan ID/key asli → pass; ambiguity tetap unknown/already_absent saat observasi | cleanup `14bfd971…acf9d0` | operator test; PASS_WINDOWS | Tidak membersihkan faktor nyata; Linux CI OPEN |
-| AR31-07 | `authenticator-removal.mjs` Storage ownership/session cases | `npm run test:database`; fixture disposable | Positif→negatif→restored pada user/session sama dan objek tersimpan sesuai ID → pass, evidence referensi tidak berubah | database `0f03a44c…716c4a6` | DB test; PASS_LOCAL | Hosted Auth/Storage workflow belum dilakukan |
+| AR31-01 | `realtime-recovery.test.ts`; browser `live-supervisor-followup.spec.ts` BR08 | `npm test -- --maxWorkers=1`; live-mock Windows | UI/form tetap terpasang pada transient 503; mutasi ditolak sampai context terbaru → unit + browser pass, write counter 0 ketika gate tertutup, role cabut tercermin sesudah retry | app `a3441083…d55a41d` | `run-10/reports/live.json`; PASS_LOCAL | Ubuntu CI lulus; login/Dashboard Preview dikonfirmasi pengguna. Role revocation tetap teruji lokal, bukan pada akun hosted |
+| AR31-02 | `authenticator-removal.mjs`; verifier exact helper/literal/mutation matrix | `npm run test:database`; PGlite disposable | Uppercase/literal/whitespace/negasi/decoy tidak lolos → mutation aktif ditolak, baseline restore, aggregate pass | database `0f03a44c…716c4a6` | test+probe; PASS_LOCAL | Hosted verifier read-only saja; Ubuntu CI lulus |
+| AR31-03 | `authenticator-removal.mjs`; dependency `has_role(text)`, metadata/ACL, non-HR controls | `npm run test:database`; PGlite disposable | Always-true/filter/helper route ditolak → probe menolak mutation dan memulihkan fixture | database `0f03a44c…716c4a6` | test+probe; PASS_LOCAL | Tanpa hosted mutation; Ubuntu CI lulus |
+| AR31-04 | `cleanup-auth-factors.subprocess.test.mjs` | `npm run test:database` → `test:auth-cleanup`; native Windows | Dua child writer pada target sama hanya memberi satu lease → subprocess pass, loser tidak melakukan provider I/O | cleanup `14bfd971…acf9d0` | subprocess test; PASS_WINDOWS | Ubuntu Linux subprocess gate lulus; NFS/distributed lock tidak didukung |
+| AR31-05 | `cleanup-auth-factors.test.mjs` | `npm run test:database`; native Windows/local store | Project/user/key/ordered plan/CAS terikat; drift/truncation/path tidak mengubah receipt → pass; malformed traversal key ditolak sebelum lock/registry/provider I/O | cleanup `14bfd971…acf9d0` | operator test; PASS_LOCAL | Ubuntu Linux path/locking gate lulus; tidak ada hosted cleanup adapter |
+| AR31-06 | cleanup unit + subprocess tests | `npm run test:database`; provider sintetis | partial/list/delete/persist/crash/retry mempertahankan intent/observations dan ID/key asli → pass; ambiguity tetap unknown/already_absent saat observasi | cleanup `14bfd971…acf9d0` | operator test; PASS_WINDOWS | Tidak membersihkan faktor nyata; Ubuntu CI lulus |
+| AR31-07 | `authenticator-removal.mjs` Storage ownership/session cases | `npm run test:database`; fixture disposable | Positif→negatif→restored pada user/session sama dan objek tersimpan sesuai ID → pass, evidence referensi tidak berubah | database `0f03a44c…716c4a6` | DB test; PASS_LOCAL | Login/Dashboard hosted terkonfirmasi; hosted Storage policy mutation tidak dijalankan |
 | AR31-08 | `followup-upgrade-compatibility.mjs` | `npm run test:database`; populated25→26 fixture | Snapshot tepat sebelum tujuh RPC replay; original key/payload/result dan seluruh bisnis/audit/receipt sama → pass; changed payload dan mutant side effect kedua ditolak | database `0f03a44c…716c4a6` | upgrade test; PASS_LOCAL | Tidak menjalankan replay/upgrade di hosted Preview |
-| AR31-09 | Browser BR01–BR11; `check-browser-report.mjs`; `demo.spec.ts` | live-mock 26; demo-PWA 22; checker | SDK form/kamera/Realtime/rotasi/account/replay dan PWA shell diuji → semua contract pass, 0 skipped/flaky/unexpected | app `a3441083…d55a41d`; checker ada di hash database | `run-10/reports/live.json`, `run-11/reports/demo-pwa.json`; PASS_LOCAL | Ubuntu CI, login hosted dan iPhone/PWA masih OPEN/DEFERRED |
+| AR31-09 | Browser BR01–BR11; `check-browser-report.mjs`; `demo.spec.ts` | live-mock 26; demo-PWA 22; checker | SDK form/kamera/Realtime/rotasi/account/replay dan PWA shell diuji → semua contract pass, 0 skipped/flaky/unexpected | app `a3441083…d55a41d`; checker ada di hash database | `run-10/reports/live.json`, `run-11/reports/demo-pwa.json`; PASS_LOCAL | Ubuntu CI dan login/Dashboard hosted lulus; iPhone/PWA nyata tetap DEFERRED |
 | AR31-10 | `authenticator-removal.mjs`; `live-mfa-recovery.spec.ts` | database aggregate + live-mock | Dua recovery RPC tombstone, metadata/ACL, SQLSTATE 0A000/no mutation, route HTTP410 → pass; tidak ada MFA API | database `0f03a44c…716c4a6` | `run-10/reports/live.json`; PASS_LOCAL | Tanpa faktor Auth nyata |
 
 ## Checkpoint berurutan
@@ -60,8 +60,8 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
 | SAR31-06 | PASS_LOCAL | populated25→26 full snapshot sebelum tujuh replay; 18→26, 24→26 dan historical12/13→26 tetap fixture terpisah; batas21/preflight diverifikasi lokal |
 | SAR31-07 | PASS_LOCAL | Live-mock26 lulus seluruh16 browser contracts; demo-PWA22 lulus dua acceptance PWA; checker negatif lulus |
 | SAR31-08 | PASS (Windows + Ubuntu) | Check, unit, database, historical legacy fixture, readiness, build, audit, live-mock, PWA, diff check dan tiga job GitHub Ubuntu lulus pada SHA `7958fd46…` |
-| SAR31-09 | PASS (CI/Preview); workflow hosted OPEN | Commit `7958fd46d0c231a1f51e04fb872f3dca71b550dc` ada pada `codex/preview`; GitHub run41205825954 sukses di tiga job; Vercel deployment exact SHA Ready dan tiga route/aset smoke200 |
-| SAR31-10 | PASS_LOCAL/CI/Preview; workflow hosted OPEN | Manual review menutup path traversal key, CI tiga job pass, Preview source SHA dan smoke cocok; belum ada akun browser untuk assertion real workflow |
+| SAR31-09 | PASS (CI/Preview/hosted login) | Commit `7958fd46d0c231a1f51e04fb872f3dca71b550dc` ada pada `codex/preview`; GitHub run41205825954 sukses di tiga job; Vercel deployment exact SHA Ready dan tiga route/aset smoke200; pengguna mengonfirmasi Dashboard terbuka setelah login |
+| SAR31-10 | PASS_LOCAL/CI/Preview/hosted login | Manual review menutup path traversal key, CI tiga job pass, Preview source SHA dan smoke cocok; pengguna mengonfirmasi login Preview berhasil dan Dashboard terbuka |
 
 ## Gate dan hasil aktual
 
@@ -145,7 +145,7 @@ oleh test file dan output perintah; tidak ada data/receipt hosted sebagai fixtur
 | Supabase Preview deployment/schema | Identitas serta 26 ordered migrations terverifikasi; final probe SELECT/DO dalam `BEGIN READ ONLY` selesai tanpa error dan tanpa hasil row. Tidak ada deployment/migration aplikasi |
 | Vercel Preview deployment | PASS untuk source SHA `7958fd46…`; Git branch ref/alias dan route/aset smoke telah diperiksa. Vercel MCP list mengembalikan403, sehingga fallback CLI resmi dipakai pada project/team ID yang sudah diverifikasi |
 | GitHub CI | PASS untuk SHA `7958fd46…`; ketiga Ubuntu job sukses. Tidak menyimpulkan workflow akun hosted dari CI |
-| Hosted user workflow | OPEN; belum menjalankan login/session/role real pada Preview. Perlu sesi pengguna melalui UI resmi setelah pekerjaan mandiri selesai |
+| Hosted user workflow | PASS_USER_CONFIRMED; pada 2026-10-31 pengguna mengonfirmasi login di deployment Preview exact SHA berhasil dan Dashboard terbuka. Konfirmasi ini mencakup login/Dashboard saja, bukan hosted role-revocation atau Storage policy mutation |
 | Cleanup Auth factors | Hanya tool/test sintetis. Tidak ada hosted adapter, enrollment, delete atau cleanup faktor nyata |
 | Managed `pg_net` | Local operator proof pass; managed owner sah belum tersedia/terbukti, jadi handoff hosted OPEN. Tidak ada owner/membership/grant mutation |
 | AUTH-04/AUTH-06 dan konfigurasi hosted | Tidak memakai ketiadaan faktor untuk menyimpulkan riwayat/config; open bila bukti managed scoped belum tersedia |
@@ -161,10 +161,10 @@ fixture disposable terpisah. Tidak ada applied migration yang diedit, upgrade/
 reset/deletion data hosted, repair history, Auth factor nyata, service-role
 replacement untuk tes RLS, atau perubahan Production/main.
 
-Semua pekerjaan mandiri yang tersedia sudah selesai: code commit dipush ke
-`codex/preview`, CI Ubuntu sukses, source SHA Preview Ready dan smoke route/aset
-lulus. Satu acceptance hosted yang tersisa memerlukan login Admin HR pada Preview;
-browser sesi aplikasi tidak tersedia dalam workspace ini. Setelah pengguna login
-melalui halaman resmi, validasi data account/role dan dashboard tanpa mengirim
-perubahan data. Jangan meminta password, token, OTP, seed, QR, atau secret melalui
-chat. PVR-02 tetap terpisah dan DEFERRED.
+Semua pekerjaan implementasi serta konfirmasi login hosted yang diminta selesai:
+commit source dipush ke `codex/preview`, CI Ubuntu sukses, Preview exact SHA Ready,
+smoke route/aset lulus, dan pada 2026-10-31 pengguna mengonfirmasi login berhasil
+serta Dashboard terbuka. Tidak ada kredensial yang diminta atau dicatat. Konfirmasi
+pengguna tidak dianggap sebagai bukti hosted role-revocation, Storage policy
+mutation, Auth cleanup, atau uji perangkat. Managed `pg_net` owner/handoff tetap
+OPEN; PVR-02 tetap terpisah dan DEFERRED.

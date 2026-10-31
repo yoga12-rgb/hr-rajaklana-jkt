@@ -62,6 +62,13 @@
         { "path": "/manifest.webmanifest", "status": 200, "assertion": "manifest parses and contains app name/start_url", "artifact": ".codex-test-tmp/sar31/hosted-smoke/manifest.json" },
         { "path": "/service-worker.js", "status": 200, "assertion": "service worker response is nonempty and not a protection page", "artifact": ".codex-test-tmp/sar31/hosted-smoke/service-worker.js" }
       ]
+    },
+    "userWorkflowConfirmation": {
+      "deploymentUrl": "https://hr-rajaklana-j6ed3b8s0-hr-rajaklana.vercel.app/login",
+      "confirmedBy": "user",
+      "date": "2026-10-31",
+      "outcome": "User confirmed login succeeded and Dashboard opened.",
+      "credentialsCollected": false
     }
   },
   "acceptanceCompleteness": {
@@ -91,7 +98,7 @@
       "artifacts": [".codex-test-tmp/sar31/run-10/reports/live.json", "src/lib/state/realtime-recovery.test.ts", "tests/live-supervisor-followup.spec.ts"],
       "status": "PASS_LOCAL",
       "remoteImpact": "none",
-      "residual": "Linux CI and authenticated hosted workflow remain pending."
+      "residual": "Hosted login/Dashboard smoke is user-confirmed; authorization-denial and role-revocation paths remain covered by local tests."
     },
     {
       "id": "AR31-02",
@@ -105,7 +112,7 @@
       "artifacts": ["supabase/tests/authenticator-removal.mjs", "supabase/deployment/verify-authenticator-removed-preview.sql"],
       "status": "PASS_LOCAL",
       "remoteImpact": "read-only Preview verifier only",
-      "residual": "Hosted SQL source contract is verified read-only; Linux CI pending."
+      "residual": "Hosted SQL source contract is verified read-only; Ubuntu CI passes."
     },
     {
       "id": "AR31-03",
@@ -119,7 +126,7 @@
       "artifacts": ["supabase/tests/authenticator-removal.mjs", "supabase/deployment/verify-authenticator-removed-preview.sql"],
       "status": "PASS_LOCAL",
       "remoteImpact": "read-only Preview verifier only",
-      "residual": "No hosted mutation harness is permitted; Linux CI pending."
+      "residual": "No hosted mutation harness is permitted; Ubuntu CI passes."
     },
     {
       "id": "AR31-04",
@@ -133,7 +140,7 @@
       "artifacts": ["supabase/deployment/cleanup-auth-factors.subprocess.test.mjs", "supabase/deployment/cleanup-auth-factors.mjs"],
       "status": "PASS_WINDOWS",
       "remoteImpact": "none",
-      "residual": "Linux subprocess proof awaits Ubuntu CI. NFS/distributed locking is explicitly unsupported."
+      "residual": "Ubuntu CI subprocess proof passes. NFS/distributed locking is explicitly unsupported."
     },
     {
       "id": "AR31-05",
@@ -147,7 +154,7 @@
       "artifacts": ["supabase/deployment/cleanup-auth-factors.test.mjs", "supabase/deployment/cleanup-auth-factors.mjs"],
       "status": "PASS_LOCAL",
       "remoteImpact": "none; no hosted cleanup adapter exists",
-      "residual": "Linux path/locking gate awaits CI; no cleanup is authorized against real Auth factors."
+      "residual": "Ubuntu Linux path/locking gate passes; no cleanup is authorized against real Auth factors."
     },
     {
       "id": "AR31-06",
@@ -161,7 +168,7 @@
       "artifacts": ["supabase/deployment/cleanup-auth-factors.test.mjs", "supabase/deployment/cleanup-auth-factors.subprocess.test.mjs"],
       "status": "PASS_WINDOWS",
       "remoteImpact": "none",
-      "residual": "Linux subprocess proof awaits CI; managed Auth cleanup remains intentionally unimplemented."
+      "residual": "Ubuntu subprocess proof passes; managed Auth cleanup remains intentionally unimplemented."
     },
     {
       "id": "AR31-07",
@@ -175,7 +182,7 @@
       "artifacts": ["supabase/tests/authenticator-removal.mjs"],
       "status": "PASS_LOCAL",
       "remoteImpact": "none",
-      "residual": "Actual hosted Auth/Storage integration has not been exercised in this task."
+      "residual": "Hosted login/Dashboard smoke is user-confirmed; hosted Storage policy mutations were not run."
     },
     {
       "id": "AR31-08",
@@ -203,7 +210,7 @@
       "artifacts": [".codex-test-tmp/sar31/run-10/reports/live.json", ".codex-test-tmp/sar31/run-11/reports/demo-pwa.json", "supabase/tests/check-browser-report.mjs"],
       "status": "PASS_LOCAL",
       "remoteImpact": "none; demo uses local static build",
-      "residual": "Hosted account workflow, GitHub Linux CI, iPhone/PWA/offline/device PVR-02 remain OPEN/DEFERRED."
+      "residual": "Hosted login/Dashboard smoke and GitHub Linux CI pass; iPhone/PWA/offline/device PVR-02 remain DEFERRED."
     },
     {
       "id": "AR31-10",
@@ -254,7 +261,7 @@
     "dependencyAudit": { "status": "PASS_WITH_LOW_FINDINGS", "actual": "npm audit --audit-level=moderate exited 0; four low findings in deepmerge via Svelte dependency chain, no moderate/high/critical; no forced updates" },
     "linuxSubprocessAndCI": { "status": "PASS", "actual": "GitHub Actions run 41205825954 on exact SHA 7958fd46d0c231a1f51e04fb872f3dca71b550dc: all three Ubuntu jobs succeeded, including browser live-mock and demo-pwa" },
     "vercelPreviewDeployment": { "status": "PASS", "actual": "Vercel deployment dpl_DVh5cwhuHDfmxTJ6sdgEuKHV5kwj READY for exact Preview ref codex/preview/SHA 7958fd46; /login, manifest and service worker each returned HTTP 200 via authenticated Vercel curl" },
-    "hostedUserWorkflow": { "status": "OPEN", "actual": "no real account operation run in this task" },
+    "hostedUserWorkflow": { "status": "PASS_USER_CONFIRMED", "actual": "On 2026-10-31 the user confirmed Preview login succeeded and Dashboard opened at the exact deployment URL; no credentials were collected. This confirms login/Dashboard only, not hosted role-revocation or Storage mutation paths." },
     "managedPgNet": { "status": "OPEN", "actual": "local operator capability only; managed owner/handoff required" },
     "pvr02Device": { "status": "DEFERRED", "actual": "no real iPhone/PWA/offline/device verification" }
   }
