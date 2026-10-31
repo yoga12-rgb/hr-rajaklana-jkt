@@ -19,7 +19,7 @@ const liveTables: Record<string, Record<string, unknown>[]> = {
 };
 const cashierEmployeeRow = { id: 'employee-cashier', employee_number: 'RK000002', full_name: 'Kasir Uji', whatsapp: '0813', department_id: 'department', position_id: 'cashier-position', outlet_id: 'outlet', starts_on: '2025-01-01', status: 'active', account_status: 'active', auth_user_id: 'auth-cashier', can_middle_shift: true, weekly_off_days: [], approval_mode: 'internal', gender: 'unspecified' };
 
-type MockChannel = { on: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn>; emit: (status: string) => void; joined: boolean };
+type MockChannel = { on: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn>; emit: (status: string) => void; emitChange: (payload?: unknown) => void; joined: boolean };
 let channels: MockChannel[];
 let windowListeners: Map<string, () => void>;
 let documentListeners: Map<string, () => void>;
@@ -97,9 +97,10 @@ function installLiveClient() {
     storage: { from: vi.fn(() => ({ createSignedUrl: vi.fn(async () => ({ data: { signedUrl: '' }, error: null })) })) },
     channel: vi.fn(() => {
       let statusCallback: ((status: string) => void) | undefined;
+      const changeCallbacks: ((payload: unknown) => void)[] = [];
       const channelObject: MockChannel = {
         joined: false,
-        on: vi.fn(() => channelObject),
+        on: vi.fn((_type: string, _filter: unknown, callback?: (payload: unknown) => void) => { if (callback) changeCallbacks.push(callback); return channelObject; }),
         subscribe: vi.fn((callback: (status: string) => void) => {
           if (channelObject.joined) throw new Error("tried to join multiple times. 'join' can only be called a single time per channel instance");
           channelObject.joined = true;
@@ -107,7 +108,8 @@ function installLiveClient() {
           statusCallback = callback;
           return channelObject;
         }),
-        emit(status: string) { statusCallback?.(status); }
+        emit(status: string) { statusCallback?.(status); },
+        emitChange(payload = {}) { for (const callback of changeCallbacks) callback(payload); }
       };
       channels.push(channelObject);
       return channelObject;
@@ -293,6 +295,82 @@ describe('live Realtime recovery', () => {
     channels[1].emit('SUBSCRIBED');
     await vi.advanceTimersByTimeAsync(0);
     expect(get(app).connected).toBe(true);
+  });
+
+  it('replaces the channel for the latest token when an earlier removal is still pending', async () => {
+    const { app } = await openLiveApp();
+    const first = channels[0];
+    first.emit('SUBSCRIBED'); await flush();
+    expect(get(app).connected).toBe(true);
+
+    let finishRemoval!: (value: string) => void;
+    let announceRemoval!: () => void;
+    const removalStarted = new Promise<void>(resolve => { announceRemoval = resolve; });
+    mockSupabase.removeChannel.mockImplementationOnce(() => new Promise<string>(resolve => {
+      finishRemoval = resolve;
+      announceRemoval();
+    }));
+
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotation-one');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await removalStarted;
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(first);
+
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotation-two');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+    expect(get(app)).toMatchObject({ user: { authUserId: 'auth-admin' }, sessionValidating: false });
+
+    currentSession = sessionFor('auth-admin', 'aal1', 'rotation-three');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    finishRemoval('ok');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    expect(channels).toHaveLength(3);
+    expect(channels[2].subscribe).toHaveBeenCalledTimes(1);
+    channels[2].emit('SUBSCRIBED'); await flush();
+    vi.useFakeTimers();
+    const readsBeforeEvent = mockSupabase.from.mock.calls.length;
+    channels[2].emitChange({ eventType: 'UPDATE', table: 'employees' });
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(mockSupabase.from.mock.calls.length).toBeGreaterThan(readsBeforeEvent);
+  });
+
+  it('creates the latest channel after an obsolete removal rejects', async () => {
+    const { app } = await openLiveApp();
+    const first = channels[0];
+    let rejectRemoval!: (error: Error) => void;
+    let announceRemoval!: () => void;
+    const removalStarted = new Promise<void>(resolve => { announceRemoval = resolve; });
+    mockSupabase.removeChannel.mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
+      rejectRemoval = reject;
+      announceRemoval();
+    }));
+
+    currentSession = sessionFor('auth-admin', 'aal1', 'reject-old-removal');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await removalStarted;
+    currentSession = sessionFor('auth-admin', 'aal1', 'latest-after-reject');
+    authListener?.('TOKEN_REFRESHED', currentSession);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    rejectRemoval(new Error('obsolete removal failed'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await flush();
+
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(first);
+    expect(channels).toHaveLength(2);
+    expect(channels[1].subscribe).toHaveBeenCalledTimes(1);
+    expect(get(app)).toMatchObject({ initialized: true, user: { authUserId: 'auth-admin' }, sessionValidating: false });
   });
 
   it('confirms the installed Realtime SDK rejects joining the same terminal channel again', () => {

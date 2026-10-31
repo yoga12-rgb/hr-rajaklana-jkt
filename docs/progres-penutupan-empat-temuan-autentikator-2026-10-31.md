@@ -166,3 +166,18 @@ Final status: **Preview implementation releasable for controlled follow-up, not 
 Production-readiness approval**. The handoff includes local test artifacts, CI and
 Preview release evidence, read-only Supabase identity/catalog evidence, and the
 explicit hosted/device limitations above.
+
+## Audit reopening addendum — AS31 (31 October 2026)
+
+Audit AS31 opened three prior closures and added one verification gap after the
+AUR-08/AUR-09 record above was written. The historical entries above are retained
+as the evidence that existed at that time; they do not assert that the newly
+reopened acceptance is closed.
+
+| Reopened item | Current acceptance state |
+| --- | --- |
+| AUR-01 / AS31-01 | Reproduced red for three token rotations while first channel removal was pending; local fix and unit event/reject regressions now pass. Full browser SDK rotation/reconnect remains open. |
+| AUR-02 / AS31-02 | Independent helper source contract, semantic mutations and exact local/Preview version-name maps now pass on disposable26. New hosted read-only probe remains pending release and verification. |
+| AUR-06 / AS31-03/04 | Receipt-preserving CLI/API, fake-provider binding and stale-write rejection tests pass on Windows. Linux CI remains pending. No real factor cleanup was run. |
+| AUR-03/04/05 / AS31-05 | Final26 revoked Storage, complete 18→26, populated receipt RPC replay and live browser SDK camera/rotation remain open until their new dedicated tests and aggregate gates pass. |
+| Release/residual/device | This AS31 source is not yet pushed/deployed. Production/main untouched. pg_net managed-owner operation and PVR-02 device testing remain open/deferred. |

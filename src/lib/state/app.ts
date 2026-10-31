@@ -29,7 +29,6 @@ export const app = writable<AppState>(initialDemo());
 let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
 let realtimeUserId: string | null = null;
 let realtimeGeneration = 0;
-let realtimeReplacementPending = false;
 let realtimeTerminal = false;
 let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
@@ -120,7 +119,14 @@ export function attendancePermission(record: AttendanceRecord): string {
 }
 export const attendanceLateStatus = (record: AttendanceRecord) => classifyAttendanceLateness(record, get(app).leaveRequests);
 export const leaveConflicts = (employeeId: string, startDate: string, endDate: string, excludedId?: string) => findLeaveConflicts(get(app), employeeId, startDate, endDate, excludedId);
-export const isDuplicateLeave = (input: LeaveInput, excludedId?: string, employeeId = user().id) => duplicateLeave(get(app), employeeId, input, excludedId);
+// This helper is also used by Svelte's reactive form preview. Session
+// revalidation must keep rendering the already scoped account's draft; actions
+// still call user() first and remain blocked until that validation completes.
+export const isDuplicateLeave = (input: LeaveInput, excludedId?: string, employeeId?: string) => {
+  const state = get(app), readOnlyActor = state.user;
+  const scopedEmployeeId = employeeId ?? (readOnlyActor && activeAccount(readOnlyActor) ? readOnlyActor.id : null);
+  return scopedEmployeeId ? duplicateLeave(state, scopedEmployeeId, input, excludedId) : false;
+};
 export function canDecideLeave(request: LeaveRequest): boolean {
   const s = get(app), u = s.user, employee = s.employees.find(e => e.id === request.employeeId);
   if (!u || !activeAccount(u) || !employee || u.id === employee.id) return false;
@@ -345,7 +351,6 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   channel = null;
   realtimeUserId = null;
   realtimeGeneration += 1;
-  realtimeReplacementPending = false;
   realtimeTerminal = false;
   realtimeSubscribed = false;
   realtimeAuthRevision = 0;
@@ -373,10 +378,8 @@ function scheduleRealtimeReplacement(target: NonNullable<typeof channel>, genera
     channel = null;
     realtimeSubscribed = false;
     realtimeGeneration += 1;
-    realtimeReplacementPending = true;
     app.update(state => ({ ...state, connected: false }));
     void Promise.resolve(supabase.removeChannel(target)).catch(() => undefined).finally(() => {
-      realtimeReplacementPending = false;
       if (revision !== authRevision || !navigator.onLine || channel || !supabase) return;
       createRealtimeChannel(userId, revision);
       void refresh();
@@ -384,7 +387,7 @@ function scheduleRealtimeReplacement(target: NonNullable<typeof channel>, genera
   }, delay);
 }
 function createRealtimeChannel(userId: string, revision: number) {
-  if (!supabase || revision !== authRevision || realtimeReplacementPending) return;
+  if (!supabase || revision !== authRevision) return;
   if (channel && realtimeUserId === userId && realtimeAuthRevision === revision) return;
   if (channel) {
     const previous = channel;
@@ -393,10 +396,8 @@ function createRealtimeChannel(userId: string, revision: number) {
     realtimeGeneration += 1;
     realtimeSubscribed = false;
     realtimeTerminal = false;
-    realtimeReplacementPending = true;
     app.update(state => ({ ...state, connected: false }));
     void supabase.removeChannel(previous).catch(() => undefined).finally(() => {
-      realtimeReplacementPending = false;
       if (revision !== authRevision || !navigator.onLine || channel || !supabase) return;
       createRealtimeChannel(userId, revision);
     });
@@ -641,7 +642,7 @@ export const actions = {
     if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeReplacementPending = false; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {

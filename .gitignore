@@ -8,4 +8,5 @@ supabase/.temp/
 !.env.example
 playwright-report/
 test-results/
+.codex-test-tmp/
 *.log

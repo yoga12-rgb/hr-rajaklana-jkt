@@ -59,11 +59,22 @@ try {
   const dryRun = await runNode([script, `--manifest=${manifestPath}`]);
   assert.equal(dryRun.code, 0, dryRun.stderr);
   const drySummary = JSON.parse(dryRun.stdout);
-  assert.equal(drySummary.execute, false);
+  assert.equal(drySummary.reportType, 'dry_run');
+  assert.equal(drySummary.observation, 'not_performed');
   assert.equal(drySummary.operationKey, manifest.operationKey);
   const persisted = JSON.parse(await readFile(manifestPath, 'utf8'));
-  assert.equal(persisted.status, 'pending');
-  assert.deepEqual(persisted.result.observed, [{ id: factorId, status: 'planned' }]);
+  assert.deepEqual(persisted, manifest, 'CLI dry-run must not replace or downgrade the manifest receipt');
+
+  for (const state of ['completed', 'failed']) {
+    const terminalPath = join(root, `${state} receipt.json`);
+    const terminal = { ...manifest, status: state, result: { observed: [{ id: factorId, status: state === 'completed' ? 'deleted' : 'failed', at: 'preserve-this-receipt' }], at: '2026-10-31T00:00:00.000Z' } };
+    await saveManifest(terminalPath, terminal);
+    const before = JSON.parse(await readFile(terminalPath, 'utf8'));
+    const terminalDryRun = await runNode([script, `--manifest=${terminalPath}`]);
+    assert.equal(terminalDryRun.code, 0, terminalDryRun.stderr);
+    assert.equal(JSON.parse(terminalDryRun.stdout).reportType, 'dry_run');
+    assert.deepEqual(JSON.parse(await readFile(terminalPath, 'utf8')), before, `${state} execution receipt remains byte-equivalent in meaning after dry-run`);
+  }
 
   const execute = await runNode([script, `--manifest=${manifestPath}`, '--execute']);
   assert.notEqual(execute.code, 0, 'execute without an adapter must fail closed');
@@ -86,14 +97,16 @@ try {
     '--input-type=module',
     '-e',
     `
-      const { createManifest, cleanupFromManifest } = await import(${JSON.stringify(moduleUrl)});
+      const { createManifest, createManifestEnvelope, cleanupFromManifest, saveManifest, loadManifest } = await import(${JSON.stringify(moduleUrl)});
       const userId = ${JSON.stringify(userId)};
       const factorId = ${JSON.stringify(factorId)};
       const operationKey = '11111111-1111-4111-8111-111111111111';
+      const replayPath = ${JSON.stringify(join(root, 'persisted retry manifest.json'))};
       const factor = { id: factorId, userId, factorType: 'totp', status: 'verified' };
       let present = true;
       const calls = [];
       const provider = {
+        projectRef: 'lypsqrwjzrmuyqtdcegr',
         async listFactors(id) { return present && id === userId ? [factor] : []; },
         async deleteFactor({ userId: id, factorId: key }) {
           calls.push({ userId: id, factorId: key });
@@ -102,10 +115,15 @@ try {
         }
       };
       const manifest = createManifest({ projectRef: 'lypsqrwjzrmuyqtdcegr', userId, factors: [factor], operationKey });
-      const first = await cleanupFromManifest(provider, manifest, { execute: true });
-      const retry = await cleanupFromManifest(provider, manifest, { execute: true });
-      if (first.status !== 'failed' || retry.result.observed[0]?.status !== 'already_absent' || calls.length !== 1 || calls[0].factorId !== factorId) process.exit(1);
-      console.log(JSON.stringify({ operationKey: manifest.operationKey, factorId, first: first.status, retry: retry.result.observed[0].status }));
+      const expected = createManifestEnvelope(manifest);
+      await saveManifest(replayPath, manifest);
+      const first = await cleanupFromManifest(provider, manifest, { execute: true, expected });
+      await saveManifest(replayPath, first);
+      const reloaded = await loadManifest(replayPath);
+      const retry = await cleanupFromManifest(provider, reloaded, { execute: true, expected });
+      if (first.status !== 'failed' || retry.result.observed.map(item => item.status).join(',') !== 'failed,already_absent'
+        || retry.result.attempts.length !== 2 || calls.length !== 1 || calls[0].factorId !== factorId || retry.operationKey !== operationKey) process.exit(1);
+      console.log(JSON.stringify({ operationKey: retry.operationKey, factorId, first: first.status, retry: retry.result.observed.at(-1).status, attempts: retry.result.attempts.length }));
     `
   ]);
   assert.equal(replay.code, 0, replay.stderr);
@@ -117,4 +135,4 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
-console.log('Auth cleanup subprocess OK: portable entrypoint, side-effect-free import, Windows-safe paths, dry-run, fail-closed execute, malformed input and original-manifest retry');
+console.log('Auth cleanup subprocess OK: portable entrypoint, side-effect-free import, Windows-safe paths, receipt-preserving dry-run, fail-closed execute, malformed input and persisted original-manifest retry');

@@ -138,11 +138,4 @@ jobs:
 
       - name: Reject skipped or incomplete browser results
         run: |
-          node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
-          const { stats } = JSON.parse(readFileSync('test-results/ci-browser.json', 'utf8'));
-          if (!stats || stats.expected < 1 || stats.skipped !== 0 || stats.unexpected !== 0 || stats.flaky !== 0) {
-            throw new Error('Required browser scenarios must all pass without skips or retries');
-          }
-          console.log(`Required browser gate: ${stats.expected} passed, 0 skipped`);
-          NODE
+        run: node supabase/tests/check-browser-report.mjs test-results/ci-browser.json '${{ matrix.suite }}'

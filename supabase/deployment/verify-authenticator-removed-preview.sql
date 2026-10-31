@@ -6,11 +6,14 @@ begin read only;
 do $verify_authenticator_removed$
 declare
   v_names text[];
+  v_version_name_pairs text[];
   v_table text;
   v_signature text;
   v_oid oid;
   v_auth oid := (select oid from pg_roles where rolname = 'authenticated');
   v_normalized text;
+  v_actual text;
+  v_contract record;
 begin
   if v_auth is null then raise exception 'authenticated role is missing'; end if;
   if to_regclass('supabase_migrations.schema_migrations') is null then
@@ -30,6 +33,39 @@ begin
     'privileged_account_mfa_enforcement','retire_application_authenticator'
   ]::text[] then
     raise exception 'Final migration history is not the independently reviewed ordered 26-name contract';
+  end if;
+  select array_agg(version||'/'||name order by version) into v_version_name_pairs
+    from supabase_migrations.schema_migrations;
+  if v_version_name_pairs is distinct from array[
+    '202610030001/hr_foundation','202610030002/auth_support','202610030003/private_files',
+    '202610040004/directory_manual_attendance','202610120005/attendance_correction_overlap',
+    '202610120006/attendance_selfie_metadata','20261012094903/hr_api_service_role_reads',
+    '20261016063305/hr_leave_workflows','20261016063418/hr_notifications',
+    '20261018045749/cashier_operational_workflows','20261018045909/biometric_push_verification',
+    '20261018162525/push_subscription_status','20261019061522/cashier_spv_weekly_roster',
+    '20261020060745/cashier_spv_audit_repairs','20261020060913/cashier_spv_followup_repair_log_index',
+    '20261020092014/cashier_followup_context_consistency','20261021154511/cashier_followup_context_locking',
+    '20261022170000/close_readiness_audit_findings','20261023080451/supervisor_followup_queue',
+    '20261023181824/supervisor_operations','20261023183130/supervisor_planning_reports',
+    '20261024110000/supervisor_operational_hardening','20261024233053/supervisor_configuration_concurrency',
+    '20261027090000/sensitive_operational_acl_hardening','20261027090100/privileged_account_mfa_enforcement',
+    '20261030031318/retire_application_authenticator'
+  ]::text[] and v_version_name_pairs is distinct from array[
+    '202610030001/hr_foundation','202610030002/auth_support','202610030003/private_files',
+    '202610040004/directory_manual_attendance','202610120005/attendance_correction_overlap',
+    '202610120006/attendance_selfie_metadata','20261012094903/hr_api_service_role_reads',
+    '20261016063305/hr_leave_workflows','20261016063418/hr_notifications',
+    '20261018045749/cashier_operational_workflows','20261018045909/biometric_push_verification',
+    '20261018162525/push_subscription_status','20261019061522/cashier_spv_weekly_roster',
+    '20261020060745/cashier_spv_audit_repairs','20261020060913/cashier_spv_followup_repair_log_index',
+    '20261020092014/cashier_followup_context_consistency','20261021154511/cashier_followup_context_locking',
+    '20261022170000/close_readiness_audit_findings','20261025044841/supervisor_followup_queue',
+    '20261025044859/supervisor_operations','20261025044910/supervisor_planning_reports',
+    '20261025045641/supervisor_operational_hardening','20261025050057/supervisor_configuration_concurrency',
+    '20261027031129/sensitive_operational_acl_hardening','20261029032121/privileged_account_mfa_enforcement',
+    '20261030033256/retire_application_authenticator'
+  ]::text[] then
+    raise exception 'Final migration history differs from the independently reviewed ordered version-name contract';
   end if;
   if not exists(select 1 from supabase_migrations.schema_migrations
     where name='retire_application_authenticator' and version::bigint >= 20261030031318) then
@@ -65,6 +101,28 @@ begin
     or not has_function_privilege('authenticated','public.auth_access_context()'::regprocedure,'EXECUTE') then
     raise exception 'password-only identity helper grants are missing';
   end if;
+  -- Compare each security helper with an independently reviewed final26
+  -- source contract. This literal allowlist is not derived from the database
+  -- definition being checked. Whitespace and line comments are ignored;
+  -- executable tokens and operators remain significant.
+  for v_contract in
+    select * from (values
+      ('private.raw_employee_id()', $helper$select e.id from public.employees e where e.auth_user_id=auth.uid() and e.status='active' and e.account_status='active';$helper$),
+      ('private.session_access_context()', $helper$declare v_actor uuid:=private.raw_employee_id(); v_claims jsonb; v_level text; v_session uuid; v_reason text; begin begin v_claims:=coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb; exception when others then v_claims:='{}'::jsonb; end; v_level:=case when v_claims->>'aal'='aal2' then 'aal2' else 'aal1' end; if v_actor is null then v_reason:='inactive'; else begin v_session:=(v_claims->>'session_id')::uuid; exception when others then v_session:=null; end; if v_session is null or not exists(select 1 from auth.sessions s where s.id=v_session and s.user_id=auth.uid() and (s.not_after is null or s.not_after>statement_timestamp())) then v_reason:='session_revoked'; end if; end if; return jsonb_build_object('employee_id',v_actor,'requires_mfa',false,'current_level',v_level,'allowed',v_reason is null,'reason',v_reason); end;$helper$),
+      ('private.session_allowed()', $helper$select (private.session_access_context()->>'allowed')::boolean;$helper$),
+      ('private.employee_id()', $helper$select case when private.session_allowed() then private.raw_employee_id() else null end;$helper$),
+      ('private.require_employee()', $helper$declare v_context jsonb:=private.session_access_context(); begin if v_context->>'reason'='session_revoked' then raise exception 'Sesi tidak berlaku. Silakan login kembali' using errcode='42501'; elsif not (v_context->>'allowed')::boolean then raise exception 'Akun karyawan tidak aktif' using errcode='42501'; end if; return (v_context->>'employee_id')::uuid; end;$helper$),
+      ('private.require_hr()', $helper$declare v_actor uuid:=private.require_employee(); begin if not private.has_role('admin_hr') then raise exception 'Akses Admin HR diperlukan' using errcode='42501'; end if; return v_actor; end;$helper$),
+      ('public.auth_access_context()', $helper$select private.session_access_context();$helper$)
+    ) as expected(signature, source)
+  loop
+    select regexp_replace(lower(regexp_replace(p.prosrc, '--[^\r\n]*', '', 'g')), '\s+', '', 'g')
+      into v_actual from pg_proc p where p.oid=to_regprocedure(v_contract.signature);
+    if v_actual is distinct from regexp_replace(lower(v_contract.source), '\s+', '', 'g') then
+      raise exception 'helper definition differs from independent reviewed contract: %', v_contract.signature;
+    end if;
+  end loop;
+
   if not exists(select 1 from pg_proc where oid='private.raw_employee_id()'::regprocedure
       and prosrc ~* 'auth\.uid\(\)' and prosrc ~* 'status\s*=\s*''active'''
       and prosrc ~* 'account_status\s*=\s*''active''' and prosrc !~* 'select\s+true')

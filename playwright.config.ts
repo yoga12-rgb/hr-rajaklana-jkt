@@ -12,7 +12,7 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     baseURL,
-    channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge',
+    channel: process.env.PLAYWRIGHT_CHANNEL === 'bundled' ? undefined : process.env.PLAYWRIGHT_CHANNEL || 'msedge',
     viewport: { width: 1440, height: 1000 },
     timezoneId: 'Asia/Jakarta',
     locale: 'id-ID',
