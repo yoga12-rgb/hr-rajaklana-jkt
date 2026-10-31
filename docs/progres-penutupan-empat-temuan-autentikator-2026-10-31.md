@@ -113,3 +113,50 @@ are committed/pushed, a Preview deployment is built from the matching SHA, and a
 available hosted smoke is tied to that deployment. Production/main remain outside
 scope. PVR-02 (real iPhone/iPad offline/update/tab-old and device camera/location)
 remains postponed by the user and is not counted as a local gate failure.
+
+## Execution addendum — AUR-08 through AUR-09 (31 October 2026)
+
+### Release/CI evidence
+
+- The implementation was committed as `cc0bb4d1b547b2a8baa5c1b8489a8df02d6dca15`
+  (`close authenticator audit findings`) and pushed to `origin/codex/preview`.
+- GitHub Actions run `41169073575` for that exact SHA completed with conclusion
+  `success`: <https://github.com/yoga12-rgb/hr-rajaklana-jkt/actions/runs/41169073575>.
+  This is CI evidence only; it is not a hosted user-workflow assertion.
+- Vercel Preview deployment `dpl_6BVdHySfcc9QWabdGYH6Pw2UX1Ea` is `READY`, target
+  `preview`, with aliases `hr-rajaklana-jkt-preview.vercel.app` and
+  `hr-rajaklana-jkt-git-codex-preview-hr-rajaklana.vercel.app`. Its recorded build
+  configuration is `npm ci`, `npm run check && npm run build`, output `build`,
+  Node `24.x`. A READY state is recorded as deployment evidence only.
+- Because the deployment is protected, direct HTTP returned the Vercel protection
+  page. The supported authenticated `vercel curl` path returned the Rajaklana
+  SvelteKit shell (`data-rajaklana-app-shell="true"`), the JSON manifest with
+  `display: "standalone"`, and a JavaScript service worker containing the expected
+  shell/cache/offline handlers. No protection bypass was disabled and no long-lived
+  bypass secret was requested.
+
+### AUR-08 hosted/Preview checkpoint
+
+| Area | Status | Evidence/limit |
+| --- | --- | --- |
+| Branch and source release | pass | `codex/preview`, SHA above, CI run success |
+| Vercel Preview deployment | pass | deployment ID/aliases above; authenticated shell/manifest/service-worker fetch |
+| Supabase Preview identity/catalog | pass (read-only) | ref `lypsqrwjzrmuyqtdcegr`, project `hr-rajaklana-preview`, 26 ordered migrations, restrictive RLS/policy/helper-grant checks recorded above |
+| Hosted business workflow with a real account | open | no hosted mutation or real user submission/rotation was performed in this run; local live-mock is the reproducible proof |
+| Production/main | out of scope | intentionally untouched |
+
+### AUR-09 closure and handoff
+
+The implementation and required local gates are complete for the requested Preview
+branch scope. AUR-01 through AUR-07 are locally passing, AUR-08 deployment and
+read-only hosted preflight are passing, and the hosted account-workflow boundary is
+explicitly open rather than inferred from `READY` or skipped tests. The remaining
+operational item is PVR-02: real iPhone/iPad PWA update/offline/tab-old and camera/
+location verification, which the user postponed. It must be tested before any
+production readiness claim. No migration, operational data, audit history, Auth
+factor, or recovery record was reset or deleted.
+
+Final status: **Preview implementation releasable for controlled follow-up, not a
+Production-readiness approval**. The handoff includes local test artifacts, CI and
+Preview release evidence, read-only Supabase identity/catalog evidence, and the
+explicit hosted/device limitations above.
