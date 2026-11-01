@@ -5,8 +5,8 @@
   let token='',purpose='activate',name='',number='',password='',confirm='',error='',busy=false,done=false,loaded=false;
   onMount(()=>{void load();});
   async function load(){await actions.init();const url=new URL(location.href);token=new URLSearchParams(url.hash.slice(1)).get('token')??url.searchParams.get('token')??'';try{if(!token)throw new Error('Tautan tidak lengkap. Minta tautan baru kepada HR.');const data=await actions.inspectToken(token);purpose=data.purpose;name=data.full_name;number=data.employee_number;loaded=true;}catch(e){error=e instanceof Error?e.message:'Tautan tidak dapat dibuka.';}}
-  async function activate(){error='';busy=true;try{if(password!==confirm)throw new Error('Konfirmasi kata sandi belum sama.');await actions.activate(token,password,purpose);done=true;password='';confirm='';await goto('/activate',{state:{},shallow:true,replace:true});}catch(e){error=e instanceof Error?e.message:'Aktivasi belum berhasil.';}finally{busy=false;}}
-  async function enterAccount(){busy=true;error='';try{await actions.logout();await goto('/login',{replace:true,state:{employeeNumber:number}});}catch(e){error=e instanceof Error?e.message:'Sesi lama belum berhasil diakhiri. Coba kembali.';}finally{busy=false;}}
+  async function activate(){if(busy)return;error='';busy=true;try{if(password!==confirm)throw new Error('Konfirmasi kata sandi belum sama.');await actions.activate(token,password,purpose);done=true;password='';confirm='';await goto('/activate',{state:{},shallow:true,replace:true});}catch(e){error=e instanceof Error?e.message:'Aktivasi belum berhasil.';}finally{busy=false;}}
+  async function enterAccount(){if(busy)return;busy=true;error='';try{await actions.logout();await goto('/login',{replace:true,state:{employeeNumber:number}});}catch(e){error=e instanceof Error?e.message:'Sesi lama belum berhasil diakhiri. Coba kembali.';}finally{busy=false;}}
 </script>
 <svelte:head><title>{purpose==='reset'?'Pemulihan akun':'Aktivasi akun'} · Rajaklana HR</title><meta name="robots" content="noindex,nofollow"/><meta name="referrer" content="no-referrer"/></svelte:head>
 <main>
@@ -19,7 +19,7 @@
       {#if $app.mode==='demo'}<div class="notice">Ini demonstrasi lokal. Akun hanya tersedia pada browser ini.</div>{/if}
       {#if $app.user}<p class="hint">Sesi {$app.user.fullName} akan diakhiri agar Anda dapat masuk menggunakan akun ini.</p>{/if}
       {#if error}<div class="error" role="alert">{error}</div>{/if}
-      <button class="btn btn-primary" disabled={busy} on:click={enterAccount}>{busy?'Menyiapkan halaman masuk…':'Masuk dengan akun ini'}</button>
+      <button class="btn btn-primary" aria-busy={busy} disabled={busy} on:click={enterAccount}>{busy?'Menyiapkan halaman masuk…':'Masuk dengan akun ini'}</button>
     {:else}
       <h1>{purpose==='reset'?'Buat kata sandi baru':'Selamat bergabung'}</h1>
       {#if loaded}
@@ -29,11 +29,11 @@
           <label class="field">Konfirmasi kata sandi<input class="input" type="password" bind:value={confirm} minlength="10" maxlength="128" required autocomplete="new-password"/></label>
           <p class="hint">Minimal 10 karakter. Gunakan gabungan kata, angka, atau simbol yang sulit ditebak.</p>
           {#if error}<div class="error" role="alert">{error}</div>{/if}
-          <button class="btn btn-primary" disabled={busy}>{busy?'Menyimpan…':purpose==='reset'?'Simpan kata sandi':'Aktifkan akun'}</button>
+          <button class="btn btn-primary" aria-busy={busy} disabled={busy}>{busy?'Menyimpan…':purpose==='reset'?'Simpan kata sandi':'Aktifkan akun'}</button>
         </form>
       {:else if error}
         <div class="error" role="alert">{error}</div><a href="/login" class="btn btn-secondary">Kembali ke halaman masuk</a>
-      {:else}<p>Memeriksa tautan…</p>{/if}
+      {:else}<p class="loading-indicator" role="status">Memeriksa tautan…</p>{/if}
     {/if}
   </section>
   <p class="foot">Tautan pribadi · satu kali penggunaan · berlaku 24 jam</p>

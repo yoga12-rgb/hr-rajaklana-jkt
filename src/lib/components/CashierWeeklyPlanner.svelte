@@ -26,6 +26,8 @@
   let scopeGeneration = 0, accountGeneration = 0, destroyed = false, accountId: string | undefined;
   type SaveOperation = { accountId: string; accountGeneration: number; storageKey: string; weekStart: string; generation: number };
   let activeSave: SaveOperation | null = null;
+  let activeRetry: SaveOperation | null = null;
+  $: working = saving || activeRetry !== null;
   const unsubscribeAccount = app.subscribe(state => {
     if (accountId !== state.user?.id) { accountId = state.user?.id; accountGeneration++; }
   });
@@ -85,7 +87,7 @@
   function activateDraftKey(nextKey: string) {
     persistDraft(activeDraftStorageKey);
     activeDraftStorageKey = nextKey;
-    scopeGeneration++; activeSave = null; saving = false; message = ''; failed = false;
+    scopeGeneration++; activeSave = null; activeRetry = null; saving = false; message = ''; failed = false;
     copyPreview = null; copySkippedDrafts = 0;
     if (!nextKey) { drafts = {}; reason = ''; pendingAttempt = null; legacyAttemptNeedsReview = false; observedDraftStorageKey = ''; observedDraftSnapshot = null; draftStorageWarning = false; draftStorageConflict = false; return; }
     try {
@@ -283,23 +285,39 @@
     finally { if (activeSave === operation) { saving = false; activeSave = null; } }
   }
   async function retryPendingAttempt() {
+    if (saving || activeRetry) return;
     // A previous transient read error intentionally leaves the UI mounted but
     // keeps mutations behind the private session/permission gate. Revalidate
     // the current account and latest data before replaying the persisted
     // original request; never infer authorization from the retained snapshot.
     const before = get(app);
-    if (before.error || before.sessionValidating) {
-      const accountId = before.user?.id;
-      if (!accountId) return;
-      await actions.refresh();
-      const refreshed = get(app);
-      if (refreshed.user?.id !== accountId || refreshed.error || refreshed.sessionValidating) {
-        failed = true;
-        message = 'Sesi atau data belum berhasil diverifikasi. Percobaan lama tetap tersimpan; coba lagi setelah koneksi pulih.';
-        return;
+    const actorId = before.user?.id;
+    if (!actorId) return;
+    const operation: SaveOperation = { accountId: actorId, accountGeneration, storageKey: activeDraftStorageKey, weekStart, generation: scopeGeneration };
+    const attempt = pendingAttempt;
+    if (!attempt) return;
+    activeRetry = operation;
+    try {
+      if (before.error || before.sessionValidating) {
+        await actions.refresh();
+        if (!sameAccount(operation) || !sameOrigin(operation) || scopeGeneration !== operation.generation || activeRetry !== operation) return;
+        const refreshed = get(app);
+        if (refreshed.error || refreshed.sessionValidating) {
+          failed = true;
+          message = 'Sesi atau data belum berhasil diverifikasi. Percobaan lama tetap tersimpan; coba lagi setelah koneksi pulih.';
+          return;
+        }
       }
+      if (!cashierRosterAttemptsEqual(pendingAttempt, attempt)) return;
+      await save();
+    } catch (error) {
+      if (sameAccount(operation) && sameOrigin(operation) && scopeGeneration === operation.generation && activeRetry === operation) {
+        failed = true;
+        message = error instanceof Error ? error.message : 'Sesi atau data belum berhasil diverifikasi. Percobaan lama tetap tersimpan; coba lagi setelah koneksi pulih.';
+      }
+    } finally {
+      if (activeRetry === operation) activeRetry = null;
     }
-    await save();
   }
   function selectWeek(nextWeek: string) {
     if (!persistDraft()) return;
@@ -312,26 +330,26 @@
 </script>
 
 <section class="weekly-planner">
-  <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
+  <div class="planner-heading"><div><span class="eyebrow">PENUGASAN KASIR</span><h2>Jadwal mingguan</h2><p>{workWeekLabel(weekStart)} · waktu kerja WIB</p></div><div class="week-nav"><button class="btn btn-secondary" type="button" disabled={working} on:click={() => moveWeek(-1)}>Minggu sebelumnya</button><button class="btn btn-secondary" type="button" disabled={working} on:click={moveToCurrentWeek}>Minggu ini</button><button class="btn btn-secondary" type="button" disabled={working} on:click={() => moveWeek(1)}>Minggu berikutnya</button></div></div>
   <Feedback {message} error={failed}/>
   <p class="notice">Jadwal lampau hanya dapat dilihat. Libur tetap adalah saran; jadwal tidak dibuat otomatis. Perubahan berbenturan, jadwal usang, atau tanggal dengan absensi akan ditolak sebelum disimpan.</p>
   {#if draftStorageConflict}<p class="draft-status draft-warning" role="alert">Draft minggu ini berubah di tab lain. Tab ini tidak menimpa data yang lebih baru dan perpindahan minggu ditahan. Muat ulang halaman untuk membuka draft tersimpan terbaru; perubahan tab ini yang belum tersimpan tetap tampil sampai dimuat ulang.</p>{:else if draftStorageWarning}<p class="draft-status draft-warning" role="alert">Browser tidak dapat menyimpan draft dan kunci pemulihan. Jadwal tidak dikirim sampai penyimpanan perangkat kembali tersedia.</p>{:else if Object.keys(drafts).length || reason}<p class="draft-status" role="status">Draft jadwal tersimpan di perangkat dan akun ini; draft akan dipulihkan saat halaman dibuka kembali.</p>{/if}
-  {#if legacyAttemptNeedsReview}<section class="draft-review" role="alert"><strong>Draft lama membawa percobaan simpan yang tidak dapat dipastikan.</strong><p>Periksa jadwal terbaru dan bandingkan dengan draft sebelum mengizinkan penyimpanan baru. Kunci percobaan lama tidak dapat dipulihkan secara aman.</p><button class="btn btn-secondary" type="button" disabled={saving} on:click={acknowledgeLegacyAttemptAfterReview}>Saya sudah memeriksa status jadwal di server</button></section>{/if}
-  {#if pendingAttempt}<section class="pending-attempt" role="status"><strong>Ada percobaan simpan sebelumnya yang belum dipastikan</strong><p>{pendingAttempt.changes.length} perubahan dari minggu {dateLabel(pendingAttempt.weekStart)} akan dikirim ulang dengan payload dan kunci yang sama. Draft baru tetap tersimpan lokal sampai percobaan ini selesai.</p><button class="btn btn-secondary" type="button" disabled={saving || draftStorageWarning} on:click={retryPendingAttempt}>{saving ? 'Memeriksa hasil…' : 'Ulangi percobaan simpan sebelumnya'}</button></section>{/if}
-  {#if reviewEntries.length}<section class="draft-review" aria-labelledby="draft-review-title"><strong id="draft-review-title">Tinjau {reviewEntries.length} sel sebelum menyimpan</strong><p>Perubahan dari sesi lain atau draft lama perlu ditinjau satu per satu. Menyentuh sel lain tidak menghapus konflik.</p>{#each reviewEntries as item (item.key)}{@const employee = cashiers.find(person => person.id === item.employeeId)}<article class="review-cell"><div><strong>{employee?.fullName ?? 'Kasir'} · {dateLabel(item.workDate)}</strong><span>Draft Anda: {item.draft.shift ? `${shiftName(item.draft.shift)} · ${$app.outlets.find(outlet => outlet.id === item.draft.outletId)?.name ?? 'Outlet tidak dikenal'}` : 'Belum ditugaskan'}</span><span>Jadwal terbaru: {item.current.status === 'active' ? `${shiftName(item.current.shift)} · ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'Outlet tidak dikenal'}` : item.current.status === 'cancelled' ? `Dibatalkan · ${shiftName(item.current.shift)}` : `Belum ditugaskan · outlet utama ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'belum diatur'}`}</span></div><div class="review-actions"><button class="btn btn-secondary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'server')}>Gunakan jadwal terbaru</button><button class="btn btn-primary" type="button" disabled={saving} on:click={() => reviewDraft(item.key, 'reapply')}>Terapkan kembali draft saya</button></div></article>{/each}</section>{/if}
-  <div class="copy-tools"><button class="btn btn-secondary" type="button" disabled={saving} on:click={showCopyPreview}>Pratinjau salin minggu sebelumnya</button>{#if copyPreview}<div class="copy-summary"><strong>Salin {copyPreview.sourceWeek} → {copyPreview.targetWeek}</strong><span>{copyPreview.changes.length} sel baru · {copyPreview.skipped} target sudah terisi{copyPreview.conflicts.length ? ` · ${copyPreview.conflicts.length} perlu diperiksa` : ''}{copySkippedDrafts ? ` · ${copySkippedDrafts} draft lokal dilewati` : ''}</span>{#if copyPreview.conflicts.length}<ul>{#each copyPreview.conflicts.slice(0,5) as conflict}<li>{conflict}</li>{/each}</ul>{/if}{#if copyPreview.changes.length}<button class="btn btn-primary" type="button" disabled={saving} on:click={applyCopyPreview}>Terapkan sel kosong ke grid</button>{/if}</div>{/if}</div>
+  {#if legacyAttemptNeedsReview}<section class="draft-review" role="alert"><strong>Draft lama membawa percobaan simpan yang tidak dapat dipastikan.</strong><p>Periksa jadwal terbaru dan bandingkan dengan draft sebelum mengizinkan penyimpanan baru. Kunci percobaan lama tidak dapat dipulihkan secara aman.</p><button class="btn btn-secondary" type="button" disabled={working} on:click={acknowledgeLegacyAttemptAfterReview}>Saya sudah memeriksa status jadwal di server</button></section>{/if}
+  {#if pendingAttempt}<section class="pending-attempt" role="status"><strong>Ada percobaan simpan sebelumnya yang belum dipastikan</strong><p>{pendingAttempt.changes.length} perubahan dari minggu {dateLabel(pendingAttempt.weekStart)} akan dikirim ulang dengan payload dan kunci yang sama. Draft baru tetap tersimpan lokal sampai percobaan ini selesai.</p><button class="btn btn-secondary" type="button" disabled={working || draftStorageWarning} aria-busy={working} on:click={retryPendingAttempt}>{working ? 'Memeriksa hasil…' : 'Ulangi percobaan simpan sebelumnya'}</button></section>{/if}
+  {#if reviewEntries.length}<section class="draft-review" aria-labelledby="draft-review-title"><strong id="draft-review-title">Tinjau {reviewEntries.length} sel sebelum menyimpan</strong><p>Perubahan dari sesi lain atau draft lama perlu ditinjau satu per satu. Menyentuh sel lain tidak menghapus konflik.</p>{#each reviewEntries as item (item.key)}{@const employee = cashiers.find(person => person.id === item.employeeId)}<article class="review-cell"><div><strong>{employee?.fullName ?? 'Kasir'} · {dateLabel(item.workDate)}</strong><span>Draft Anda: {item.draft.shift ? `${shiftName(item.draft.shift)} · ${$app.outlets.find(outlet => outlet.id === item.draft.outletId)?.name ?? 'Outlet tidak dikenal'}` : 'Belum ditugaskan'}</span><span>Jadwal terbaru: {item.current.status === 'active' ? `${shiftName(item.current.shift)} · ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'Outlet tidak dikenal'}` : item.current.status === 'cancelled' ? `Dibatalkan · ${shiftName(item.current.shift)}` : `Belum ditugaskan · outlet utama ${$app.outlets.find(outlet => outlet.id === item.current.outletId)?.name ?? 'belum diatur'}`}</span></div><div class="review-actions"><button class="btn btn-secondary" type="button" disabled={working} on:click={() => reviewDraft(item.key, 'server')}>Gunakan jadwal terbaru</button><button class="btn btn-primary" type="button" disabled={working} on:click={() => reviewDraft(item.key, 'reapply')}>Terapkan kembali draft saya</button></div></article>{/each}</section>{/if}
+  <div class="copy-tools"><button class="btn btn-secondary" type="button" disabled={working} on:click={showCopyPreview}>Pratinjau salin minggu sebelumnya</button>{#if copyPreview}<div class="copy-summary"><strong>Salin {copyPreview.sourceWeek} → {copyPreview.targetWeek}</strong><span>{copyPreview.changes.length} sel baru · {copyPreview.skipped} target sudah terisi{copyPreview.conflicts.length ? ` · ${copyPreview.conflicts.length} perlu diperiksa` : ''}{copySkippedDrafts ? ` · ${copySkippedDrafts} draft lokal dilewati` : ''}</span>{#if copyPreview.conflicts.length}<ul>{#each copyPreview.conflicts.slice(0,5) as conflict}<li>{conflict}</li>{/each}</ul>{/if}{#if copyPreview.changes.length}<button class="btn btn-primary" type="button" disabled={working} on:click={applyCopyPreview}>Terapkan sel kosong ke grid</button>{/if}</div>{/if}</div>
   {#if cashiers.length}
     <div class="table-scroll"><table class="week-grid"><thead><tr><th class="employee-col">Kasir</th>{#each days as day}<th><strong>{dayName(day)}</strong><small>{dateLabel(day)}</small></th>{/each}</tr></thead><tbody>
       {#each cashiers as employee (employee.id)}<tr><th class="employee-cell"><strong>{employee.fullName}</strong><small>{employee.employeeNumber}</small></th>{#each days as day (day)}{@const current = cell(employee.id, day, drafts)}{@const original = existingFor(employee.id, day)}{@const fixedOff = employee.weeklyOffDays.includes(new Date(`${day}T12:00:00Z`).getUTCDay())}<td class:readonly={day < today}>
         {#if day < today}<strong class="read-only-value">{shiftName(current.shift)}</strong><small>{current.shift ? ($app.outlets.find(outlet => outlet.id === current.outletId)?.name ?? '—') : fixedOff ? 'Libur tetap · belum dijadwalkan' : 'Belum dijadwalkan'}</small>
-        {:else}<select class="select shift-select" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} disabled={saving} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="">Belum ditugaskan</option><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select>
-          {#if current.shift}<select class="select outlet-select" aria-label={`Outlet ${employee.fullName}, ${dateLabel(day)}`} disabled={saving} value={current.outletId} on:change={(event) => changeCell(employee.id, day, 'outletId', event.currentTarget.value)}>{#each $app.outlets.filter(outlet => outlet.active || outlet.id === current.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select>{:else if fixedOff}<small class="off-hint">Libur tetap · saran</small>{/if}
+        {:else}<select class="select shift-select" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} disabled={working} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="">Belum ditugaskan</option><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select>
+          {#if current.shift}<select class="select outlet-select" aria-label={`Outlet ${employee.fullName}, ${dateLabel(day)}`} disabled={working} value={current.outletId} on:change={(event) => changeCell(employee.id, day, 'outletId', event.currentTarget.value)}>{#each $app.outlets.filter(outlet => outlet.active || outlet.id === current.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select>{:else if fixedOff}<small class="off-hint">Libur tetap · saran</small>{/if}
           {#if original?.status === 'cancelled' && current.shift}<small class="cancelled-hint">Aktifkan kembali jadwal batal</small>{/if}
         {/if}
       </td>{/each}</tr>{/each}
     </tbody></table></div>
   {:else}<p class="empty">Belum ada kasir aktif untuk dijadwalkan.</p>{/if}
-  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} disabled={saving} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan draft</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus ditinjau</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}{#if !pendingAttempt}<button class="btn btn-primary" type="button" disabled={saving || draftStorageWarning || !changes.length || reason.trim().length < 5 || conflicts.length > 0 || legacyAttemptNeedsReview} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button>{/if}</div></div>
+  <div class="save-row"><label class="field">Alasan perubahan batch<input class="input" bind:value={reason} on:input={() => persistDraft()} disabled={working} maxlength="2000" placeholder="Contoh: jadwal mingguan dikonfirmasi SPV"/></label><div class="save-info"><strong>{changes.length} perubahan draft</strong>{#if conflicts.length}<span class="conflicts">{conflicts.length} konflik harus ditinjau</span>{:else}<span>Setiap baris akan disimpan dalam satu transaksi</span>{/if}{#if !pendingAttempt}<button class="btn btn-primary" type="button" disabled={working || draftStorageWarning || !changes.length || reason.trim().length < 5 || conflicts.length > 0 || legacyAttemptNeedsReview} aria-busy={saving} on:click={save}>{saving ? 'Menyimpan semua…' : 'Simpan jadwal mingguan'}</button>{/if}</div></div>
   {#if reason.trim().length > 0 && reason.trim().length < 5}<p class="validation-hint">Alasan perubahan minimal 5 karakter.</p>{/if}
   {#if warnings.length}<ul class="warnings">{#each [...new Set(warnings)].slice(0,6) as warning}<li>{warning}</li>{/each}</ul>{/if}
 

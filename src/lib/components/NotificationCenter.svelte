@@ -10,7 +10,7 @@
   import Feedback from './Feedback.svelte';
   import { devicePushStatus, enableDevicePush, disableDevicePush } from '../device-push';
   import type { DevicePushState } from '../device-push';
-  let open = false, saving = false, message = '', now = Date.now();
+  let open = false, saving = false, readingId = '', message = '', now = Date.now();
   let pushState:DevicePushState|'loading'='loading',pushBusy=false,mounted=false;
   let checkedAccount='',pushRevision=0;
   $: accountKey=`${$app.mode}:${$app.user?.id??''}`;
@@ -43,12 +43,12 @@
   }
   async function read(notification?: AppNotification) {
     if (saving) return;
-    saving = true; message = '';
+    saving = true; readingId = notification?.id ?? 'all'; message = '';
     try {
       await actions.readNotification(notification?.id);
       if (notification) { open = false; await goto(/^\/(leave|attendance|reports|assignments)\?/.test(notification.href)?notification.href:'/dashboard'); }
     } catch (error) { message = error instanceof Error ? error.message : 'Notifikasi belum berhasil diperbarui.'; }
-    finally { saving = false; }
+    finally { saving = false; readingId = ''; }
   }
 </script>
 
@@ -62,13 +62,13 @@
     <a class="reminder" href="/attendance" on:click={() => open = false}><Icon name="clock" size={21}/><span><strong>Sudah waktunya memeriksa clock out</strong><small>Durasi kerja telah mencapai 8 jam. Jika Anda sudah pulang dan lupa mencatat, hubungi HR untuk koreksi.</small></span><Icon name="chevron" size={17}/></a>
   {/if}
   {#if inbox.length}
-    <div class="inbox-heading"><span>{unread} belum dibaca</span><button class="btn btn-secondary" type="button" disabled={saving || !unread} on:click={() => read()}>Tandai semua dibaca</button></div>
+    <div class="inbox-heading"><span>{unread} belum dibaca</span><button class="btn btn-secondary" type="button" disabled={saving || !unread} aria-busy={saving && readingId === 'all'} on:click={() => read()}>{saving && readingId === 'all' ? 'Menandai…' : 'Tandai semua dibaca'}</button></div>
     <div class="inbox">
       {#each inbox as notification (notification.id)}
-        <button class="notification" class:unread={!notification.readAt} type="button" disabled={saving} on:click={() => read(notification)}>
+        <button class="notification" class:unread={!notification.readAt} type="button" disabled={saving} aria-busy={saving && readingId === notification.id} on:click={() => read(notification)}>
           <span class="notification-icon"><Icon name={notification.readAt ? 'file' : 'bell'} size={19}/></span>
           <span class="notification-copy"><strong>{notification.title}</strong><span>{notification.body}</span><small>{dateLabel(notification.createdAt)} · {timeLabel(notification.createdAt)} WIB{notification.readAt ? ' · Dibaca' : ' · Baru'}</small></span>
-          <Icon name="chevron" size={16}/>
+          {#if saving && readingId === notification.id}<span class="notification-opening" role="status">Membuka…</span>{:else}<Icon name="chevron" size={16}/>{/if}
         </button>
       {/each}
     </div>
@@ -89,9 +89,9 @@
       {:else}<p>Notifikasi belum aktif. Tekan Aktifkan, lalu izinkan pemberitahuan pada perangkat.</p>{/if}
     </div>
     {#if $app.mode==='live'}<div class="push-actions">
-      {#if pushState==='enabled'}<button class="btn btn-secondary" disabled={pushBusy} on:click={()=>setPush(false)}>{pushBusy?'Menonaktifkan…':'Nonaktifkan di perangkat ini'}</button>
-      {:else if pushState==='disabled'}<button class="btn btn-primary" disabled={pushBusy} on:click={()=>setPush(true)}>{pushBusy?'Mengaktifkan…':'Aktifkan notifikasi perangkat'}</button>{/if}
-      <button class="btn btn-secondary" disabled={pushBusy||pushState==='loading'} on:click={()=>checkPush()}>{pushState==='loading'?'Memeriksa…':'Periksa ulang'}</button>
+      {#if pushState==='enabled'}<button class="btn btn-secondary" disabled={pushBusy} aria-busy={pushBusy} on:click={()=>setPush(false)}>{pushBusy?'Menonaktifkan…':'Nonaktifkan di perangkat ini'}</button>
+      {:else if pushState==='disabled'}<button class="btn btn-primary" disabled={pushBusy} aria-busy={pushBusy} on:click={()=>setPush(true)}>{pushBusy?'Mengaktifkan…':'Aktifkan notifikasi perangkat'}</button>{/if}
+      <button class="btn btn-secondary" disabled={pushBusy||pushState==='loading'} aria-busy={!pushBusy && pushState==='loading'} on:click={()=>checkPush()}>{pushState==='loading'?'Memeriksa…':'Periksa ulang'}</button>
     </div>{/if}
   </section>
   <p class="hint">Isi pemberitahuan perangkat dibuat umum untuk menjaga privasi. Buka aplikasi untuk melihat rincian. Pengiriman memerlukan koneksi dan dukungan browser; jadwal pengingat dapat terlambat jika perangkat menunda pemberitahuan.</p>
@@ -111,6 +111,7 @@
   .notification-copy strong { font-size: 12px; line-height: 1.5; }
   .notification-copy > span, .notification-copy small { font-size: 10px; color: var(--muted); line-height: 1.6; }
   .notification-copy small { font-size: 9px; }
+  .notification-opening { font-size: 10px; color: var(--muted); }
   .reminder { display: flex; align-items: center; gap: 11px; padding: 14px; margin-bottom: 16px; border: 1px solid var(--control-border); border-left: 4px solid var(--primary); border-radius: 14px; background: var(--surface-cream); }
   .reminder > span { flex: 1; }
   .reminder strong, .reminder small { display: block; font-size: 12px; line-height: 1.6; }

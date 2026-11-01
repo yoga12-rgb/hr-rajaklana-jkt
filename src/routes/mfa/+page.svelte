@@ -17,7 +17,7 @@
 
 <svelte:head><title>Memeriksa sesi · Rajaklana HR</title></svelte:head>
 <main class="shim" aria-live="polite">
-  {#if error}<p role="alert">{error}</p>{:else}<p>Memeriksa sesi akun…</p>{/if}
+  {#if error}<p role="alert">{error}</p>{:else}<p class="loading-indicator" role="status">Memeriksa sesi akun…</p>{/if}
   <a class="btn btn-secondary" href="/login">Kembali ke login</a>
 </main>
 

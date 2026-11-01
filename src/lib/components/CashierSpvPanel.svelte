@@ -5,7 +5,7 @@
   import { todayJakarta, dateLabel } from './format';
   import { clearSavedFollowupDraft } from '#lib/spv-followup-drafts';
   import Feedback from './Feedback.svelte';
-  let date = todayJakarta(), outletFilter = '', busy = '', message = '', failed = false, now = Date.now();
+  let date = todayJakarta(), outletFilter = '', busy = '', busyAction = '', message = '', failed = false, now = Date.now();
   let ownerDraft: Record<string, string> = {}, noteDraft: Record<string, string> = {}, resolutionDraft: Record<string, string> = {};
   $: coverage = staffingCoverage($app, date).filter(row => !outletFilter || row.outletId === outletFilter);
   $: dayStatuses = cashierDayStatuses($app, date, now).filter(row => !outletFilter || row.outletId === outletFilter);
@@ -23,16 +23,16 @@
   onMount(() => { const timer = window.setInterval(() => now = Date.now(), 30_000); return () => window.clearInterval(timer); });
   async function start(key: string) {
     const item = signals.find(signal => signal.key === key); if (!item || busy) return;
-    busy = key; message = ''; failed = false;
+    busy = key; busyAction = 'start'; message = ''; failed = false;
     try { await actions.startSpvFollowup(item.input); message = 'Tindak lanjut tersimpan dan siap ditangani.'; }
     catch (error) { failed = true; message = error instanceof Error ? error.message : 'Tindak lanjut belum tersimpan.'; }
-    finally { busy = ''; }
+    finally { busy = ''; busyAction = ''; }
   }
   async function update(id: string, status: 'new' | 'in_progress' | 'completed') {
     const item = storedCases.find(row => row.id === id); if (!item || busy) return;
     const submitted = { ownerId: ownerDraft[id] ?? item.ownerId, note: noteDraft[id] ?? item.note,
       resolutionNote: resolutionDraft[id] ?? item.resolutionNote };
-    busy = id; message = ''; failed = false;
+    busy = id; busyAction = status; message = ''; failed = false;
     try {
       await actions.updateSpvFollowup({ id, expectedRevision: item.revision, idempotencyKey: crypto.randomUUID(), status, ...submitted,
         dueAt: item.dueAt, reason: submitted.ownerId !== item.ownerId ? 'Penetapan PIC melalui panel harian' : '' });
@@ -45,7 +45,7 @@
       resolutionDraft = clearSavedFollowupDraft(resolutionDraft, id, submitted.resolutionNote, status === 'completed');
       message = status === 'completed' ? 'Tindak lanjut selesai. Riwayat kehadiran tetap utuh.' : 'Tindak lanjut diperbarui.';
     } catch (error) { failed = true; message = error instanceof Error ? error.message : 'Tindak lanjut belum tersimpan.'; }
-    finally { busy = ''; }
+    finally { busy = ''; busyAction = ''; }
   }
   const issueLabel = (issue: string) => issue.replaceAll('_', ' ');
 </script>
@@ -81,18 +81,18 @@
           {#if existing}
             <div class="case-actions">
               {#if existing.status === 'completed'}
-                <p class="saved-note">Selesai · {existing.resolutionNote}</p><button class="btn btn-secondary" type="button" disabled={busy === item.key} on:click={() => start(item.key)}>Buka lagi</button>
+                <p class="saved-note">Selesai · {existing.resolutionNote}</p><button class="btn btn-secondary" type="button" disabled={!!busy} aria-busy={busy === item.key && busyAction === 'start'} on:click={() => start(item.key)}>{busy === item.key ? 'Membuka…' : 'Buka lagi'}</button>
               {:else}
                 <label class="field">Penanggung jawab<select class="select" value={ownerDraft[existing.id] ?? existing.ownerId ?? ''} on:change={(event) => ownerDraft = { ...ownerDraft, [existing.id]: event.currentTarget.value }}><option value="">Pilih Admin HR</option>{#each owners as owner}<option value={owner.id}>{owner.fullName}</option>{/each}</select></label>
                 <label class="field">Catatan tindak lanjut<textarea class="input" rows="2" value={noteDraft[existing.id] ?? existing.note} on:input={(event) => noteDraft = { ...noteDraft, [existing.id]: event.currentTarget.value }} placeholder="Opsional, tanpa mengubah data sumber"></textarea></label>
                 {#if existing.status === 'in_progress'}<label class="field">Catatan penyelesaian<textarea class="input" rows="2" value={resolutionDraft[existing.id] ?? ''} on:input={(event) => resolutionDraft = { ...resolutionDraft, [existing.id]: event.currentTarget.value }} placeholder="Jelaskan tindakan yang sudah dilakukan"></textarea></label>{/if}
                 <div class="case-buttons">
-                  {#if existing.status === 'new'}<button class="btn btn-secondary" type="button" disabled={busy === existing.id || !(ownerDraft[existing.id] ?? existing.ownerId)} on:click={() => update(existing.id, 'in_progress')}>{busy === existing.id ? 'Menyimpan…' : 'Tetapkan & proses'}</button>
-                  {:else}<button class="btn btn-secondary" type="button" disabled={busy === existing.id} on:click={() => update(existing.id, 'in_progress')}>Simpan catatan</button><button class="btn btn-primary" type="button" disabled={busy === existing.id} on:click={() => update(existing.id, 'completed')}>Selesaikan</button>{/if}
+                  {#if existing.status === 'new'}<button class="btn btn-secondary" type="button" disabled={!!busy || !(ownerDraft[existing.id] ?? existing.ownerId)} aria-busy={busy === existing.id && busyAction === 'in_progress'} on:click={() => update(existing.id, 'in_progress')}>{busy === existing.id ? 'Menyimpan…' : 'Tetapkan & proses'}</button>
+                  {:else}<button class="btn btn-secondary" type="button" disabled={!!busy} aria-busy={busy === existing.id && busyAction === 'in_progress'} on:click={() => update(existing.id, 'in_progress')}>{busy === existing.id && busyAction === 'in_progress' ? 'Menyimpan…' : 'Simpan catatan'}</button><button class="btn btn-primary" type="button" disabled={!!busy} aria-busy={busy === existing.id && busyAction === 'completed'} on:click={() => update(existing.id, 'completed')}>{busy === existing.id && busyAction === 'completed' ? 'Menyelesaikan…' : 'Selesaikan'}</button>{/if}
                 </div>
               {/if}
             </div>
-          {:else}<button class="btn btn-secondary" type="button" disabled={busy === item.key} on:click={() => start(item.key)}>{busy === item.key ? 'Menyimpan…' : 'Mulai tindak lanjut'}</button>{/if}
+          {:else}<button class="btn btn-secondary" type="button" disabled={!!busy} aria-busy={busy === item.key && busyAction === 'start'} on:click={() => start(item.key)}>{busy === item.key ? 'Menyimpan…' : 'Mulai tindak lanjut'}</button>{/if}
         </article>
       {/each}
       {#each openResolvedCases as item (item.id)}
@@ -103,8 +103,8 @@
             <label class="field">Catatan tindak lanjut<textarea class="input" rows="2" value={noteDraft[item.id] ?? item.note} on:input={(event) => noteDraft = { ...noteDraft, [item.id]: event.currentTarget.value }} placeholder="Opsional, tanpa mengubah data sumber"></textarea></label>
             {#if item.status === 'in_progress'}<label class="field">Catatan penyelesaian<textarea class="input" rows="2" value={resolutionDraft[item.id] ?? ''} on:input={(event) => resolutionDraft = { ...resolutionDraft, [item.id]: event.currentTarget.value }} placeholder="Jelaskan tindakan yang sudah dilakukan"></textarea></label>{/if}
             <div class="case-buttons">
-              {#if item.status === 'new'}<button class="btn btn-secondary" type="button" disabled={busy === item.id || !(ownerDraft[item.id] ?? item.ownerId)} on:click={() => update(item.id, 'in_progress')}>{busy === item.id ? 'Menyimpan…' : 'Tetapkan & proses'}</button>
-              {:else}<button class="btn btn-secondary" type="button" disabled={busy === item.id} on:click={() => update(item.id, 'in_progress')}>Simpan catatan</button><button class="btn btn-primary" type="button" disabled={busy === item.id} on:click={() => update(item.id, 'completed')}>Selesaikan</button>{/if}
+              {#if item.status === 'new'}<button class="btn btn-secondary" type="button" disabled={!!busy || !(ownerDraft[item.id] ?? item.ownerId)} aria-busy={busy === item.id && busyAction === 'in_progress'} on:click={() => update(item.id, 'in_progress')}>{busy === item.id ? 'Menyimpan…' : 'Tetapkan & proses'}</button>
+              {:else}<button class="btn btn-secondary" type="button" disabled={!!busy} aria-busy={busy === item.id && busyAction === 'in_progress'} on:click={() => update(item.id, 'in_progress')}>{busy === item.id && busyAction === 'in_progress' ? 'Menyimpan…' : 'Simpan catatan'}</button><button class="btn btn-primary" type="button" disabled={!!busy} aria-busy={busy === item.id && busyAction === 'completed'} on:click={() => update(item.id, 'completed')}>{busy === item.id && busyAction === 'completed' ? 'Menyelesaikan…' : 'Selesaikan'}</button>{/if}
             </div>
           </div>
         </article>

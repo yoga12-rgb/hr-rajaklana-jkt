@@ -69,7 +69,7 @@
   let tab: PlanningTab = 'coverage';
   let coverageOutletId = '', coverageDate = todayJakarta(), coverage: SupervisorCoverage | null = null;
   let requirements: StaffingIntervalRequirement[] = [], coverageLoading = false, requirementsLoading = false, reportLoading = false;
-  let savingRequirement = false, savingMiddle = false, message = '', failed = false;
+  let savingRequirement = false, savingMiddle = false, requirementRetry = false, middleRetry = false, refreshingButton = '', message = '', failed = false;
   let requirementEditing: StaffingIntervalRequirement | null = null;
   let requirementOutletId = '', requirementWeekday = dayFor(todayJakarta()), requirementStart = '07:00', requirementEnd = '15:00';
   let requirementMinimum = 1, requirementFrom = todayJakarta(), requirementUntil = '', requirementReason = '';
@@ -155,6 +155,16 @@
       if (report) await loadReport();
     } finally { refreshingAuthoritativeData = false; }
   }
+  async function refreshFromButton(button: 'all' | 'coverage' | 'requirements' | 'report') {
+    if (refreshingButton) return;
+    refreshingButton = button;
+    try {
+      if (button === 'all') await Promise.all([refreshCoverageArea(), report ? loadReport() : Promise.resolve()]);
+      else if (button === 'coverage') await refreshCoverageArea();
+      else if (button === 'requirements') await refreshRequirements();
+      else await loadReport();
+    } finally { refreshingButton = ''; }
+  }
   async function loadCapabilities() {
     try { capabilities = await planningActions.loadMySupervisorCapabilities(); }
     catch (error) { showError(error, 'Hak perencanaan belum dapat dimuat.'); }
@@ -200,7 +210,7 @@
         persistPending('requirement', attempt.id ?? 'new', attempt);
       }
     } catch (error) { showError(error, 'Kebutuhan interval belum siap disimpan.'); return; }
-    savingRequirement = true; clearFeedback();
+    savingRequirement = true; requirementRetry = retry; clearFeedback();
     try {
       await planningActions.saveIntervalRequirement(attempt);
       persistPending('requirement', attempt.id ?? 'new', null); requirementPending = null;
@@ -209,7 +219,7 @@
     } catch (error) {
       showError(error, 'Kebutuhan interval belum tersimpan. Payload dan key asli tetap tersedia untuk dicoba lagi.');
       if (/berubah sejak dibuka|40001/i.test(message)) await refreshRequirements();
-    } finally { savingRequirement = false; }
+    } finally { savingRequirement = false; requirementRetry = false; }
   }
 
   function chooseMiddle() {
@@ -242,7 +252,7 @@
         attempt = middleAttempt(); middlePending = attempt; persistPending('middle', attempt.assignmentId, attempt);
       }
     } catch (error) { showError(error, 'Jam Middle belum siap disimpan.'); return; }
-    savingMiddle = true; clearFeedback();
+    savingMiddle = true; middleRetry = retry; clearFeedback();
     try {
       await planningActions.saveCashierAssignmentPlan(attempt);
       persistPending('middle', attempt.assignmentId, null); middlePending = null;
@@ -251,7 +261,7 @@
       message = 'Jam Middle tersimpan. Cakupan akan memakai interval rencana ini.';
       await refreshCoverage();
     } catch (error) { showError(error, 'Jam Middle belum tersimpan. Payload dan key asli tetap tersedia untuk dicoba lagi.'); }
-    finally { savingMiddle = false; }
+    finally { savingMiddle = false; middleRetry = false; }
   }
 
   async function loadReport() {
@@ -313,8 +323,8 @@
 </script>
 
 <PageHeading eyebrow="SUPERVISOR" title="Perencanaan & ringkasan" description="Pantau kebutuhan kasir per interval, tetapkan jam Middle, dan baca ringkasan periode dari sumber data yang sama.">
-  <button class="btn btn-secondary" type="button" on:click={() => { void refreshCoverageArea(); if (report) void loadReport(); }} disabled={coverageLoading || requirementsLoading}>
-    <Icon name="refresh" size={17}/>Perbarui data
+  <button class="btn btn-secondary" type="button" on:click={() => void refreshFromButton('all')} aria-busy={refreshingButton === 'all'} disabled={coverageLoading || requirementsLoading || reportLoading || !!refreshingButton}>
+    <Icon name="refresh" size={17}/>{refreshingButton === 'all' ? 'Memuat…' : 'Perbarui data'}
   </button>
 </PageHeading>
 
@@ -337,7 +347,7 @@
       </select>
     </label>
     <label class="field">Tanggal kerja (WIB)<input class="input" type="date" bind:value={coverageDate} on:change={() => { resetRequirement(); void refreshCoverageArea(); }}/></label>
-    <button class="btn btn-primary" type="button" on:click={() => void refreshCoverageArea()} disabled={coverageLoading}> {coverageLoading ? 'Memuat…' : 'Tinjau cakupan'} </button>
+    <button class="btn btn-primary" type="button" on:click={() => void refreshFromButton('coverage')} aria-busy={refreshingButton === 'coverage'} disabled={coverageLoading || requirementsLoading || !!refreshingButton}> {refreshingButton === 'coverage' ? 'Memuat…' : 'Tinjau cakupan'} </button>
   </section>
 
   {#if coverage}
@@ -373,10 +383,10 @@
           <label class="field">Mulai berlaku<input class="input" type="date" bind:value={requirementFrom} required/></label>
           <label class="field">Berakhir berlaku <span class="optional">opsional</span><input class="input" type="date" min={requirementFrom} bind:value={requirementUntil}/></label>
           <label class="field">Alasan perubahan <span class="optional">wajib saat ubah</span><input class="input" minlength="5" bind:value={requirementReason} placeholder="Contoh: penjualan akhir pekan naik"/></label>
-        </div><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={resetRequirement}>Bersihkan</button><button class="btn btn-primary" disabled={savingRequirement || !!requirementPending || !!requirementConflict}>{savingRequirement ? 'Menyimpan…' : requirementEditing ? 'Simpan perubahan' : 'Simpan kebutuhan'}</button></div></fieldset></form>
-        {#if requirementPending}<div class="retry" role="alert"><strong>Permintaan belum memiliki hasil pasti.</strong><span>Key dan payload asli disimpan khusus untuk akun ini.</span><button class="btn btn-secondary" type="button" disabled={savingRequirement} on:click={() => void saveRequirement(true)}>Coba lagi permintaan yang sama</button></div>{/if}
+        </div><div class="form-actions"><button class="btn btn-secondary" type="button" on:click={resetRequirement}>Bersihkan</button><button class="btn btn-primary" aria-busy={savingRequirement && !requirementRetry} disabled={savingRequirement || !!requirementPending || !!requirementConflict}>{savingRequirement && !requirementRetry ? 'Menyimpan…' : requirementEditing ? 'Simpan perubahan' : 'Simpan kebutuhan'}</button></div></fieldset></form>
+        {#if requirementPending}<div class="retry" role="alert"><strong>Permintaan belum memiliki hasil pasti.</strong><span>Key dan payload asli disimpan khusus untuk akun ini.</span><button class="btn btn-secondary" type="button" aria-busy={savingRequirement && requirementRetry} disabled={savingRequirement} on:click={() => void saveRequirement(true)}>{savingRequirement && requirementRetry ? 'Memeriksa hasil…' : 'Coba lagi permintaan yang sama'}</button></div>{/if}
       </section>
-      <section class="panel"><div class="panel-heading"><div><h2>Interval yang tersimpan</h2><p>Daftar disaring menurut outlet di atas.</p></div><button class="btn btn-secondary" type="button" on:click={() => void refreshRequirements()} disabled={requirementsLoading}>{requirementsLoading ? 'Memuat…' : 'Muat ulang'}</button></div>
+      <section class="panel"><div class="panel-heading"><div><h2>Interval yang tersimpan</h2><p>Daftar disaring menurut outlet di atas.</p></div><button class="btn btn-secondary" type="button" on:click={() => void refreshFromButton('requirements')} aria-busy={refreshingButton === 'requirements'} disabled={requirementsLoading || !!refreshingButton}>{refreshingButton === 'requirements' ? 'Memuat…' : 'Muat ulang'}</button></div>
         {#if matchedRequirements.length}<div class="requirement-list">{#each matchedRequirements as row (row.id)}<button type="button" class="requirement-row" on:click={() => editRequirement(row)}><span><strong>{weekdayLabels[row.weekday]}</strong><small>{localTime(row.startsAt)}–{localTime(row.endsAt)} WIB · minimum {row.minimum} kasir</small></span><span><small>Berlaku {dateLabel(row.effectiveFrom)}{row.effectiveUntil ? `–${dateLabel(row.effectiveUntil)}` : ' seterusnya'}</small><small>Revisi {row.revision}</small></span></button>{/each}</div>{:else}<EmptyState icon="calendar" title="Belum ada interval" description="Tambahkan kebutuhan waktu agar cakupan tidak dinilai hanya dari jumlah shift."/>{/if}
       </section>
     </section>
@@ -388,12 +398,12 @@
     <section class="panel"><div class="panel-heading"><div><h2>Penugasan Middle</h2><p>Middle tidak diasumsikan punya jam. Masukkan interval tepat 8 jam termasuk istirahat.</p></div></div>
       {#if activeMiddleAssignments.length}<div class="middle-list">{#each activeMiddleAssignments as assignment}<button class:selected={assignment.id === middleAssignmentId} type="button" on:click={() => { middleAssignmentId = assignment.id; chooseMiddle(); }}><span><strong>{employeeName(assignment.employeeId)}</strong><small>{assignment.workDate} · {outletName(assignment.outletId)}</small></span><span>{#if assignment.plannedStartsAt}<StatusPill label={planLabel(assignment)} tone="green"/>{:else}<StatusPill label="Belum ada jam" tone="amber"/>{/if}</span></button>{/each}</div>{:else}<EmptyState icon="clock" title="Tidak ada penugasan Middle aktif" description="Tambahkan penugasan Middle pada jadwal kasir terlebih dahulu."/>{/if}
     </section>
-    <section class="panel middle-form"><h2>Jam rencana Middle</h2>{#if selectedMiddle}<p class="hint">{employeeName(selectedMiddle.employeeId)} · versi jadwal {localDateTime(selectedMiddle.updatedAt)}. Setelah ada absensi, perubahan waktu harus memakai jalur koreksi.</p>{#if middleConflict}<div class="conflict" role="alert"><strong>Jadwal Middle berubah di sesi lain</strong><p>Jam dan alasan yang Anda masukkan tetap tersimpan di halaman ini. Tinjau perubahan sebelum memakai revisi terbaru atau memilih data server.</p><div><button class="btn btn-secondary" type="button" on:click={chooseMiddle}>Gunakan jadwal server</button><button class="btn btn-primary" type="button" on:click={reviewMiddleConflict}>Pertahankan isian & gunakan revisi terbaru</button></div></div>{/if}<form on:submit|preventDefault={() => void saveMiddlePlan()}><fieldset class="form-fields" disabled={savingMiddle || !!middlePending || !!middleConflict}><div class="form-grid"><label class="field">Mulai (WIB)<input class="input" type="time" bind:value={middleStart} required/></label><label class="field">Selesai (WIB)<input class="input" type="time" bind:value={middleEnd} required/></label><label class="field wide">Alasan penetapan<input class="input" minlength="5" bind:value={middleReason} placeholder="Contoh: kebutuhan layanan outlet" required/></label></div><p class:invalid={middleDuration !== 480} class="duration"><strong>{middleDuration == null ? 'Masukkan jam' : `${Math.floor(middleDuration / 60)} jam ${middleDuration % 60 ? `${middleDuration % 60} menit` : ''}`}</strong> · harus tepat 8 jam termasuk istirahat.{#if middleEnd <= middleStart && middleDuration === 480} Berakhir pada hari berikutnya.{/if}</p><div class="form-actions"><button class="btn btn-primary" disabled={savingMiddle || !!middlePending || !!middleConflict}>{savingMiddle ? 'Menyimpan…' : 'Simpan jam Middle'}</button></div></fieldset></form>{#if middlePending}<div class="retry" role="alert"><strong>Permintaan belum memiliki hasil pasti.</strong><span>Key dan payload asli tetap terikat pada akun serta penugasan ini.</span><button class="btn btn-secondary" type="button" disabled={savingMiddle} on:click={() => void saveMiddlePlan(true)}>Coba lagi permintaan yang sama</button></div>{/if}{:else}<div class="empty-form"><Icon name="clock" size={28}/><p>Pilih penugasan Middle di sebelah kiri.</p></div>{/if}</section>
+    <section class="panel middle-form"><h2>Jam rencana Middle</h2>{#if selectedMiddle}<p class="hint">{employeeName(selectedMiddle.employeeId)} · versi jadwal {localDateTime(selectedMiddle.updatedAt)}. Setelah ada absensi, perubahan waktu harus memakai jalur koreksi.</p>{#if middleConflict}<div class="conflict" role="alert"><strong>Jadwal Middle berubah di sesi lain</strong><p>Jam dan alasan yang Anda masukkan tetap tersimpan di halaman ini. Tinjau perubahan sebelum memakai revisi terbaru atau memilih data server.</p><div><button class="btn btn-secondary" type="button" on:click={chooseMiddle}>Gunakan jadwal server</button><button class="btn btn-primary" type="button" on:click={reviewMiddleConflict}>Pertahankan isian & gunakan revisi terbaru</button></div></div>{/if}<form on:submit|preventDefault={() => void saveMiddlePlan()}><fieldset class="form-fields" disabled={savingMiddle || !!middlePending || !!middleConflict}><div class="form-grid"><label class="field">Mulai (WIB)<input class="input" type="time" bind:value={middleStart} required/></label><label class="field">Selesai (WIB)<input class="input" type="time" bind:value={middleEnd} required/></label><label class="field wide">Alasan penetapan<input class="input" minlength="5" bind:value={middleReason} placeholder="Contoh: kebutuhan layanan outlet" required/></label></div><p class:invalid={middleDuration !== 480} class="duration"><strong>{middleDuration == null ? 'Masukkan jam' : `${Math.floor(middleDuration / 60)} jam ${middleDuration % 60 ? `${middleDuration % 60} menit` : ''}`}</strong> · harus tepat 8 jam termasuk istirahat.{#if middleEnd <= middleStart && middleDuration === 480} Berakhir pada hari berikutnya.{/if}</p><div class="form-actions"><button class="btn btn-primary" aria-busy={savingMiddle && !middleRetry} disabled={savingMiddle || !!middlePending || !!middleConflict}>{savingMiddle && !middleRetry ? 'Menyimpan…' : 'Simpan jam Middle'}</button></div></fieldset></form>{#if middlePending}<div class="retry" role="alert"><strong>Permintaan belum memiliki hasil pasti.</strong><span>Key dan payload asli tetap terikat pada akun serta penugasan ini.</span><button class="btn btn-secondary" type="button" aria-busy={savingMiddle && middleRetry} disabled={savingMiddle} on:click={() => void saveMiddlePlan(true)}>{savingMiddle && middleRetry ? 'Memeriksa hasil…' : 'Coba lagi permintaan yang sama'}</button></div>{/if}{:else}<div class="empty-form"><Icon name="clock" size={28}/><p>Pilih penugasan Middle di sebelah kiri.</p></div>{/if}</section>
   </section>
   <aside class="notice muted" role="note"><Icon name="file" size={18}/><div><strong>Jejak keputusan tetap dipertahankan</strong><p>Server memeriksa versi jadwal, alasan, dan interval 8 jam dalam satu transaksi. Jika jadwal berubah di sesi lain, muat ulang lalu tinjau data terbaru sebelum membuat permintaan baru.</p></div></aside>
 
 {:else if canViewReports}
-  <section class="panel report-controls"><div class="period-presets" aria-label="Rentang laporan cepat"><span>Rentang cepat</span><button class="btn btn-secondary" type="button" on:click={useThisWeek}>Minggu ini (Senin–Minggu)</button><button class="btn btn-secondary" type="button" on:click={useThisMonth}>Bulan kalender ini</button></div><div class="form-grid"><label class="field">Dari tanggal (WIB)<input class="input" type="date" bind:value={reportFrom} max={reportTo}/></label><label class="field">Sampai tanggal (WIB)<input class="input" type="date" bind:value={reportTo} min={reportFrom}/></label><label class="field">Outlet<select class="select" bind:value={reportOutletId}><option value="">Semua outlet yang diizinkan</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label>{#if admin}<label class="field">Karyawan <span class="optional">opsional</span><select class="select" bind:value={reportEmployeeId}><option value="">Semua karyawan</option>{#each $app.employees.filter((employee) => employee.status === 'active') as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label>{/if}</div><div class="form-actions"><span class="hint">Maksimal 63 hari. Data mengikuti akses Anda saat laporan dimuat.</span><button class="btn btn-primary" type="button" on:click={() => void loadReport()} disabled={reportLoading}>{reportLoading ? 'Memuat…' : 'Buat laporan'}</button></div></section>
+  <section class="panel report-controls"><div class="period-presets" aria-label="Rentang laporan cepat"><span>Rentang cepat</span><button class="btn btn-secondary" type="button" on:click={useThisWeek}>Minggu ini (Senin–Minggu)</button><button class="btn btn-secondary" type="button" on:click={useThisMonth}>Bulan kalender ini</button></div><div class="form-grid"><label class="field">Dari tanggal (WIB)<input class="input" type="date" bind:value={reportFrom} max={reportTo}/></label><label class="field">Sampai tanggal (WIB)<input class="input" type="date" bind:value={reportTo} min={reportFrom}/></label><label class="field">Outlet<select class="select" bind:value={reportOutletId}><option value="">Semua outlet yang diizinkan</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label>{#if admin}<label class="field">Karyawan <span class="optional">opsional</span><select class="select" bind:value={reportEmployeeId}><option value="">Semua karyawan</option>{#each $app.employees.filter((employee) => employee.status === 'active') as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label>{/if}</div><div class="form-actions"><span class="hint">Maksimal 63 hari. Data mengikuti akses Anda saat laporan dimuat.</span><button class="btn btn-primary" type="button" on:click={() => void refreshFromButton('report')} aria-busy={refreshingButton === 'report'} disabled={reportLoading || !!refreshingButton}>{refreshingButton === 'report' ? 'Memuat…' : 'Buat laporan'}</button></div></section>
   {#if report}
     <div class="metrics report-metrics"><MetricCard label="Hari dijadwalkan" value={report.summary.scheduledDays} detail={`${report.summary.attendanceDays} hari memiliki absensi`} icon="calendar"/><MetricCard label="Keterlambatan" value={`${report.summary.lateMinutes} menit`} detail={`${report.summary.corrections} permintaan koreksi`} icon="clock"/><MetricCard label="Cakupan perlu perhatian" value={report.summary.coverageShortageIntervals + report.summary.coverageUnconfiguredDays} detail={`${report.summary.coverageShortageIntervals} kurang · ${report.summary.coverageUnconfiguredDays} belum dikonfigurasi`} icon="alert" accent={(report.summary.coverageShortageIntervals + report.summary.coverageUnconfiguredDays) > 0}/></div>
     <section class="panel table-panel"><div class="panel-heading"><div><h2>Ringkasan periode</h2><p>{report.basis}</p></div><button class="btn btn-secondary" type="button" on:click={exportReportCsv}><Icon name="download" size={16}/>Ekspor CSV</button></div><div class="summary-grid"><div><span>Cuti penuh disetujui</span><strong>{report.summary.approvedFullLeaveDays} hari</strong></div><div><span>Izin parsial disetujui</span><strong>{report.summary.approvedPartialLeaveDays} hari</strong></div><div><span>Middle tanpa jam</span><strong>{report.summary.coverageUnknownMiddleAssignments}</strong></div>{#if report.summary.followupsOpenNow != null}<div><span>Kasus terbuka saat ini</span><strong>{report.summary.followupsOpenNow}</strong><small>{report.summary.followupsOverdueNow ?? 0} lewat tenggat</small></div>{/if}</div><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Outlet</th><th>Karyawan</th><th>Shift</th><th>Absensi</th><th>Cuti/izin</th><th>Terlambat</th><th>Koreksi</th></tr></thead><tbody>{#each reportDetails as row}<tr><td>{dateLabel(row.workDate)}</td><td>{outletName(row.outletId)}</td><td>{row.employeeId ? employeeName(row.employeeId) : 'Disamarkan oleh akses'}</td><td>{row.shift}</td><td><StatusPill label={row.attendanceRecorded ? 'Tercatat' : 'Belum tercatat'} tone={row.attendanceRecorded ? 'green' : 'amber'}/></td><td>{#if row.fullLeave}<StatusPill label="Cuti penuh" tone="blue"/>{:else if row.partialLeave}<StatusPill label="Izin parsial" tone="blue"/>{:else}—{/if}</td><td>{row.lateMinutes ? `${row.lateMinutes} menit` : '—'}</td><td>{row.corrections || '—'}</td></tr>{/each}</tbody></table></div><p class="legend">Dibuat {localDateTime(report.asOf)}. Backlog tindak lanjut menunjukkan status saat ini, bukan rekonstruksi status pada tanggal lampau.</p></section>

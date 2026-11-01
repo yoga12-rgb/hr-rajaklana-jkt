@@ -92,7 +92,7 @@
   interface OperationsConfiguration { categories: IssueCategory[]; routes: IssueRoute[]; capabilities: CapabilityGrant[]; asOf: string }
 
   let tab: Tab = 'issues';
-  let message = '', failed = false, loading = true, busy = '';
+  let message = '', failed = false, loading = true, busy = '', busyControl = '';
   let issueView: IssueView = 'open', issueOutletId = '', issueCategoryId = '', issueRows: OutletIssue[] = [], issueTotal = 0, issueAsOf = '', issueHasMore = false, issueNextCursor: Cursor = null;
   let issueCategories: IssueCategory[] = [], selectedIssueId = '', issueDraft: StoredDraft<IssueUpdateInput> | null = null;
   let issuePhoto: File | null = null;
@@ -493,10 +493,10 @@
       const idempotencyKey = randomKey();
       let photoPath: string | null = null;
       if (issuePhoto) {
-        busy = 'issue-upload'; setFeedback('Mengunggah foto pendukung secara privat…');
+        busyControl = 'issue-submit'; busy = 'issue-upload'; setFeedback('Mengunggah foto pendukung secara privat…');
         try { photoPath = await operational.uploadOutletIssuePhoto(issuePhoto, idempotencyKey); }
         catch (error) { setFeedback(error instanceof Error ? error.message : 'Foto pendukung belum dapat diunggah.', true); return; }
-        finally { busy = ''; }
+        finally { busy = ''; busyControl = ''; }
       }
       const payload: IssueSubmitInput = { outletId: newIssue.outletId, categoryId: newIssue.categoryId, description: newIssue.description.trim(), urgency: newIssue.urgency, photoPath,
         reporterEmployeeId: newIssue.reporterEmployeeId || null, idempotencyKey };
@@ -504,7 +504,7 @@
       issueSubmitAttempt = attempt;
       writeRecovery('issue-submit', 'new', { baseline: 0, values: payload, pendingAttempt: attempt, conflict: null });
     }
-    busy = 'issue-submit'; setFeedback('');
+    busyControl = replay ? 'issue-submit-retry' : 'issue-submit'; busy = 'issue-submit'; setFeedback('');
     try {
       if (!attempt) return;
       const result = await operational.submitOutletIssue(attempt.payload as IssueSubmitInput);
@@ -514,7 +514,7 @@
       setFeedback('Laporan kendala tersimpan. Jika koneksi sempat putus, retry dengan key yang sama tetap menghasilkan satu laporan.');
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Laporan belum memiliki hasil pasti. Gunakan coba lagi dengan payload yang sama.', true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   async function saveIssue(replay = false) {
     if (!selectedIssue || !issueDraft || busy) return;
@@ -525,7 +525,7 @@
       attempt = { idempotencyKey: payload.idempotencyKey, payload, createdAt: new Date().toISOString() };
       issueDraft = { ...issueDraft, values: payload, pendingAttempt: attempt, conflict: null }; rememberIssue();
     }
-    busy = `issue:${selectedIssue.id}`; setFeedback('');
+    busyControl = replay ? 'issue-update-retry' : 'issue-update'; busy = `issue:${selectedIssue.id}`; setFeedback('');
     try {
       if (!attempt) return;
       const result = await operational.updateOutletIssue(attempt.payload as IssueUpdateInput);
@@ -542,7 +542,7 @@
         if (latest && issueDraft) { issueDraft = { ...issueDraft, conflict: `Versi server sekarang ${latest.revision}. Draft dan percobaan asli tetap tersimpan untuk Anda tinjau.` }; rememberIssue(); }
       }
       setFeedback(detail, true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   function senderChanged() {
     if (!handoverDraft) return;
@@ -564,7 +564,7 @@
       attempt = { idempotencyKey: payload.idempotencyKey, payload, createdAt: new Date().toISOString() };
       handoverDraft = { ...handoverDraft, values: payload, pendingAttempt: attempt, conflict: null }; rememberHandover();
     }
-    busy = `handover:${recoveryId}`; setFeedback('');
+    busyControl = replay ? 'handover-save-retry' : send ? 'handover-send' : 'handover-save'; busy = `handover:${recoveryId}`; setFeedback('');
     try {
       if (!attempt) return;
       const result = await operational.saveShiftHandover(attempt.payload as HandoverSaveInput);
@@ -577,7 +577,7 @@
       const detail = error instanceof Error ? error.message : 'Serah terima belum memiliki hasil pasti.';
       if (/berubah sejak dibuka|40001/i.test(detail) && selectedHandover && handoverDraft) { await loadHandovers().catch(() => undefined); const latest = handoverRows.find((row) => row.id === selectedHandover.id); if (latest) { handoverDraft = { ...handoverDraft, conflict: `Versi server sekarang ${latest.version}. Periksa catatan sebelum menyimpan ulang.` }; rememberHandover(); } }
       setFeedback(detail, true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   async function respondHandover(accept: boolean, replay = false) {
     if (!selectedHandover || busy) return;
@@ -589,10 +589,10 @@
       writeRecovery('handover-response', selectedHandover.id, { baseline: selectedHandover.version, values: payload, pendingAttempt: attempt, conflict: null });
     }
     if (!attempt) return;
-    busy = key; setFeedback('');
+    busyControl = replay ? 'handover-response-retry' : accept ? 'handover-accept' : 'handover-correct'; busy = key; setFeedback('');
     try { await operational.respondShiftHandover(attempt.payload as HandoverResponseInput); clearRecovery('handover-response', selectedHandover.id); handoverResponseReason = ''; await loadHandovers(); setFeedback(accept ? 'Serah terima diterima untuk versi ini.' : 'Permintaan perbaikan dikirim kepada pengirim.'); }
     catch (error) { setFeedback(error instanceof Error ? error.message : 'Respons belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   function exchangeRequesterChanged() {
     const assignment = requesterAssignment;
@@ -611,7 +611,7 @@
       attempt = { idempotencyKey: payload.idempotencyKey, payload, createdAt: new Date().toISOString() };
       exchangeSubmitAttempt = attempt; writeRecovery('exchange-submit', 'new', { baseline: 0, values: payload, pendingAttempt: attempt, conflict: null });
     }
-    busy = 'exchange-submit'; setFeedback('');
+    busyControl = replay ? 'exchange-submit-retry' : 'exchange-submit'; busy = 'exchange-submit'; setFeedback('');
     try {
       if (!attempt) return;
       const result = await operational.submitShiftExchange(attempt.payload as ExchangeSubmitInput);
@@ -619,7 +619,7 @@
       await loadExchanges(); selectExchange(exchangeRows.find((row) => row.id === result.id) ?? result);
       setFeedback('Usulan dikirim ke rekan. Jadwal resmi belum berubah sampai Admin HR memutuskan.');
     } catch (error) { setFeedback(error instanceof Error ? error.message : 'Pengajuan belum memiliki hasil pasti. Coba lagi dengan payload yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   async function respondExchange(accept: boolean, replay = false) {
     if (!selectedExchange || busy) return;
@@ -631,10 +631,10 @@
       writeRecovery('exchange-response', selectedExchange.id, { baseline: selectedExchange.revision, values: payload, pendingAttempt: attempt, conflict: null });
     }
     if (!attempt) return;
-    busy = `exchange-response:${selectedExchange.id}`; setFeedback('');
+    busyControl = replay ? 'exchange-response-retry' : accept ? 'exchange-accept' : 'exchange-reject'; busy = `exchange-response:${selectedExchange.id}`; setFeedback('');
     try { await operational.respondShiftExchange(attempt.payload as ExchangeResponseInput); clearRecovery('exchange-response', selectedExchange.id); exchangeResponseNote = ''; await loadExchanges(); setFeedback(accept ? 'Persetujuan rekan tercatat. Pengajuan menunggu keputusan Admin HR.' : 'Penolakan rekan tercatat; jadwal resmi tetap berlaku.'); }
     catch (error) { setFeedback(error instanceof Error ? error.message : 'Respons belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   async function decideExchange(approved: boolean, replay = false) {
     if (!selectedExchange || busy) return;
@@ -646,10 +646,10 @@
       writeRecovery('exchange-decision', selectedExchange.id, { baseline: selectedExchange.revision, values: payload, pendingAttempt: attempt, conflict: null });
     }
     if (!attempt) return;
-    busy = `exchange-decision:${selectedExchange.id}`; setFeedback('');
+    busyControl = replay ? 'exchange-decision-retry' : approved ? 'exchange-approve' : 'exchange-decline'; busy = `exchange-decision:${selectedExchange.id}`; setFeedback('');
     try { await operational.decideShiftExchange(attempt.payload as ExchangeDecisionInput); clearRecovery('exchange-decision', selectedExchange.id); exchangeDecisionNote = ''; await Promise.all([loadExchanges(), actions.refresh()]); setFeedback(approved ? 'Keputusan disimpan. Perubahan seluruh jadwal dilakukan atomik oleh server.' : 'Penolakan disimpan; jadwal resmi tidak diubah.'); }
     catch (error) { setFeedback(error instanceof Error ? error.message : 'Keputusan belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   async function cancelExchange(replay = false) {
     if (!selectedExchange || busy) return;
@@ -661,13 +661,13 @@
       writeRecovery('exchange-cancel', selectedExchange.id, { baseline: selectedExchange.revision, values: payload, pendingAttempt: attempt, conflict: null });
     }
     if (!attempt) return;
-    busy = `exchange-cancel:${selectedExchange.id}`; setFeedback('');
+    busyControl = 'exchange-cancel'; busy = `exchange-cancel:${selectedExchange.id}`; setFeedback('');
     try {
       await operational.cancelShiftExchange(attempt.payload as ExchangeCancelInput);
       clearRecovery('exchange-cancel', selectedExchange.id); exchangeCancelNote = ''; await loadExchanges();
       setFeedback('Pengajuan dibatalkan. Jadwal resmi tidak berubah.');
     } catch (error) { setFeedback(error instanceof Error ? error.message : 'Pembatalan belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   async function expireStaleExchanges(replay = false) {
     if (!admin || busy) return;
@@ -678,13 +678,13 @@
       writeRecovery('exchange-expire', 'all', { baseline: 0, values: payload, pendingAttempt: attempt, conflict: null });
     }
     if (!attempt) return;
-    busy = 'exchange-expire'; setFeedback('');
+    busyControl = 'exchange-expire'; busy = 'exchange-expire'; setFeedback('');
     try {
       const result = await operational.expireStaleShiftExchanges((attempt.payload as { idempotencyKey: string }).idempotencyKey);
       clearRecovery('exchange-expire', 'all'); await loadExchanges();
       setFeedback(result.expiredCount ? `${result.expiredCount} pengajuan kedaluwarsa ditutup dengan riwayat tetap tersimpan.` : 'Tidak ada pengajuan aktif yang telah kedaluwarsa.');
     } catch (error) { setFeedback(error instanceof Error ? error.message : 'Penutupan pengajuan kedaluwarsa belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
-    finally { busy = ''; }
+    finally { busy = ''; busyControl = ''; }
   }
   async function saveCategory(replay = false) {
     if (busy) return;
@@ -700,7 +700,7 @@
       writeRecovery('config-category', configDraftId, categoryDraft);
     }
     if (!attempt) { setFeedback('Tidak ada permintaan kategori yang dapat dicoba ulang.', true); return; }
-    busy = 'config-category'; setFeedback('');
+    busyControl = replay ? 'config-category-retry' : 'config-category'; busy = 'config-category'; setFeedback('');
     try {
       await operational.saveSupervisorIssueCategory(attempt.payload as CategorySaveInput);
       clearCategoryDraft(); await loadConfiguration(); categoryForm = emptyCategoryForm();
@@ -713,7 +713,7 @@
         try { await loadConfiguration(); } catch { /* Retain the original conflict if refresh is unavailable. */ }
       }
       setFeedback(error instanceof Error ? error.message : 'Kategori belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   async function saveRoute(replay = false) {
     if (busy) return;
@@ -729,7 +729,7 @@
       writeRecovery('config-route', configDraftId, routeDraft);
     }
     if (!attempt) { setFeedback('Tidak ada permintaan routing yang dapat dicoba ulang.', true); return; }
-    busy = 'config-route'; setFeedback('');
+    busyControl = replay ? 'config-route-retry' : 'config-route'; busy = 'config-route'; setFeedback('');
     try {
       await operational.saveSupervisorIssueRoute(attempt.payload as RouteSaveInput);
       clearRouteDraft(); await loadConfiguration(); routeForm = emptyRouteForm();
@@ -742,7 +742,7 @@
         try { await loadConfiguration(); } catch { /* Retain the original conflict if refresh is unavailable. */ }
       }
       setFeedback(error instanceof Error ? error.message : 'Routing belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   async function saveCapability(replay = false) {
     if (busy) return;
@@ -759,7 +759,7 @@
       writeRecovery('config-capability', configDraftId, capabilityDraft);
     }
     if (!attempt) { setFeedback('Tidak ada permintaan akses yang dapat dicoba ulang.', true); return; }
-    busy = 'config-capability'; setFeedback('');
+    busyControl = replay ? 'config-capability-retry' : 'config-capability'; busy = 'config-capability'; setFeedback('');
     try {
       await operational.saveSupervisorCapability(attempt.payload as CapabilitySaveInput);
       clearCapabilityDraft(); await loadConfiguration(); capabilityForm = emptyCapabilityForm();
@@ -772,7 +772,7 @@
         try { await loadConfiguration(); } catch { /* Retain the original conflict if refresh is unavailable. */ }
       }
       setFeedback(error instanceof Error ? error.message : 'Hak operasional belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true);
-    } finally { busy = ''; }
+    } finally { busy = ''; busyControl = ''; }
   }
   function grantFromExisting(grant: CapabilityGrant, granted: boolean) {
     if (capabilityConfigDraft()?.pendingAttempt) { setFeedback('Selesaikan retry akses sebelumnya terlebih dahulu agar payload dan key asli tetap aman.', true); return; }
@@ -804,7 +804,7 @@
 </script>
 
 <PageHeading eyebrow="SUPERVISOR" title="Operasi outlet" description="Kendala, serah terima, dan perubahan jadwal dicatat sebagai alur terpisah. Hak akses dan keputusan akhir selalu diperiksa server.">
-  <button class="btn btn-secondary" type="button" disabled={loading || !!busy} on:click={reloadAll}><Icon name="refresh" size={16}/>Perbarui</button>
+  <button class="btn btn-secondary" type="button" aria-busy={loading} disabled={loading || !!busy} on:click={reloadAll}><Icon name="refresh" size={16}/>{loading ? 'Memuat…' : 'Perbarui'}</button>
 </PageHeading>
 
 <nav class="module-tabs" aria-label="Modul operasi">
@@ -825,7 +825,7 @@
       <div class="section-heading"><div><span class="eyebrow">LAPORKAN</span><h2>Kendala outlet</h2></div><Icon name="alert" size={21}/></div>
       <p class="hint">Outlet harus terkait penugasan atau absensi yang sah. Jika jadwal belum tercatat, hubungi petugas berwenang untuk membuat laporan atas nama kasir tanpa membuat jadwal fiktif.</p>
       {#if issueSubmitAttempt}
-        <div class="pending" role="status"><strong>Laporan sebelumnya belum mempunyai hasil pasti</strong><p>Key dan isi asli tersimpan hanya pada akun ini. Kirim ulang tidak akan membuat laporan kedua bila server sudah menerimanya.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => submitIssue(true)}>Coba lagi laporan yang sama</button></div>
+        <div class="pending" role="status"><strong>Laporan sebelumnya belum mempunyai hasil pasti</strong><p>Key dan isi asli tersimpan hanya pada akun ini. Kirim ulang tidak akan membuat laporan kedua bila server sudah menerimanya.</p><button aria-busy={busyControl === 'issue-submit-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => submitIssue(true)}>{busyControl === 'issue-submit-retry' ? 'Memeriksa hasil…' : 'Coba lagi laporan yang sama'}</button></div>
       {/if}
       <form on:submit|preventDefault={() => submitIssue(false)}>
         <fieldset class="form-fields" disabled={!!busy || !!issueSubmitAttempt}>
@@ -837,7 +837,7 @@
           <label class="field">Uraian kendala<textarea class="textarea" rows="4" bind:value={newIssue.description} minlength="5" maxlength="2000" placeholder="Contoh: mesin kasir outlet tidak menyala sejak pukul 14.00." required></textarea></label>
           <label class="field">Foto pendukung <span class="optional">opsional, privat</span><input class="file-input" type="file" accept="image/jpeg,image/png,image/webp" on:change={chooseIssuePhoto}/>{#if issuePhoto}<small>{issuePhoto.name} · {Math.ceil(issuePhoto.size / 1024)} KB</small>{/if}</label>
         </fieldset>
-        <button class="btn btn-primary full" type="submit" disabled={!!busy || !!issueSubmitAttempt || !issueCategories.length}>{busy === 'issue-submit' ? 'Mengirim…' : 'Kirim laporan kendala'}</button>
+        <button aria-busy={busyControl === 'issue-submit'} class="btn btn-primary full" type="submit" disabled={!!busy || !!issueSubmitAttempt || !issueCategories.length}>{busyControl === 'issue-submit' ? busy === 'issue-upload' ? 'Mengunggah foto…' : 'Mengirim…' : 'Kirim laporan kendala'}</button>
       </form>
     </div>
 
@@ -860,16 +860,16 @@
           {/each}
         {:else}<p class="empty">Belum ada kendala pada tampilan ini.</p>{/if}
       </div>
-      {#if issueHasMore}<button class="btn btn-secondary load-more" type="button" disabled={!!busy || loadingMore === 'issues'} on:click={loadMoreIssues}>{loadingMore === 'issues' ? 'Memuat…' : `Muat lagi (${issueRows.length} dari ${issueTotal})`}</button>{/if}
+      {#if issueHasMore}<button class="btn btn-secondary load-more" type="button" aria-busy={loadingMore === 'issues'} disabled={!!busy || !!loadingMore} on:click={loadMoreIssues}>{loadingMore === 'issues' ? 'Memuat…' : `Muat lagi (${issueRows.length} dari ${issueTotal})`}</button>{/if}
     </div>
   </section>
 
   {#if selectedIssue && issueDraft}
     <section class="panel detail-panel" aria-label="Rincian kendala">
       <div class="detail-header"><div><span class="eyebrow">KENDALA #{selectedIssue.issueNumber ?? selectedIssue.id.slice(0, 8)}</span><h2>{selectedIssue.categoryName} · {outletName(selectedIssue.outletId)}</h2><p>Pelapor {employeeName(selectedIssue.reporterEmployeeId)} · revisi server {selectedIssue.revision} · dibuat {dateTimeLabel(selectedIssue.createdAt)}</p></div><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => { selectedIssueId = ''; issuePhotoUrl = ''; setQuery('issue', null); }}>Tutup detail</button></div>
-      <div class="description-card"><strong>Uraian pelapor</strong><p>{selectedIssue.description}</p>{#if selectedIssue.photoPath}<small>Foto pendukung tersedia secara privat bagi akun yang berhak.</small><div class="photo-action">{#if issuePhotoUrl}<a class="btn btn-secondary" href={issuePhotoUrl} target="_blank" rel="noreferrer">Buka foto pendukung</a><button class="btn btn-secondary" type="button" disabled={issuePhotoLoading || !!busy} on:click={requestIssuePhotoUrl}>Buat tautan baru</button>{:else}<button class="btn btn-secondary" type="button" disabled={issuePhotoLoading || !!busy} on:click={requestIssuePhotoUrl}>{issuePhotoLoading ? 'Menyiapkan foto…' : 'Lihat foto pendukung'}</button>{/if}</div>{/if}</div>
+      <div class="description-card"><strong>Uraian pelapor</strong><p>{selectedIssue.description}</p>{#if selectedIssue.photoPath}<small>Foto pendukung tersedia secara privat bagi akun yang berhak.</small><div class="photo-action">{#if issuePhotoUrl}<a class="btn btn-secondary" href={issuePhotoUrl} target="_blank" rel="noreferrer">Buka foto pendukung</a><button class="btn btn-secondary" type="button" aria-busy={issuePhotoLoading} disabled={issuePhotoLoading || !!busy} on:click={requestIssuePhotoUrl}>{issuePhotoLoading ? 'Menyiapkan foto…' : 'Buat tautan baru'}</button>{:else}<button class="btn btn-secondary" type="button" aria-busy={issuePhotoLoading} disabled={issuePhotoLoading || !!busy} on:click={requestIssuePhotoUrl}>{issuePhotoLoading ? 'Menyiapkan foto…' : 'Lihat foto pendukung'}</button>{/if}</div>{/if}</div>
       {#if issueDraft.conflict}<div class="conflict" role="alert"><strong>Versi perlu ditinjau</strong><p>{issueDraft.conflict}</p><div><button type="button" class="btn btn-secondary" on:click={discardIssueDraft}>Gunakan data server</button><button type="button" class="btn btn-primary" on:click={reviewIssueLatest}>Pertahankan draft, pakai revisi terbaru</button></div></div>{/if}
-      {#if issueDraft.pendingAttempt}<div class="pending"><strong>Pembaruan sebelumnya belum mempunyai hasil pasti</strong><p>Payload dan key asli tetap tersimpan. Server akan mengembalikan receipt yang sama apabila commit sudah terjadi.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => saveIssue(true)}>Coba lagi pembaruan yang sama</button></div>{/if}
+      {#if issueDraft.pendingAttempt}<div class="pending"><strong>Pembaruan sebelumnya belum mempunyai hasil pasti</strong><p>Payload dan key asli tetap tersimpan. Server akan mengembalikan receipt yang sama apabila commit sudah terjadi.</p><button aria-busy={busyControl === 'issue-update-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => saveIssue(true)}>{busyControl === 'issue-update-retry' ? 'Memeriksa hasil…' : 'Coba lagi pembaruan yang sama'}</button></div>{/if}
       <fieldset class="form-fields" disabled={!!busy || !!issueDraft.pendingAttempt || !!issueDraft.conflict}>
         <div class="form-grid">
           <label class="field">Status<select class="select" bind:value={issueDraft.values.status} on:change={rememberIssue}><option value="new">Baru</option><option value="assigned">Ditugaskan</option><option value="in_progress">Diproses</option><option value="completed">Selesai</option></select></label>
@@ -879,7 +879,7 @@
           {#if issueDraft.values.status === 'completed'}<label class="field wide">Catatan penyelesaian<textarea class="textarea" rows="3" bind:value={issueDraft.values.resolutionNote} on:input={rememberIssue} minlength="5" maxlength="2000" placeholder="Tindakan yang sudah dilakukan dan hasilnya"></textarea></label>{/if}
         </div>
       </fieldset>
-      <div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy || !!issueDraft.pendingAttempt} on:click={discardIssueDraft}>Batalkan draft</button><button class="btn btn-primary" type="button" disabled={!!busy || !!issueDraft.pendingAttempt || !!issueDraft.conflict} on:click={() => saveIssue(false)}>{busy.startsWith('issue:') ? 'Menyimpan…' : 'Simpan dengan pemeriksaan revisi'}</button></div>
+      <div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy || !!issueDraft.pendingAttempt} on:click={discardIssueDraft}>Batalkan draft</button><button aria-busy={busyControl === 'issue-update'} class="btn btn-primary" type="button" disabled={!!busy || !!issueDraft.pendingAttempt || !!issueDraft.conflict} on:click={() => saveIssue(false)}>{busyControl === 'issue-update' ? 'Menyimpan…' : 'Simpan dengan pemeriksaan revisi'}</button></div>
     </section>
   {/if}
 
@@ -899,7 +899,7 @@
         {:else}<p class="empty">Belum ada serah terima yang dapat Anda akses.</p>{/if}
       </div>
       <p class="as-of">{handoverTotal} catatan yang sesuai dengan akses akun Anda.</p>
-      {#if handoverHasMore}<button class="btn btn-secondary load-more" type="button" disabled={!!busy || loadingMore === 'handovers'} on:click={loadMoreHandovers}>{loadingMore === 'handovers' ? 'Memuat…' : `Muat lagi (${handoverRows.length} dari ${handoverTotal})`}</button>{/if}
+      {#if handoverHasMore}<button class="btn btn-secondary load-more" type="button" aria-busy={loadingMore === 'handovers'} disabled={!!busy || !!loadingMore} on:click={loadMoreHandovers}>{loadingMore === 'handovers' ? 'Memuat…' : `Muat lagi (${handoverRows.length} dari ${handoverTotal})`}</button>{/if}
     </div>
 
     <div class="panel handover-editor">
@@ -907,7 +907,7 @@
         <div class="section-heading"><div><span class="eyebrow">{handoverDraft.values.id ? `VERSI ${handoverDraft.baseline}` : 'DRAFT BARU'}</span><h2>{handoverDraft.values.id ? 'Perbarui serah terima' : 'Tulis serah terima'}</h2></div>{#if selectedHandover}<span class="status-chip">{handoverStatusLabel[selectedHandover.status]}</span>{/if}</div>
         <p class="hint">Pengirim dan penerima harus sesuai dengan penugasan aktif pada outlet serta tanggal kerja yang sama. Server menolak perubahan yang tidak sah.</p>
         {#if handoverDraft.conflict}<div class="conflict" role="alert"><strong>Versi perlu ditinjau</strong><p>{handoverDraft.conflict}</p><div><button class="btn btn-secondary" type="button" on:click={discardHandoverDraft}>Gunakan data server</button><button class="btn btn-primary" type="button" on:click={reviewHandoverLatest}>Pertahankan draft, pakai versi terbaru</button></div></div>{/if}
-        {#if handoverDraft.pendingAttempt}<div class="pending"><strong>Penyimpanan sebelumnya belum mempunyai hasil pasti</strong><p>Retry mengirim key dan payload asli, sehingga versi tidak digandakan setelah koneksi putus.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => saveHandover(handoverDraft!.values.send, true)}>Coba lagi penyimpanan yang sama</button></div>{/if}
+        {#if handoverDraft.pendingAttempt}<div class="pending"><strong>Penyimpanan sebelumnya belum mempunyai hasil pasti</strong><p>Retry mengirim key dan payload asli, sehingga versi tidak digandakan setelah koneksi putus.</p><button aria-busy={busyControl === 'handover-save-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => saveHandover(handoverDraft!.values.send, true)}>{busyControl === 'handover-save-retry' ? 'Memeriksa hasil…' : 'Coba lagi penyimpanan yang sama'}</button></div>{/if}
         <fieldset class="form-fields" disabled={!!busy || !!handoverDraft.pendingAttempt || !!handoverDraft.conflict}>
           <div class="form-grid">
             <label class="field">Penugasan saya sebagai pengirim<select class="select" value={handoverDraft.values.senderAssignmentId ?? ''} on:change={(event) => { handoverDraft!.values.senderAssignmentId = event.currentTarget.value || null; senderChanged(); }}><option value="">Pilih penugasan saya</option>{#each handoverSenderAssignments as assignment}<option value={assignment.id}>{assignmentText(assignment)}</option>{/each}</select></label>
@@ -919,14 +919,14 @@
             <label class="field wide">Catatan penting<textarea class="textarea" rows="3" bind:value={handoverDraft.values.notes} on:input={rememberHandover} maxlength="2000" placeholder="Informasi penting yang perlu diketahui penerima."></textarea></label>
           </div>
         </fieldset>
-        <div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt} on:click={discardHandoverDraft}>Batalkan draft</button><button class="btn btn-secondary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt || !!handoverDraft.conflict} on:click={() => saveHandover(false)}>{busy.startsWith('handover:') ? 'Menyimpan…' : 'Simpan draft'}</button><button class="btn btn-primary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt || !!handoverDraft.conflict || !handoverDraft.values.recipientEmployeeId} on:click={() => saveHandover(true)}>Kirim ke penerima</button></div>
+        <div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt} on:click={discardHandoverDraft}>Batalkan draft</button><button aria-busy={busyControl === 'handover-save'} class="btn btn-secondary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt || !!handoverDraft.conflict} on:click={() => saveHandover(false)}>{busyControl === 'handover-save' ? 'Menyimpan…' : 'Simpan draft'}</button><button aria-busy={busyControl === 'handover-send'} class="btn btn-primary" type="button" disabled={!!busy || !!handoverDraft.pendingAttempt || !!handoverDraft.conflict || !handoverDraft.values.recipientEmployeeId} on:click={() => saveHandover(true)}>{busyControl === 'handover-send' ? 'Mengirim…' : 'Kirim ke penerima'}</button></div>
       {:else}
         <div class="empty editor-empty"><Icon name="file" size={27}/><strong>Pilih atau buat serah terima</strong><span>Versi catatan, penerima, dan respons akan muncul di sini.</span><button class="btn btn-primary" type="button" disabled={!!busy} on:click={startHandover}>Buat serah terima</button></div>
       {/if}
     </div>
   </section>
   {#if selectedHandover && selectedHandover.recipientEmployeeId === $app.user?.id && selectedHandover.status === 'sent'}
-    <section class="panel response-panel"><div><span class="eyebrow">RESPONS PENERIMA</span><h2>Konfirmasi versi {selectedHandover.version}</h2><p>Catatan yang diterima tersimpan pada versi ini. Minta perbaikan bila isi belum tepat.</p></div><fieldset class="form-fields" disabled={!!busy || !!pendingFor('handover-response', selectedHandover.id)}><label class="field">Catatan respons<textarea class="textarea" rows="2" bind:value={handoverResponseReason} minlength="3" placeholder="Contoh: sudah diterima, stok awal akan dicek."></textarea></label></fieldset>{#if pendingFor('handover-response', selectedHandover.id)}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondHandover(true, true)}>Coba lagi respons yang sama</button>{:else}<div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondHandover(false)}>Minta perbaikan</button><button class="btn btn-primary" type="button" disabled={!!busy} on:click={() => respondHandover(true)}>Terima catatan</button></div>{/if}</section>
+    <section class="panel response-panel"><div><span class="eyebrow">RESPONS PENERIMA</span><h2>Konfirmasi versi {selectedHandover.version}</h2><p>Catatan yang diterima tersimpan pada versi ini. Minta perbaikan bila isi belum tepat.</p></div><fieldset class="form-fields" disabled={!!busy || !!pendingFor('handover-response', selectedHandover.id)}><label class="field">Catatan respons<textarea class="textarea" rows="2" bind:value={handoverResponseReason} minlength="3" placeholder="Contoh: sudah diterima, stok awal akan dicek."></textarea></label></fieldset>{#if pendingFor('handover-response', selectedHandover.id)}<button aria-busy={busy.startsWith('handover-response:')} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondHandover(true, true)}>{busy.startsWith('handover-response:') ? 'Memproses respons…' : 'Coba lagi respons yang sama'}</button>{:else}<div class="form-actions"><button aria-busy={busyControl === 'handover-correct'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondHandover(false)}>{busyControl === 'handover-correct' ? 'Mengirim…' : 'Minta perbaikan'}</button><button aria-busy={busyControl === 'handover-accept'} class="btn btn-primary" type="button" disabled={!!busy} on:click={() => respondHandover(true)}>{busyControl === 'handover-accept' ? 'Menyimpan…' : 'Terima catatan'}</button></div>{/if}</section>
   {/if}
 
 {:else if tab === 'config'}
@@ -936,8 +936,8 @@
         <div class="section-heading"><div><span class="eyebrow">KATEGORI</span><h2>{categoryForm.id ? 'Ubah kategori kendala' : 'Tambah kategori kendala'}</h2></div>{#if categoryForm.id}<button class="btn btn-secondary" type="button" on:click={resetCategory}>Buat baru</button>{/if}</div>
         <p class="hint">Kategori aktif tersedia untuk pelapor. Riwayat laporan menyimpan nama kategori ketika laporan dibuat.</p>
         {#if categoryDraft?.conflict}<div class="conflict" role="alert"><strong>Versi kategori perlu ditinjau</strong><p>{categoryDraft.conflict}</p><div><button class="btn btn-secondary" type="button" on:click={resetCategory}>Buang draft lokal</button><button class="btn btn-primary" type="button" on:click={reviewCategoryLatest}>Pertahankan draft, pakai revisi terbaru</button></div></div>{/if}
-        {#if categoryDraft?.pendingAttempt}<div class="pending"><strong>Penyimpanan kategori belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveCategory(true)}>Coba lagi kategori yang sama</button></div>{/if}
-        <form on:submit|preventDefault={() => void saveCategory()}><fieldset class="form-fields" disabled={!!busy || !!categoryDraft?.pendingAttempt || !!categoryDraft?.conflict}><label class="field">Kode kategori<input class="input" bind:value={categoryForm.code} on:input={rememberCategoryDraft} pattern="[a-z][a-z0-9_]*" maxlength="48" required placeholder="contoh: perangkat_kasir"/></label><label class="field">Nama kategori<input class="input" bind:value={categoryForm.name} on:input={rememberCategoryDraft} minlength="3" maxlength="120" required placeholder="Contoh: Perangkat kasir"/></label><label class="check-field"><input type="checkbox" bind:checked={categoryForm.active} on:change={rememberCategoryDraft}/> Aktif untuk laporan baru</label><div class="form-actions"><button class="btn btn-primary" type="submit" disabled={!!busy || !!categoryDraft?.pendingAttempt || !!categoryDraft?.conflict}>{busy === 'config-category' ? 'Menyimpan…' : 'Simpan kategori'}</button></div></fieldset></form>
+        {#if categoryDraft?.pendingAttempt}<div class="pending"><strong>Penyimpanan kategori belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button aria-busy={busyControl === 'config-category-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveCategory(true)}>{busyControl === 'config-category-retry' ? 'Memeriksa hasil…' : 'Coba lagi kategori yang sama'}</button></div>{/if}
+        <form on:submit|preventDefault={() => void saveCategory()}><fieldset class="form-fields" disabled={!!busy || !!categoryDraft?.pendingAttempt || !!categoryDraft?.conflict}><label class="field">Kode kategori<input class="input" bind:value={categoryForm.code} on:input={rememberCategoryDraft} pattern="[a-z][a-z0-9_]*" maxlength="48" required placeholder="contoh: perangkat_kasir"/></label><label class="field">Nama kategori<input class="input" bind:value={categoryForm.name} on:input={rememberCategoryDraft} minlength="3" maxlength="120" required placeholder="Contoh: Perangkat kasir"/></label><label class="check-field"><input type="checkbox" bind:checked={categoryForm.active} on:change={rememberCategoryDraft}/> Aktif untuk laporan baru</label><div class="form-actions"><button aria-busy={busyControl === 'config-category'} class="btn btn-primary" type="submit" disabled={!!busy || !!categoryDraft?.pendingAttempt || !!categoryDraft?.conflict}>{busyControl === 'config-category' ? 'Menyimpan…' : 'Simpan kategori'}</button></div></fieldset></form>
         <div class="config-list">{#each configuration?.categories ?? [] as category (category.id)}<button class="config-row" type="button" disabled={!!busy || !!categoryDraft?.pendingAttempt} on:click={() => editCategory(category)}><span><strong>{category.name}</strong><small>{category.code} · revisi {category.revision}</small></span><span>{category.active === false ? 'Nonaktif' : 'Aktif'}</span></button>{:else}<p class="empty">Belum ada kategori. Buat kategori sebelum laporan dapat dikirim.</p>{/each}</div>
       </section>
 
@@ -945,8 +945,8 @@
         <div class="section-heading"><div><span class="eyebrow">ROUTING</span><h2>{routeForm.id ? 'Ubah penerima kendala' : 'Atur penerima kendala'}</h2></div>{#if routeForm.id}<button class="btn btn-secondary" type="button" on:click={resetRoute}>Buat baru</button>{/if}</div>
         <p class="hint">Routing berlaku untuk laporan baru. Server menolak penerima yang tidak aktif atau tidak memiliki hak menangani kendala pada cakupan yang dipilih.</p>
         {#if routeDraft?.conflict}<div class="conflict" role="alert"><strong>Versi routing perlu ditinjau</strong><p>{routeDraft.conflict}</p><div><button class="btn btn-secondary" type="button" on:click={resetRoute}>Buang draft lokal</button><button class="btn btn-primary" type="button" on:click={reviewRouteLatest}>Pertahankan draft, pakai revisi terbaru</button></div></div>{/if}
-        {#if routeDraft?.pendingAttempt}<div class="pending"><strong>Penyimpanan routing belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveRoute(true)}>Coba lagi routing yang sama</button></div>{/if}
-        <form on:submit|preventDefault={() => void saveRoute()}><fieldset class="form-fields" disabled={!!busy || !!routeDraft?.pendingAttempt || !!routeDraft?.conflict}><label class="field">Kategori<select class="select" bind:value={routeForm.categoryId} on:change={rememberRouteDraft} required><option value="">Pilih kategori</option>{#each configuration?.categories ?? [] as category}<option value={category.id}>{category.name}</option>{/each}</select></label><label class="field">Outlet <span class="optional">kosong = semua outlet</span><select class="select" bind:value={routeForm.outletId} on:change={rememberRouteDraft}><option value="">Semua outlet</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Penerima <span class="optional">kosong = tanpa PIC</span><select class="select" bind:value={routeForm.recipientEmployeeId} on:change={rememberRouteDraft}><option value="">Tanpa PIC otomatis</option>{#each activeEmployees as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="check-field"><input type="checkbox" bind:checked={routeForm.active} on:change={rememberRouteDraft}/> Routing aktif</label><div class="form-actions"><button class="btn btn-primary" type="submit" disabled={!!busy || !!routeDraft?.pendingAttempt || !!routeDraft?.conflict}>{busy === 'config-route' ? 'Menyimpan…' : 'Simpan routing'}</button></div></fieldset></form>
+        {#if routeDraft?.pendingAttempt}<div class="pending"><strong>Penyimpanan routing belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button aria-busy={busyControl === 'config-route-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveRoute(true)}>{busyControl === 'config-route-retry' ? 'Memeriksa hasil…' : 'Coba lagi routing yang sama'}</button></div>{/if}
+        <form on:submit|preventDefault={() => void saveRoute()}><fieldset class="form-fields" disabled={!!busy || !!routeDraft?.pendingAttempt || !!routeDraft?.conflict}><label class="field">Kategori<select class="select" bind:value={routeForm.categoryId} on:change={rememberRouteDraft} required><option value="">Pilih kategori</option>{#each configuration?.categories ?? [] as category}<option value={category.id}>{category.name}</option>{/each}</select></label><label class="field">Outlet <span class="optional">kosong = semua outlet</span><select class="select" bind:value={routeForm.outletId} on:change={rememberRouteDraft}><option value="">Semua outlet</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Penerima <span class="optional">kosong = tanpa PIC</span><select class="select" bind:value={routeForm.recipientEmployeeId} on:change={rememberRouteDraft}><option value="">Tanpa PIC otomatis</option>{#each activeEmployees as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="check-field"><input type="checkbox" bind:checked={routeForm.active} on:change={rememberRouteDraft}/> Routing aktif</label><div class="form-actions"><button aria-busy={busyControl === 'config-route'} class="btn btn-primary" type="submit" disabled={!!busy || !!routeDraft?.pendingAttempt || !!routeDraft?.conflict}>{busyControl === 'config-route' ? 'Menyimpan…' : 'Simpan routing'}</button></div></fieldset></form>
         <div class="config-list">{#each configuration?.routes ?? [] as route (route.id)}<button class="config-row" type="button" disabled={!!busy || !!routeDraft?.pendingAttempt} on:click={() => editRoute(route)}><span><strong>{configuration?.categories.find((category) => category.id === route.categoryId)?.name ?? 'Kategori'}</strong><small>{route.outletId ? outletName(route.outletId) : 'Semua outlet'} · {employeeName(route.recipientEmployeeId)} · revisi {route.revision}</small></span><span>{route.active ? 'Aktif' : 'Nonaktif'}</span></button>{:else}<p class="empty">Belum ada routing. Laporan tetap masuk sebagai tanpa PIC sampai routing dibuat.</p>{/each}</div>
       </section>
 
@@ -954,8 +954,8 @@
         <div class="section-heading"><div><span class="eyebrow">AKSES</span><h2>Capability operasional</h2></div></div>
         <p class="hint">Hak di bawah ini tidak menggantikan role HR. Setiap request tetap diperiksa terhadap akun aktif, outlet, dan kategori oleh server.</p>
         {#if capabilityDraft?.conflict}<div class="conflict" role="alert"><strong>Versi capability perlu ditinjau</strong><p>{capabilityDraft.conflict}</p><div><button class="btn btn-secondary" type="button" on:click={() => { capabilityForm = emptyCapabilityForm(); clearCapabilityDraft(); }}>Buang draft lokal</button>{#if capabilityForm.id}<button class="btn btn-primary" type="button" on:click={reviewCapabilityLatest}>Pertahankan draft, pakai revisi terbaru</button>{/if}</div></div>{/if}
-        {#if capabilityDraft?.pendingAttempt}<div class="pending"><strong>Perubahan akses belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveCapability(true)}>Coba lagi perubahan akses yang sama</button></div>{/if}
-        <form on:submit|preventDefault={() => void saveCapability()}><fieldset class="form-fields" disabled={!!busy || !!capabilityDraft?.pendingAttempt || !!capabilityDraft?.conflict}><label class="field">Karyawan<select class="select" bind:value={capabilityForm.employeeId} on:change={rememberCapabilityDraft} required><option value="">Pilih karyawan</option>{#each activeEmployees as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="field">Kemampuan<select class="select" bind:value={capabilityForm.capability} on:change={rememberCapabilityDraft}><option value="issue_report">Melapor kendala</option><option value="issue_report_for_other">Melapor untuk orang lain</option><option value="issue_view">Melihat kendala</option><option value="issue_handle">Menangani kendala</option><option value="issue_configure">Mengatur kendala</option><option value="handover_monitor">Memantau serah terima</option><option value="summary_view">Melihat ringkasan</option><option value="coverage_configure">Mengatur cakupan</option></select></label><label class="field">Outlet <span class="optional">kosong = semua outlet</span><select class="select" bind:value={capabilityForm.outletId} on:change={rememberCapabilityDraft}><option value="">Semua outlet</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Kategori <span class="optional">kosong = semua kategori</span><select class="select" bind:value={capabilityForm.categoryId} on:change={rememberCapabilityDraft}><option value="">Semua kategori</option>{#each configuration?.categories ?? [] as category}<option value={category.id}>{category.name}</option>{/each}</select></label><label class="check-field"><input type="checkbox" bind:checked={capabilityForm.granted} on:change={rememberCapabilityDraft}/> Berikan capability ini</label><div class="form-actions"><button class="btn btn-primary" type="submit" disabled={!!busy || !!capabilityDraft?.pendingAttempt || !!capabilityDraft?.conflict}>{busy === 'config-capability' ? 'Menyimpan…' : 'Simpan akses'}</button></div></fieldset></form>
+        {#if capabilityDraft?.pendingAttempt}<div class="pending"><strong>Perubahan akses belum mempunyai hasil pasti</strong><p>Retry mengirim payload dan key asli. Form dikunci agar perubahan baru tidak mengganti permintaan yang sedang dipulihkan.</p><button aria-busy={busyControl === 'config-capability-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void saveCapability(true)}>{busyControl === 'config-capability-retry' ? 'Memeriksa hasil…' : 'Coba lagi perubahan akses yang sama'}</button></div>{/if}
+        <form on:submit|preventDefault={() => void saveCapability()}><fieldset class="form-fields" disabled={!!busy || !!capabilityDraft?.pendingAttempt || !!capabilityDraft?.conflict}><label class="field">Karyawan<select class="select" bind:value={capabilityForm.employeeId} on:change={rememberCapabilityDraft} required><option value="">Pilih karyawan</option>{#each activeEmployees as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="field">Kemampuan<select class="select" bind:value={capabilityForm.capability} on:change={rememberCapabilityDraft}><option value="issue_report">Melapor kendala</option><option value="issue_report_for_other">Melapor untuk orang lain</option><option value="issue_view">Melihat kendala</option><option value="issue_handle">Menangani kendala</option><option value="issue_configure">Mengatur kendala</option><option value="handover_monitor">Memantau serah terima</option><option value="summary_view">Melihat ringkasan</option><option value="coverage_configure">Mengatur cakupan</option></select></label><label class="field">Outlet <span class="optional">kosong = semua outlet</span><select class="select" bind:value={capabilityForm.outletId} on:change={rememberCapabilityDraft}><option value="">Semua outlet</option>{#each activeOutlets as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Kategori <span class="optional">kosong = semua kategori</span><select class="select" bind:value={capabilityForm.categoryId} on:change={rememberCapabilityDraft}><option value="">Semua kategori</option>{#each configuration?.categories ?? [] as category}<option value={category.id}>{category.name}</option>{/each}</select></label><label class="check-field"><input type="checkbox" bind:checked={capabilityForm.granted} on:change={rememberCapabilityDraft}/> Berikan capability ini</label><div class="form-actions"><button aria-busy={busyControl === 'config-capability'} class="btn btn-primary" type="submit" disabled={!!busy || !!capabilityDraft?.pendingAttempt || !!capabilityDraft?.conflict}>{busyControl === 'config-capability' ? 'Menyimpan…' : 'Simpan akses'}</button></div></fieldset></form>
         <div class="config-list">{#each configuration?.capabilities ?? [] as grant (grant.id)}<div class="config-row grant-row"><span><strong>{employeeName(grant.employeeId)}</strong><small>{grant.capability} · {grant.outletId ? outletName(grant.outletId) : 'semua outlet'} · {grant.categoryId ? configuration?.categories.find((category) => category.id === grant.categoryId)?.name ?? 'kategori' : 'semua kategori'} · revisi {grant.revision}</small></span><button class="btn btn-secondary" type="button" disabled={!!busy || !!capabilityDraft?.pendingAttempt} on:click={() => grantFromExisting(grant, false)}>Cabut</button></div>{:else}<p class="empty">Belum ada capability operasional khusus.</p>{/each}</div>
       </section>
     </section>
@@ -968,18 +968,18 @@
     <div class="panel exchange-form">
       <div class="section-heading"><div><span class="eyebrow">AJUKAN</span><h2>Tukar atau pengganti</h2></div><Icon name="calendar" size={21}/></div>
       <p class="hint">Jadwal resmi tidak berubah ketika usulan dibuat atau rekan setuju. Admin HR aktif yang bukan peserta membuat keputusan final setelah server memeriksa konflik terbaru.</p>
-      {#if exchangeSubmitAttempt}<div class="pending"><strong>Usulan sebelumnya belum mempunyai hasil pasti</strong><p>Key dan payload asli disimpan untuk akun ini.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => submitExchange(true)}>Coba lagi usulan yang sama</button></div>{/if}
+      {#if exchangeSubmitAttempt}<div class="pending"><strong>Usulan sebelumnya belum mempunyai hasil pasti</strong><p>Key dan payload asli disimpan untuk akun ini.</p><button aria-busy={busyControl === 'exchange-submit-retry'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => submitExchange(true)}>{busyControl === 'exchange-submit-retry' ? 'Memeriksa hasil…' : 'Coba lagi usulan yang sama'}</button></div>{/if}
       <form on:submit|preventDefault={() => submitExchange(false)}>
         <label class="field">Jenis usulan<select class="select" bind:value={exchangeForm.requestType} on:change={exchangeRequesterChanged}><option value="swap">Tukar dua arah</option><option value="replacement">Pengganti satu arah</option></select></label>
         <label class="field">Jadwal saya<select class="select" bind:value={exchangeForm.requesterAssignmentId} on:change={exchangeRequesterChanged} required><option value="">Pilih jadwal aktif mendatang</option>{#each allAssignments.filter((assignment) => assignment.employeeId === $app.user?.id && assignment.shift !== 'off' && assignment.workDate >= todayJakarta()) as assignment}<option value={assignment.id}>{assignmentText(assignment)}</option>{/each}</select></label>
         <label class="field">Rekan kasir<select class="select" bind:value={exchangeForm.peerEmployeeId} on:change={exchangeRequesterChanged} required><option value="">Pilih rekan</option>{#each cashiers.filter((employee) => employee.id !== $app.user?.id) as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label>
         {#if requesterAssignment}<div class="preview"><strong>Pratinjau perubahan</strong><p>Pengusul: {assignmentText(requesterAssignment)}</p>{#if exchangeForm.requestType === 'swap'}<p>Rekan: {assignmentText(peerAssignment)}</p>{:else}<p>{peerAssignment ? 'Calon pengganti sudah memiliki jadwal aktif; pilih kandidat lain.' : 'Jika disetujui, jadwal pengusul dibatalkan dan kandidat menerima konteks jadwal tersebut.'}</p>{/if}<small>Server mengecek ulang absensi, Libur, waktu mulai, versi jadwal, izin Middle, serta konflik sebelum keputusan.</small></div>{/if}
         <label class="field">Alasan pengajuan<textarea class="textarea" rows="3" bind:value={exchangeForm.reason} minlength="5" maxlength="2000" placeholder="Jelaskan kebutuhan pertukaran atau pengganti."></textarea></label>
-        <button class="btn btn-primary full" type="submit" disabled={!!busy}>{busy === 'exchange-submit' ? 'Mengirim…' : 'Kirim ke rekan'}</button>
+        <button aria-busy={busyControl === 'exchange-submit'} class="btn btn-primary full" type="submit" disabled={!!busy}>{busyControl === 'exchange-submit' ? 'Mengirim…' : 'Kirim ke rekan'}</button>
       </form>
     </div>
     <div class="panel queue-panel">
-      <div class="section-heading"><div><span class="eyebrow">PENGAJUAN</span><h2>Tukar / pengganti yang dapat Anda akses</h2></div><div class="queue-actions">{#if admin}{#if pendingFor('exchange-expire', 'all')}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void expireStaleExchanges(true)}>Coba lagi penutupan</button>{:else}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void expireStaleExchanges()}>Tutup yang kedaluwarsa</button>{/if}{/if}<span class="count">{exchangeTotal}</span></div></div>
+      <div class="section-heading"><div><span class="eyebrow">PENGAJUAN</span><h2>Tukar / pengganti yang dapat Anda akses</h2></div><div class="queue-actions">{#if admin}{#if pendingFor('exchange-expire', 'all')}<button aria-busy={busyControl === 'exchange-expire'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void expireStaleExchanges(true)}>{busyControl === 'exchange-expire' ? 'Memproses…' : 'Coba lagi penutupan'}</button>{:else}<button aria-busy={busyControl === 'exchange-expire'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void expireStaleExchanges()}>{busyControl === 'exchange-expire' ? 'Memproses…' : 'Tutup yang kedaluwarsa'}</button>{/if}{/if}<span class="count">{exchangeTotal}</span></div></div>
       <div class="case-list">
         {#if exchangeRows.length}
           {#each exchangeRows as row (row.id)}
@@ -998,13 +998,13 @@
       <div class="assignment-preview"><div><small>Pengusul</small><strong>{employeeName(selectedExchange.requesterEmployeeId)}</strong><span>{assignmentText(selectedExchangeRequester)}</span></div><div><small>{selectedExchange.requestType === 'swap' ? 'Rekan tukar' : 'Calon pengganti'}</small><strong>{employeeName(selectedExchange.peerEmployeeId)}</strong><span>{selectedExchange.requestType === 'swap' ? assignmentText(selectedExchangePeer) : selectedExchangePeer ? assignmentText(selectedExchangePeer) : 'Belum ada jadwal aktif pada tanggal tersebut'}</span></div></div>
       <div class="description-card"><strong>Alasan pengusul</strong><p>{selectedExchange.reason}</p>{#if selectedExchange.peerNote}<small>Respons rekan: {selectedExchange.peerNote}</small>{/if}{#if selectedExchange.decisionNote}<small>Keputusan HR: {selectedExchange.decisionNote}</small>{/if}</div>
       {#if selectedExchange.peerEmployeeId === $app.user?.id && selectedExchange.status === 'pending_peer'}
-        <div class="response-block"><span class="eyebrow">RESPONS REKAN</span><h3>Setujui atau tolak usulan</h3><label class="field">Catatan respons<textarea class="textarea" rows="2" bind:value={exchangeResponseNote} minlength="3" placeholder="Catatan akan menjadi riwayat pengajuan."></textarea></label>{#if pendingFor('exchange-response', selectedExchange.id)}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondExchange(true, true)}>Coba lagi respons yang sama</button>{:else}<div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondExchange(false)}>Tolak usulan</button><button class="btn btn-primary" type="button" disabled={!!busy} on:click={() => respondExchange(true)}>Setujui untuk ditinjau HR</button></div>{/if}</div>
+        <div class="response-block"><span class="eyebrow">RESPONS REKAN</span><h3>Setujui atau tolak usulan</h3><label class="field">Catatan respons<textarea class="textarea" rows="2" bind:value={exchangeResponseNote} minlength="3" placeholder="Catatan akan menjadi riwayat pengajuan."></textarea></label>{#if pendingFor('exchange-response', selectedExchange.id)}<button class="btn btn-secondary" type="button" aria-busy={busy.startsWith('exchange-response:')} disabled={!!busy} on:click={() => respondExchange(true, true)}>{busy.startsWith('exchange-response:') ? 'Memproses respons…' : 'Coba lagi respons yang sama'}</button>{:else}<div class="form-actions"><button aria-busy={busyControl === 'exchange-reject'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => respondExchange(false)}>{busyControl === 'exchange-reject' ? 'Menyimpan…' : 'Tolak usulan'}</button><button aria-busy={busyControl === 'exchange-accept'} class="btn btn-primary" type="button" disabled={!!busy} on:click={() => respondExchange(true)}>{busyControl === 'exchange-accept' ? 'Menyimpan…' : 'Setujui untuk ditinjau HR'}</button></div>{/if}</div>
       {/if}
       {#if selectedExchange.requesterEmployeeId === $app.user?.id && (selectedExchange.status === 'pending_peer' || selectedExchange.status === 'pending_spv')}
-        <div class="response-block"><span class="eyebrow">PEMBATALAN PENGUSUL</span><h3>Batalkan sebelum keputusan final</h3><p>Jadwal resmi tetap berlaku; pembatalan hanya menutup pengajuan ini dan mempertahankan riwayatnya.</p><label class="field">Alasan pembatalan<textarea class="textarea" rows="2" bind:value={exchangeCancelNote} minlength="3" placeholder="Contoh: kebutuhan kerja sudah berubah."></textarea></label>{#if pendingFor('exchange-cancel', selectedExchange.id)}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void cancelExchange(true)}>Coba lagi pembatalan yang sama</button>{:else}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void cancelExchange()}>Batalkan pengajuan</button>{/if}</div>
+        <div class="response-block"><span class="eyebrow">PEMBATALAN PENGUSUL</span><h3>Batalkan sebelum keputusan final</h3><p>Jadwal resmi tetap berlaku; pembatalan hanya menutup pengajuan ini dan mempertahankan riwayatnya.</p><label class="field">Alasan pembatalan<textarea class="textarea" rows="2" bind:value={exchangeCancelNote} minlength="3" placeholder="Contoh: kebutuhan kerja sudah berubah."></textarea></label>{#if pendingFor('exchange-cancel', selectedExchange.id)}<button aria-busy={busyControl === 'exchange-cancel'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void cancelExchange(true)}>{busyControl === 'exchange-cancel' ? 'Membatalkan…' : 'Coba lagi pembatalan yang sama'}</button>{:else}<button aria-busy={busyControl === 'exchange-cancel'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => void cancelExchange()}>{busyControl === 'exchange-cancel' ? 'Membatalkan…' : 'Batalkan pengajuan'}</button>{/if}</div>
       {/if}
       {#if admin && selectedExchange.status === 'pending_spv' && selectedExchange.requesterEmployeeId !== $app.user?.id && selectedExchange.peerEmployeeId !== $app.user?.id}
-        <div class="decision-block"><span class="eyebrow">KEPUTUSAN ADMIN HR</span><h3>Putuskan jadwal resmi</h3><p>Server mengunci dan memeriksa baseline seluruh penugasan sebelum perubahan atomik dibuat. Jika jadwal berubah setelah pengajuan, keputusan ditolak untuk review ulang.</p><label class="field">Dasar keputusan<textarea class="textarea" rows="2" bind:value={exchangeDecisionNote} minlength="5" placeholder="Jelaskan dasar persetujuan atau penolakan."></textarea></label>{#if pendingFor('exchange-decision', selectedExchange.id)}<button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => decideExchange(true, true)}>Coba lagi keputusan yang sama</button>{:else}<div class="form-actions"><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => decideExchange(false)}>Tolak</button><button class="btn btn-primary" type="button" disabled={!!busy} on:click={() => decideExchange(true)}>Setujui & ubah jadwal</button></div>{/if}</div>
+        <div class="decision-block"><span class="eyebrow">KEPUTUSAN ADMIN HR</span><h3>Putuskan jadwal resmi</h3><p>Server mengunci dan memeriksa baseline seluruh penugasan sebelum perubahan atomik dibuat. Jika jadwal berubah setelah pengajuan, keputusan ditolak untuk review ulang.</p><label class="field">Dasar keputusan<textarea class="textarea" rows="2" bind:value={exchangeDecisionNote} minlength="5" placeholder="Jelaskan dasar persetujuan atau penolakan."></textarea></label>{#if pendingFor('exchange-decision', selectedExchange.id)}<button aria-busy={busy.startsWith('exchange-decision:')} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => decideExchange(true, true)}>{busy.startsWith('exchange-decision:') ? 'Menyimpan keputusan…' : 'Coba lagi keputusan yang sama'}</button>{:else}<div class="form-actions"><button aria-busy={busyControl === 'exchange-decline'} class="btn btn-secondary" type="button" disabled={!!busy} on:click={() => decideExchange(false)}>{busyControl === 'exchange-decline' ? 'Menyimpan…' : 'Tolak'}</button><button aria-busy={busyControl === 'exchange-approve'} class="btn btn-primary" type="button" disabled={!!busy} on:click={() => decideExchange(true)}>{busyControl === 'exchange-approve' ? 'Menyimpan…' : 'Setujui & ubah jadwal'}</button></div>{/if}</div>
       {/if}
       {#if selectedExchange.status === 'pending_spv' && (!admin || selectedExchange.requesterEmployeeId === $app.user?.id || selectedExchange.peerEmployeeId === $app.user?.id)}<p class="access-note"><Icon name="lock" size={15}/>Pengajuan telah menunggu keputusan Admin HR lain yang bukan peserta. Jadwal resmi belum berubah.</p>{/if}
     </section>

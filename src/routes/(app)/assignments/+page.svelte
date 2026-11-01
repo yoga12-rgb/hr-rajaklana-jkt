@@ -13,7 +13,7 @@
   import { todayJakarta, dateLabel, timeLabel } from '#lib/components/format';
   let date = todayJakarta(), employeeId = '', outletId = '', shift: Shift | 'off' = 'morning', view: 'daily' | 'weekly' = 'weekly';
   let requestedWeekStart: string | null = null;
-  let editId: string | undefined, reason = '', message = '', failed = false, saving = false;
+  let editId: string | undefined, reason = '', message = '', failed = false, saving = false, savingAction: 'save' | 'cancel' | null = null;
   afterNavigate(() => { const query = new URLSearchParams(window.location.search), week = query.get('week'), linkedDate = query.get('date') ?? query.get('workDate'); if (isValidWorkDate(week)) { requestedWeekStart = startOfWorkWeek(week); view = 'weekly'; date = requestedWeekStart; editId = undefined; } else if (isValidWorkDate(linkedDate)) { requestedWeekStart = null; view = 'daily'; date = linkedDate; editId = undefined; } else requestedWeekStart = null; });
   $: admin = isAdmin($app.user);
   $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
@@ -36,7 +36,7 @@
   function edit(assignment: CashierAssignment) { if (assignment.employeeId === $app.user?.id) return; editId = assignment.id; employeeId = assignment.employeeId; outletId = assignment.outletId; shift = assignment.shift; reason = ''; }
   async function save(cancel = false) {
     if (saving) return;
-    saving = true; message = '';
+    saving = true; savingAction = cancel ? 'cancel' : 'save'; message = '';
     try {
       if (!employee || (!cancel && !outletId) || reason.trim().length < 5) throw new Error('Pilih kasir selain diri sendiri, outlet, dan alasan minimal 5 karakter.');
       if (date < employee.joinDate) throw new Error('Tanggal penugasan tidak boleh sebelum tanggal mulai bekerja.');
@@ -44,7 +44,7 @@
       await actions.saveCashierAssignment({ id: editId, employeeId, workDate: date, outletId, shift, reason: reason.trim(), cancel });
       editId = undefined; employeeId = ''; outletId = ''; reason = ''; failed = false;
       message = cancel ? 'Penugasan dibatalkan. Riwayat tetap tersimpan.' : 'Penugasan harian tersimpan. Kasir mengikuti outlet dan shift ini saat clock in.';
-    } catch(error) { failed = true; message = error instanceof Error ? error.message : 'Penugasan belum tersimpan.'; } finally { saving = false; }
+    } catch(error) { failed = true; message = error instanceof Error ? error.message : 'Penugasan belum tersimpan.'; } finally { saving = false; savingAction = null; }
   }
 </script>
 
@@ -58,7 +58,7 @@
 
 {#if admin}
   <section class="panel assignment-form"><h2>{editId ? 'Ubah penugasan' : 'Tetapkan penugasan kasir'}</h2><p class="hint">Penugasan sendiri harus ditetapkan Admin HR lain. Penugasan lampau memerlukan alasan minimal 5 karakter, tanggal sesudah mulai bekerja, dan belum ada absensi pada tanggal tersebut. Catatan absensi yang sudah ada diperbaiki melalui koreksi HR.</p>
-    <form on:submit|preventDefault={() => save()}><div class="form-grid"><label class="field">Kasir<select class="select" bind:value={employeeId} on:change={chooseEmployee} required><option value="">Pilih kasir selain diri sendiri</option>{#each editableCashiers as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="field">Outlet<select class="select" bind:value={outletId} required><option value="">Pilih outlet</option>{#each $app.outlets.filter(outlet => outlet.active || (editId && outlet.id === outletId)) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Shift / libur<select class="select" bind:value={shift}><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee?.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select></label><label class="field">Alasan / sumber penugasan<input class="input" bind:value={reason} minlength="5" required placeholder="Contoh: rotasi kasir dikonfirmasi SPV"/></label></div><div class="form-actions">{#if editId}<button type="button" class="btn btn-secondary" disabled={saving} on:click={() => save(true)}>Batalkan penugasan</button>{/if}<button class="btn btn-primary" disabled={saving || !employeeId}>{saving ? 'Menyimpan…' : 'Simpan penugasan'}</button></div></form>
+    <form on:submit|preventDefault={() => save()}><div class="form-grid"><label class="field">Kasir<select class="select" bind:value={employeeId} on:change={chooseEmployee} required><option value="">Pilih kasir selain diri sendiri</option>{#each editableCashiers as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label><label class="field">Outlet<select class="select" bind:value={outletId} required><option value="">Pilih outlet</option>{#each $app.outlets.filter(outlet => outlet.active || (editId && outlet.id === outletId)) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label class="field">Shift / libur<select class="select" bind:value={shift}><option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee?.canMiddleShift}<option value="middle">Middle</option>{/if}<option value="off">Libur</option></select></label><label class="field">Alasan / sumber penugasan<input class="input" bind:value={reason} minlength="5" required placeholder="Contoh: rotasi kasir dikonfirmasi SPV"/></label></div><div class="form-actions">{#if editId}<button type="button" class="btn btn-secondary" aria-busy={saving && savingAction === 'cancel'} disabled={saving} on:click={() => save(true)}>{saving && savingAction === 'cancel' ? 'Membatalkan…' : 'Batalkan penugasan'}</button>{/if}<button class="btn btn-primary" aria-busy={saving && savingAction === 'save'} disabled={saving || !employeeId}>{saving && savingAction === 'save' ? 'Menyimpan…' : 'Simpan penugasan'}</button></div></form>
   </section>
   <section class="panel"><h2>Cakupan outlet · {dateLabel(date)}</h2><p class="hint">Jumlah kasir yang ditugaskan per shift. Ini belum merupakan perhitungan kebutuhan minimum staf.</p><div class="table-wrap"><table><thead><tr><th>Outlet</th><th>Pagi</th><th>Sore</th><th>Middle</th></tr></thead><tbody>{#each coverage as item}<tr><td>{item.outlet.name}</td><td>{item.morning}</td><td>{item.afternoon}</td><td>{item.middle}</td></tr>{/each}</tbody></table></div></section>
 {/if}

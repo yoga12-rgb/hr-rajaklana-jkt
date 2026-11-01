@@ -20,7 +20,7 @@
   <div class="modal-heading"><div><h2>{title}</h2>{#if description}<p>{description}</p>{/if}</div><button class="close" type="button" aria-label="Tutup" on:click={onclose}><Icon name="close"/></button></div>
   <div class="body">
     {#if $app.mode === 'live' && $app.user && $app.error && !$app.sessionValidating}
-      <div class="refresh-error" role="alert"><span>{$app.error}</span><button class="btn btn-secondary" type="button" disabled={retrying} on:click={retrySessionData}>{retrying ? 'Memeriksa…' : 'Coba lagi'}</button></div>
+      <div class="refresh-error" role="alert"><span>{$app.error}</span><button class="btn btn-secondary" type="button" disabled={retrying} aria-busy={retrying} on:click={retrySessionData}>{retrying ? 'Memeriksa…' : 'Coba lagi'}</button></div>
     {/if}
     <slot/>
   </div>

@@ -11,6 +11,7 @@
   const applicationEnvironment = validateApplicationEnvironment(import.meta.env.PUBLIC_APP_ENV);
   let installEvent: (Event & { prompt(): Promise<void> }) | null = null;
   let networkOnline = true;
+  let installing = false, loggingOut = false, refreshing = false, actionError = '';
   $: admin = isAdmin($app.user);
   $: cashier = isCashier($app.user);
   $: connectionStatus = connectionIndicator($app.connected, networkOnline);
@@ -40,27 +41,29 @@
       window.removeEventListener('beforeinstallprompt',handler);
     };
   });
-  async function install() { await installEvent?.prompt(); installEvent = null; }
-  async function logout() { await actions.logout(); await goto('/login'); }
+  async function install() { if(installing||!installEvent)return;installing=true;actionError='';try{await installEvent.prompt();installEvent=null;}catch{actionError='Pemasangan belum berhasil. Coba kembali.';}finally{installing=false;} }
+  async function logout() { if(loggingOut)return;loggingOut=true;actionError='';try{await actions.logout();await goto('/login');}catch(e){actionError=e instanceof Error?e.message:'Belum berhasil keluar. Coba kembali.';}finally{loggingOut=false;} }
+  async function refresh() { if(refreshing)return;refreshing=true;actionError='';try{await actions.refresh();}catch(e){actionError=e instanceof Error?e.message:'Data belum berhasil dimuat. Coba kembali.';}finally{refreshing=false;} }
 </script>
 <svelte:head><title>{pathname === '/guide' ? 'Panduan penggunaan & ketentuan · Rajaklana HR' : 'Rajaklana HR · Jabodetabek'}</title></svelte:head>
-{#if !$app.initialized}<div class="loading"><img src="/icon.svg" alt=""/><p>Menyiapkan ruang kerja Anda…</p></div>{:else if $app.user}
+{#if !$app.initialized}<div class="loading" role="status"><img src="/icon.svg" alt=""/><p class="loading-indicator">Menyiapkan ruang kerja Anda…</p></div>{:else if $app.user}
 <div class="shell">
   <aside class="sidebar">
     <a class="brand" href="/dashboard"><img src="/icon.svg" alt=""/><span>rajaklana<span class="brand-sub">PEOPLE & WORK</span></span></a>
     <div class="workspace"><span class="workspace-dot"></span><div><strong>Jabodetabek</strong><small>Ruang kerja tim</small></div><span class="workspace-tag">HR</span></div>
     <span class="nav-caption">RUANG KERJA</span>
     <nav aria-label="Navigasi utama">{#each nav as item}<a class:active={pathname.startsWith(item.href)} href={item.href}><Icon name={item.icon} size={19}/><span>{item.label}</span>{#if item.href==='/leave' && admin && $app.leaveRequests.some(r=>r.status==='pending')}<i></i>{/if}</a>{/each}</nav>
-    <div class="sidebar-bottom">{#if installEvent}<button class="install" on:click={install}><Icon name="download" size={17}/>Pasang aplikasi</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" on:click={logout}><Icon name="logout" size={17}/>Keluar akun</button><small>Rajaklana HR · v0.1</small></div>
+    <div class="sidebar-bottom">{#if installEvent}<button class="install" aria-busy={installing} disabled={installing} on:click={install}>{#if !installing}<Icon name="download" size={17}/>{/if}{installing?'Menyiapkan…':'Pasang aplikasi'}</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" aria-busy={loggingOut} disabled={loggingOut} on:click={logout}>{#if !loggingOut}<Icon name="logout" size={17}/>{/if}{loggingOut?'Keluar…':'Keluar akun'}</button><small>Rajaklana HR · v0.1</small></div>
   </aside>
   <div class="main-area">
     <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span><NotificationCenter/><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
       {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
-      {#if $app.sessionValidating}<div class="session-strip" role="status" aria-live="polite"><Icon name="refresh" size={16}/><span>Sesi sedang diverifikasi. Form dan data tetap terbuka; simpanan baru dilanjutkan setelah pemeriksaan selesai.</span></div>{/if}
+      {#if $app.sessionValidating}<div class="session-strip" role="status" aria-live="polite"><span class="loading-indicator"><span class="sr-only">Memeriksa sesi</span></span><span>Sesi sedang diverifikasi. Form dan data tetap terbuka; simpanan baru dilanjutkan setelah pemeriksaan selesai.</span></div>{/if}
       {#if $app.mode==='demo'}<div class="demo-strip"><span><Icon name="info" size={15}/><strong>Mode demo</strong> · Data contoh tersimpan di browser ini.</span><a href="/profile">Ganti akun contoh <Icon name="arrow-right" size={13}/></a></div>{/if}
       {#if !networkOnline}<div class="error">Internet terputus. Absensi dan penyimpanan data memerlukan koneksi internet.</div>{/if}
-      {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" on:click={()=>actions.refresh()}>Coba lagi</button></div>{/if}
+      {#if actionError}<div class="error" role="alert">{actionError}</div>{/if}
+      {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" aria-busy={refreshing} disabled={refreshing} on:click={refresh}>{refreshing?'Memuat ulang…':'Coba lagi'}</button></div>{/if}
       <slot />
       <footer class="footer"><span>Rajaklana · Jabodetabek</span><span>Setiap orang, satu ruang kerja.</span></footer>
     </main>

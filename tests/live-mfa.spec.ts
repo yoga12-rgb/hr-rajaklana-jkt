@@ -15,7 +15,7 @@ async function respond(route: Route, data: unknown, status = 200) {
   const rows = Array.isArray(data) ? data : null;
   await route.fulfill({ status, contentType: 'application/json', headers: rows ? { 'content-range': rows.length ? `0-${rows.length - 1}/${rows.length}` : '*/0' } : {}, body: JSON.stringify(data) });
 }
-async function fixture(page: Page, revoked = false, legacyFactor = false) {
+async function fixture(page: Page, revoked = false, legacyFactor = false, options: { login?: () => Promise<boolean>; employeeRead?: () => Promise<void> } = {}) {
   let protectedReads = 0, factorCalls = 0;
   const now = new Date().toISOString();
   const user = { id: authId, aud: 'authenticated', role: 'authenticated', email: 'password-only@example.test', app_metadata: { provider: 'email', providers: ['email'] }, user_metadata: {}, created_at: now,
@@ -32,7 +32,10 @@ async function fixture(page: Page, revoked = false, legacyFactor = false) {
   };
   await page.route(`${backend}/**`, async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    if (path === '/functions/v1/hr-api') { await respond(route, { session }); return; }
+    if (path === '/functions/v1/hr-api') {
+      if (options.login && !await options.login()) { await respond(route, { error: 'Nomor karyawan atau kata sandi tidak sesuai' }, 401); return; }
+      await respond(route, { session }); return;
+    }
     if (path === '/auth/v1/user') { await respond(route, user); return; }
     if (path === '/auth/v1/token') { await respond(route, session); return; }
     if (path.startsWith('/auth/v1/factors')) { factorCalls += 1; await respond(route, { error: 'MFA API must not be called' }, 500); return; }
@@ -40,7 +43,11 @@ async function fixture(page: Page, revoked = false, legacyFactor = false) {
     if (path === '/rest/v1/rpc/leave_balance') { await respond(route, { expired: false, remaining: 12 }); return; }
     if (path === '/rest/v1/rpc/spv_followup_page') { await respond(route, { items: [], total: 0 }); return; }
     if (path.startsWith('/rest/v1/rpc/')) { await respond(route, []); return; }
-    if (path.startsWith('/rest/v1/')) { protectedReads += 1; await respond(route, tables[path.slice('/rest/v1/'.length)] ?? []); return; }
+    if (path.startsWith('/rest/v1/')) {
+      protectedReads += 1;
+      if (path === '/rest/v1/employees') await options.employeeRead?.();
+      await respond(route, tables[path.slice('/rest/v1/'.length)] ?? []); return;
+    }
     await respond(route, {});
   });
   return { get protectedReads() { return protectedReads; }, get factorCalls() { return factorCalls; } };
@@ -71,4 +78,47 @@ test('revoked live session fails closed before protected reads', async ({ page }
   const mock = await fixture(page, true); await login(page);
   await expect(page).toHaveURL(/\/login$/); await expect(page.getByRole('alert')).toContainText('Sesi akun tidak berlaku');
   expect(mock.protectedReads).toBe(0); expect(mock.factorCalls).toBe(0);
+});
+
+test('login shows progress, blocks duplicate submits, recovers from failure and stays busy through account loading', async ({ page }, testInfo) => {
+  let calls = 0;
+  const failedLogin = Promise.withResolvers<void>(), successfulLogin = Promise.withResolvers<void>(), accountRead = Promise.withResolvers<void>();
+  let readingAccount = false;
+  await fixture(page, false, false, {
+    login: async () => { calls++; if (calls === 1) { await failedLogin.promise; return false; } await successfulLogin.promise; return true; },
+    employeeRead: async () => { readingAccount = true; await accountRead.promise; }
+  });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page);
+    const button = page.locator('form button[type="submit"], form button:not([type])');
+    await expect(button).toHaveAttribute('aria-busy', 'true');
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveText('Memeriksa akun…');
+    await expect.poll(() => calls).toBe(1);
+    const spinner = await button.evaluate(element => {
+      const style = getComputedStyle(element, '::before');
+      return { content: style.content, animation: style.animationName, width: parseFloat(style.width) };
+    });
+    expect(spinner.content).toBe('""'); expect(spinner.animation).toBe('action-spin'); expect(spinner.width).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('login-loading-mobile.png'), fullPage: true });
+    // A second submit event also hits the handler guard (Enter/programmatic submit).
+    await page.locator('form').dispatchEvent('submit');
+    expect(calls).toBe(1);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect(await button.evaluate(element => getComputedStyle(element, '::before').animationName)).toBe('none');
+    await expect(button).toHaveText('Memeriksa akun…');
+    failedLogin.resolve();
+    await expect(page.getByRole('alert')).toContainText('Nomor karyawan atau kata sandi tidak sesuai');
+    await expect(button).toBeEnabled(); await expect(button).toHaveAttribute('aria-busy', 'false');
+    await button.click();
+    await expect.poll(() => calls).toBe(2);
+    successfulLogin.resolve();
+    await expect.poll(() => readingAccount).toBe(true);
+    await expect(button).toBeDisabled(); await expect(button).toHaveAttribute('aria-busy', 'true');
+    accountRead.resolve();
+    await expect(page).toHaveURL(/\/dashboard$/); await expect(page.locator('.shell')).toBeVisible();
+    expect(calls).toBe(2);
+  } finally { failedLogin.resolve(); successfulLogin.resolve(); accountRead.resolve(); }
 });

@@ -233,6 +233,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
     },
     failNextRefresh: () => { failRefreshAfterBaselineConflict = true; },
     rejectPendingWithApprovedLeave: () => { approvedLeaveConflictKey = rpcPayloads.at(-1)?.p_idempotency_key ?? null; },
+    blockAssignmentRefresh: () => { failAssignmentReads = true; },
     recoverRefresh: () => { failAssignmentReads = false; },
     holdNextEmployeeRead: () => {
       let release!: () => void;
@@ -447,11 +448,20 @@ test('live UI keeps the original attempt when replay is rejected before the idem
   const mock = await openRosterMock(page, true, true);
   await mock.shift.selectOption('morning');
   await page.getByLabel('Alasan perubahan batch').fill('Pulihkan replay setelah sesi masuk diperbarui');
+  // GET 503 is retried by the SDK. Fail all reconciliation reads until we
+  // explicitly restore the network, rather than racing a successful retry.
+  mock.blockAssignmentRefresh();
   await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
   await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
   const originalRequest = structuredClone(mock.rpcPayloads[0]);
   expect(mock.getCommitCount()).toBe(1);
 
+  // The pending heading is rendered before the request settles. Wait until
+  // response-loss reconciliation finishes before testing persisted reload.
+  await expect(page.getByRole('button', { name: 'Ulangi percobaan simpan sebelumnya', exact: true })).toBeEnabled();
+  const persisted = await page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('rajaklana-hr-roster-draft-v1:'))?.[1]);
+  expect(JSON.parse(persisted!).pendingAttempt).toMatchObject({ idempotencyKey: originalRequest.p_idempotency_key, weekStart: originalRequest.p_week_start });
+  mock.recoverRefresh();
   await page.reload();
   await expectRosterWeekAfterReload(page);
   mock.rejectNextReplay();
@@ -581,6 +591,12 @@ for (const outcome of ['success', 'baseline-conflict'] as const) {
     try {
       await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
       await held.received;
+      // Persisting the attempt replaces the initial save button with recovery.
+      const savingButton = page.locator('.pending-attempt button');
+      await expect(savingButton).toHaveAttribute('aria-busy', 'true');
+      await expect(savingButton).toBeDisabled();
+      await expect(mock.shift).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Minggu berikutnya', exact: true })).not.toHaveAttribute('aria-busy', 'true');
       const originalA = structuredClone(mock.rpcPayloads[1]);
       expect(JSON.parse((await readStorage(keyA))!).pendingAttempt).toMatchObject({
         idempotencyKey: originalA.p_idempotency_key, weekStart: weekA

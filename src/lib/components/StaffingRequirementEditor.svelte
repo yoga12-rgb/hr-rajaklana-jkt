@@ -27,7 +27,7 @@
     <label class="field">Shift<select class="select" bind:value={shift}><option value="morning">Pagi</option><option value="afternoon">Sore</option><option value="middle">Middle</option></select></label>
     <label class="field">Minimum kasir<input class="input" type="number" min="0" max="100" step="1" bind:value={minimum} required/></label>
     <label class="field">Berlaku mulai<input class="input" type="date" min={todayJakarta()} bind:value={effectiveFrom} required/></label>
-    <button class="btn btn-primary" type="submit" disabled={saving || !outletId}>{saving ? 'Menyimpan…' : 'Simpan minimum'}</button>
+    <button class="btn btn-primary" type="submit" disabled={saving || !outletId} aria-busy={saving}>{saving ? 'Menyimpan…' : 'Simpan minimum'}</button>
   </form>
   <p class="zero-note"><strong>0</strong> berarti outlet tidak membutuhkan kasir pada slot tersebut. Slot tanpa konfigurasi tampil “Belum diatur” dan tidak dinilai cukup atau kurang.</p>
   {#if rows.length}<div class="requirement-list"><strong>Riwayat konfigurasi · {$app.outlets.find(outlet => outlet.id === outletId)?.name}</strong><div class="table-scroll"><table><thead><tr><th>Hari</th><th>Shift</th><th>Minimum</th><th>Berlaku mulai</th></tr></thead><tbody>{#each rows as row (row.id)}<tr><td>{weekdays[row.weekday]}</td><td>{shiftName(row.shift)}</td><td>{row.minimum}</td><td>{row.effectiveFrom}</td></tr>{/each}</tbody></table></div></div>{:else}<p class="empty">Belum ada kebutuhan minimum yang tersimpan untuk outlet ini.</p>{/if}

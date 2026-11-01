@@ -15,7 +15,7 @@
     {id:'overdue',label:'Lewat tenggat'},{id:'history',label:'Riwayat'}
   ];
   let view:SpvFollowupView='all_open',outletId='',from='',to='',rows:SpvFollowup[]=[],total=0,hasMore=false;
-  let cursor:SpvFollowupPage['nextCursor']=null,asOf='',loading=true,loadingMore=false,busy='',message='',failed=false;
+  let cursor:SpvFollowupPage['nextCursor']=null,asOf='',loading=true,loadingMore=false,busy='',replaying=false,message='',failed=false;
   let selectedId='',drafts:Record<string,SpvFollowupDraft>={};
   $: selected=rows.find(row=>row.id===selectedId) ?? null;
   $: draft=selected ? drafts[selected.id] ?? null : null;
@@ -78,7 +78,7 @@
       attempt=createSpvFollowupAttempt(payload,attempt);
       persist(selected.id,{...draft,pendingAttempt:attempt});
     }
-    busy=selected.id;message='';failed=false;
+    busy=selected.id;replaying=replay;message='';failed=false;
     try{
       const result=await actions.updateSpvFollowup(attempt.payload);
       const latest=parseSpvFollowupDraft(localStorage.getItem(storageKey(selected.id))) ?? drafts[selected.id];
@@ -90,7 +90,7 @@
       if(/berubah sejak dibuka|40001/i.test(message)){
         try{await load(true);const current=rows.find(row=>row.id===selected.id);const local=parseSpvFollowupDraft(localStorage.getItem(storageKey(selected.id)));if(current&&local)persist(selected.id,markSpvFollowupConflict(local,current));}catch{/* draft tetap tersimpan */}
       }
-    }finally{busy='';}
+    }finally{busy='';replaying=false;}
   }
   function changeView(next:SpvFollowupView){view=next;const url=new URL(window.location.href);url.searchParams.set('view',next);url.searchParams.delete('case');void replaceState(`${url.pathname}${url.search}`,{});void load(true);}
   onMount(()=>{
@@ -102,7 +102,7 @@
 <PageHeading eyebrow="SUPERVISOR" title="Tindak lanjut operasional" description="Kasus tersimpan lintas tanggal, pembagian PIC, tenggat, dan riwayat keputusan."/>
 <section class="panel queue">
   <div class="tabs" role="tablist" aria-label="Tampilan tindak lanjut">{#each views as item}<button type="button" class:active={view===item.id} on:click={()=>changeView(item.id)}>{item.label}</button>{/each}</div>
-  <div class="filters"><label>Outlet<select class="select" bind:value={outletId} on:change={()=>load(true)}><option value="">Semua outlet</option>{#each $app.outlets.filter(row=>row.active) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label>Dari tanggal<input class="input" type="date" bind:value={from} on:change={()=>load(true)}/></label><label>Sampai tanggal<input class="input" type="date" bind:value={to} on:change={()=>load(true)}/></label><button class="btn btn-secondary" type="button" on:click={()=>load(true)}><Icon name="refresh" size={16}/>Perbarui</button></div>
+  <div class="filters"><label>Outlet<select class="select" bind:value={outletId} on:change={()=>load(true)}><option value="">Semua outlet</option>{#each $app.outlets.filter(row=>row.active) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select></label><label>Dari tanggal<input class="input" type="date" bind:value={from} on:change={()=>load(true)}/></label><label>Sampai tanggal<input class="input" type="date" bind:value={to} on:change={()=>load(true)}/></label><button class="btn btn-secondary" type="button" aria-busy={loading} disabled={loading || loadingMore} on:click={()=>load(true)}><Icon name="refresh" size={16}/>{loading ? 'Memuat…' : 'Perbarui'}</button></div>
   <Feedback {message} error={failed}/>
   <div class="summary"><strong>{total} kasus</strong><span>{asOf?`Dihitung ${dueLabel(asOf)}`:'Memuat sumber resmi…'}</span><span>Kasus terbuka tetap ada meski sinyal sumber sudah berubah.</span></div>
   <div class="workspace">
@@ -115,13 +115,13 @@
         <small>Tanggal kerja {dateLabel(row.workDate)} · dibuat {dateLabel(row.createdAt)}</small>
         <small>PIC {row.ownerId?displayName(row.ownerId):'belum ditetapkan'} · tenggat {dueLabel(row.dueAt)}</small>
       </button>{/each}{/if}
-      {#if hasMore}<button class="btn btn-secondary more" type="button" disabled={loadingMore} on:click={()=>load(false)}>{loadingMore?'Memuat…':'Muat berikutnya'}</button>{/if}
+      {#if hasMore}<button class="btn btn-secondary more" type="button" aria-busy={loadingMore} disabled={loading || loadingMore} on:click={()=>load(false)}>{loadingMore?'Memuat…':'Muat berikutnya'}</button>{/if}
     </div>
     <div class="detail">
       {#if selected&&draft}
         <div class="detail-head"><div><span class="eyebrow">KASUS {selected.caseKey}</span><h2>{issueLabel(selected.issueType)}</h2><p>Revisi server {selected.revision} · tanggal kerja {dateLabel(selected.workDate)}</p></div><a class="btn btn-secondary" href={sourceHref(selected)}>Buka sumber</a></div>
         {#if draft.conflict}<div class="conflict" role="alert"><strong>Data berubah di sesi lain</strong><p>Draft lokal tetap disimpan. Server sekarang pada revisi {draft.conflict.revision}; periksa PIC, tenggat, status, dan catatan sebelum mengajukan perubahan baru.</p><div><button class="btn btn-secondary" type="button" on:click={discard}>Gunakan data server</button><button class="btn btn-primary" type="button" on:click={reviewLatest}>Pertahankan draft & pakai revisi terbaru</button></div></div>{/if}
-        {#if draft.pendingAttempt}<div class="pending"><strong>Permintaan belum mempunyai hasil pasti</strong><p>Key dan payload asli tersimpan. Muat ulang atau tekan coba lagi; server akan mengembalikan receipt yang sama jika commit sebelumnya berhasil.</p><button class="btn btn-secondary" type="button" disabled={!!busy} on:click={()=>save(true)}>Coba lagi permintaan yang sama</button></div>{/if}
+        {#if draft.pendingAttempt}<div class="pending"><strong>Permintaan belum mempunyai hasil pasti</strong><p>Key dan payload asli tersimpan. Muat ulang atau tekan coba lagi; server akan mengembalikan receipt yang sama jika commit sebelumnya berhasil.</p><button class="btn btn-secondary" type="button" aria-busy={!!busy && replaying} disabled={!!busy} on:click={()=>save(true)}>{busy && replaying ? 'Memeriksa hasil…' : 'Coba lagi permintaan yang sama'}</button></div>{/if}
         <fieldset class="form-fields" disabled={!!busy||!!draft.pendingAttempt||!!draft.conflict}><div class="form-grid">
           <label>Status<select class="select" value={draft.status} on:change={event=>edit('status',event.currentTarget.value as SpvFollowup['status'])}><option value="new">Belum ditangani</option><option value="in_progress">Diproses</option><option value="completed">Selesai</option></select></label>
           <label>Penanggung jawab<select class="select" value={draft.ownerId??''} on:change={event=>edit('ownerId',event.currentTarget.value||null)}><option value="">Belum ada PIC</option>{#each owners as owner}<option value={owner.id}>{owner.fullName}</option>{/each}</select></label>
@@ -130,7 +130,7 @@
           {#if draft.status==='completed'}<label class="wide">Catatan penyelesaian<textarea class="input" rows="3" value={draft.resolutionNote} on:input={event=>edit('resolutionNote',event.currentTarget.value)} placeholder="Minimal 5 karakter"></textarea></label>{/if}
           <label class="wide">Alasan perubahan PIC/tenggat<input class="input" value={draft.reason} on:input={event=>edit('reason',event.currentTarget.value)} placeholder="Wajib bila PIC atau tenggat berubah"/></label>
         </div></fieldset>
-        <div class="buttons"><button class="btn btn-secondary" type="button" on:click={discard}>Batalkan draft</button><button class="btn btn-primary" type="button" disabled={!!busy||!!draft.pendingAttempt||!!draft.conflict} on:click={()=>save(false)}>{busy?'Menyimpan…':'Simpan dengan pemeriksaan revisi'}</button></div>
+        <div class="buttons"><button class="btn btn-secondary" type="button" on:click={discard}>Batalkan draft</button><button class="btn btn-primary" type="button" aria-busy={!!busy && !replaying} disabled={!!busy||!!draft.pendingAttempt||!!draft.conflict} on:click={()=>save(false)}>{busy && !replaying?'Menyimpan…':'Simpan dengan pemeriksaan revisi'}</button></div>
       {:else}<div class="empty detail-empty"><Icon name="file" size={28}/><strong>Pilih satu kasus</strong><span>Rincian, PIC, tenggat, dan catatan akan tampil di sini.</span></div>{/if}
     </div>
   </div>
