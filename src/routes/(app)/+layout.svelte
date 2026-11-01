@@ -18,7 +18,7 @@
   $: connectionLabel = connectionStatus === 'connected' ? 'Terhubung' : connectionStatus === 'connecting' ? 'Menyambungkan' : 'Offline';
   $: nav = [
     { href:'/dashboard',label:'Beranda',icon:'home' },
-    ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }, { href:'/assignments',label:'Penugasan harian',icon:'calendar' }] : []),
+    ...((cashier || admin) ? [{ href:'/attendance',label:'Kehadiran',icon:'clock' }, { href:'/assignments',label:admin?'Jadwal kasir':'Jadwal saya',icon:'calendar' }] : []),
     { href:'/leave',label:'Cuti & izin',icon:'calendar' },
     { href:'/operations',label:'Operasi outlet',icon:'alert' },
     { href:'/planning',label:'Perencanaan',icon:'chart' },
@@ -26,7 +26,9 @@
     { href:'/profile',label:'Profil saya',icon:'user' },
     { href:'/guide',label:'Panduan',icon:'file' }
   ];
-  $: mobileNav = nav.filter(n => !['/organization','/reports','/guide','/assignments','/employees','/supervisor','/planning'].includes(n.href));
+  $: mobileNav = cashier && !admin
+    ? ['/dashboard','/assignments','/attendance','/leave','/profile'].flatMap(href => nav.filter(item => item.href === href))
+    : nav.filter(n => !['/organization','/reports','/guide','/assignments','/employees','/supervisor','/planning'].includes(n.href));
   $: if ($app.initialized && !$app.user) void goto('/login', { replace:true });
   onMount(() => {
     const handler = (event: Event) => { event.preventDefault(); installEvent = event as typeof installEvent; };
@@ -52,7 +54,7 @@
     <a class="brand" href="/dashboard"><img src="/icon.svg" alt=""/><span>rajaklana<span class="brand-sub">PEOPLE & WORK</span></span></a>
     <div class="workspace"><span class="workspace-dot"></span><div><strong>Jabodetabek</strong><small>Ruang kerja tim</small></div><span class="workspace-tag">HR</span></div>
     <span class="nav-caption">RUANG KERJA</span>
-    <nav aria-label="Navigasi utama">{#each nav as item}<a class:active={pathname.startsWith(item.href)} href={item.href}><Icon name={item.icon} size={19}/><span>{item.label}</span>{#if item.href==='/leave' && admin && $app.leaveRequests.some(r=>r.status==='pending')}<i></i>{/if}</a>{/each}</nav>
+    <nav aria-label="Navigasi utama">{#each nav as item}<a class:active={pathname.startsWith(item.href)} aria-current={pathname.startsWith(item.href) ? 'page' : undefined} href={item.href}><Icon name={item.icon} size={19}/><span>{item.label}</span>{#if item.href==='/leave' && admin && $app.leaveRequests.some(r=>r.status==='pending')}<i></i>{/if}</a>{/each}</nav>
     <div class="sidebar-bottom">{#if installEvent}<button class="install" aria-busy={installing} disabled={installing} on:click={install}>{#if !installing}<Icon name="download" size={17}/>{/if}{installing?'Menyiapkan…':'Pasang aplikasi'}</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" aria-busy={loggingOut} disabled={loggingOut} on:click={logout}>{#if !loggingOut}<Icon name="logout" size={17}/>{/if}{loggingOut?'Keluar…':'Keluar akun'}</button><small>Rajaklana HR · v0.1</small></div>
   </aside>
   <div class="main-area">

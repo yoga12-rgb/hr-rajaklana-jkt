@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { afterNavigate } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { app, actions, isAdmin, isCashier, displayName, shiftLabel } from '#lib/state/app';
   import type { CashierAssignment, Shift } from '#lib/types';
   import PageHeading from '#lib/components/PageHeading.svelte';
@@ -14,7 +15,15 @@
   let date = todayJakarta(), employeeId = '', outletId = '', shift: Shift | 'off' = 'morning', view: 'daily' | 'weekly' = 'weekly';
   let requestedWeekStart: string | null = null;
   let editId: string | undefined, reason = '', message = '', failed = false, saving = false, savingAction: 'save' | 'cancel' | null = null;
-  afterNavigate(() => { const query = new URLSearchParams(window.location.search), week = query.get('week'), linkedDate = query.get('date') ?? query.get('workDate'); if (isValidWorkDate(week)) { requestedWeekStart = startOfWorkWeek(week); view = 'weekly'; date = requestedWeekStart; editId = undefined; } else if (isValidWorkDate(linkedDate)) { requestedWeekStart = null; view = 'daily'; date = linkedDate; editId = undefined; } else requestedWeekStart = null; });
+  afterNavigate(() => {
+    const query = new URLSearchParams(window.location.search), week = query.get('week'), linkedDate = query.get('date') ?? query.get('workDate');
+    if (isValidWorkDate(week)) { requestedWeekStart = startOfWorkWeek(week); view = 'weekly'; date = requestedWeekStart; editId = undefined; }
+    else if (isValidWorkDate(linkedDate)) { requestedWeekStart = null; view = 'daily'; date = linkedDate; editId = undefined; }
+    else {
+      requestedWeekStart = null;
+      if (!isAdmin($app.user)) { view = 'weekly'; date = todayJakarta(); }
+    }
+  });
   $: admin = isAdmin($app.user);
   $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
   $: editableCashiers = cashiers.filter(employee => employee.id !== $app.user?.id);
@@ -32,6 +41,14 @@
   const assignmentFor = (id: string) => active.find(assignment => assignment.employeeId === id);
   const outletName = (id: string) => $app.outlets.find(outlet => outlet.id === id)?.name ?? '—';
   function clearWeeklyLink() { requestedWeekStart = null; }
+  function changeDate() { editId = undefined; reason = ''; clearWeeklyLink(); if (!admin) chooseView('daily'); }
+  function chooseView(next: 'daily' | 'weekly') {
+    if (admin) { view = next; return; }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('week'); url.searchParams.delete('date'); url.searchParams.delete('workDate');
+    url.searchParams.set(next === 'weekly' ? 'week' : 'date', next === 'weekly' ? startOfWorkWeek(date) : date);
+    void goto(url, { state: page.state, shallow: true, replace: true });
+  }
   function chooseEmployee() { outletId = editableCashiers.find(item => item.id === employeeId)?.outletId ?? ''; editId = undefined; reason = ''; }
   function edit(assignment: CashierAssignment) { if (assignment.employeeId === $app.user?.id) return; editId = assignment.id; employeeId = assignment.employeeId; outletId = assignment.outletId; shift = assignment.shift; reason = ''; }
   async function save(cancel = false) {
@@ -48,12 +65,12 @@
   }
 </script>
 
-{#if !admin && requestedWeekStart}<CashierWeeklySchedule weekStart={requestedWeekStart}/>{/if}
-{#if admin || !requestedWeekStart}<PageHeading eyebrow="OPERASIONAL KASIR" title="Jadwal kasir" description="Atur penugasan harian atau susun jadwal satu minggu. Absensi aktual dicatat terpisah."/>{/if}
-{#if admin}<nav class="view-toggle" aria-label="Tampilan jadwal"><button class:active={view === 'weekly'} class="btn btn-secondary" type="button" on:click={() => view = 'weekly'}>Mingguan</button><button class:active={view === 'daily'} class="btn btn-secondary" type="button" on:click={() => view = 'daily'}>Harian</button></nav>{/if}
-{#if (admin && view === 'daily') || (!admin && !requestedWeekStart)}
+{#if admin || view === 'daily'}<PageHeading eyebrow="OPERASIONAL KASIR" title={admin ? 'Jadwal kasir' : 'Jadwal harian Anda'} description={admin ? 'Atur penugasan harian atau susun jadwal satu minggu. Absensi aktual dicatat terpisah.' : 'Periksa shift, outlet, dan status penugasan Anda pada tanggal yang dipilih.'}/>{/if}
+<nav class="view-toggle" aria-label="Tampilan jadwal"><button class:active={view === 'weekly'} aria-pressed={view === 'weekly'} class="btn btn-secondary" type="button" on:click={() => chooseView('weekly')}>Mingguan</button><button class:active={view === 'daily'} aria-pressed={view === 'daily'} class="btn btn-secondary" type="button" on:click={() => chooseView('daily')}>Harian</button></nav>
+{#if !admin && view === 'weekly'}<CashierWeeklySchedule weekStart={requestedWeekStart ?? startOfWorkWeek(date)}/>{/if}
+{#if view === 'daily'}
 <Feedback {message} error={failed}/>
-<div class="date-filter"><label class="field">Tanggal kerja (WIB)<input class="input" type="date" bind:value={date} on:change={() => { editId = undefined; reason = ''; clearWeeklyLink(); }} required/></label></div>
+<div class="date-filter"><label class="field">Tanggal kerja (WIB)<input class="input" type="date" bind:value={date} on:change={changeDate} required/></label></div>
 <div class="metrics"><MetricCard label="Ditugaskan bekerja" value={active.filter(a => a.shift !== 'off').length} detail={dateLabel(date)} icon="calendar"/><MetricCard label="Libur" value={active.filter(a => a.shift === 'off').length} detail="Tidak diwajibkan clock in" icon="sun"/><MetricCard label="Belum ditugaskan" value={crew.filter(employee => !assignmentFor(employee.id)).length} detail="Hubungi HR sebelum clock in" icon="alert"/></div>
 
 {#if admin}

@@ -215,7 +215,7 @@ async function openRosterMock(page: Page, loseResponse = false, failReconciliati
   await page.getByLabel('Kata sandi').fill('Simulasi-Uji-Password');
   await page.getByRole('button', { name: 'Masuk', exact: false }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await page.getByRole('link', { name: 'Penugasan harian', exact: true }).click();
+  await page.getByRole('link', { name: 'Jadwal kasir', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Jadwal kasir', exact: true })).toBeVisible();
   const weeklyMode = page.getByRole('button', { name: 'Mingguan', exact: true });
   if (!(await weeklyMode.getAttribute('class'))?.includes('active')) await weeklyMode.click();

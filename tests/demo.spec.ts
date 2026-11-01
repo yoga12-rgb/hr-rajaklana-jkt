@@ -121,11 +121,22 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(offlineNotice).toHaveCount(0);
   });
 
-  test('mobile cashier navigation is usable and restricted employee pages stay protected', async ({ page }) => {
+  test('mobile cashier navigation is usable and restricted employee pages stay protected', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page, 'Kasir');
     const nav = page.getByRole('navigation', { name: 'Navigasi ponsel' });
     await expect(nav).toBeVisible();
+    await expect(nav.getByRole('link')).toHaveText(['Beranda', 'Jadwal saya', 'Kehadiran', 'Pengajuan', 'Profil']);
+    await nav.getByRole('link', { name: 'Jadwal saya', exact: true }).click();
+    await expect(page).toHaveURL(/\/assignments$/);
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan Anda', exact: true })).toBeVisible();
+    await expect(page.locator('.day-card')).toHaveCount(7);
+    await expect(nav.getByRole('link', { name: 'Jadwal saya', exact: true })).toHaveAttribute('aria-current', 'page');
+    await page.screenshot({ path: testInfo.outputPath('cashier-weekly-390.png'), fullPage: true });
+    await page.setViewportSize({ width: 320, height: 740 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('cashier-weekly-320.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
     await nav.getByRole('link', { name: 'Kehadiran', exact: true }).click();
     await expect(page.getByText('Belum ada penugasan. Hubungi Admin HR untuk menetapkan outlet dan shift sebelum clock in.', { exact: true })).toBeVisible();
     await expect(page.getByText('Hubungi Admin HR', { exact: true })).toBeVisible();
@@ -136,6 +147,47 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await page.goto('/employees');
     await expect(page.getByText('Akses khusus Admin HR', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Tambah karyawan', exact: true })).toHaveCount(0);
+  });
+
+  test('cashier can find weekly schedule, retain daily links and reach shift exchanges without losing navigation', async ({ page }) => {
+    await login(page, 'Kasir');
+    const nav = page.getByRole('navigation', { name: 'Navigasi utama' });
+    await nav.getByRole('link', { name: 'Jadwal saya', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan Anda', exact: true })).toBeVisible();
+    const currentWeek = await page.locator('.week-heading > strong').innerText();
+    await page.getByRole('button', { name: 'Berikutnya ›', exact: true }).click();
+    await expect(page).toHaveURL(/\/assignments\?week=\d{4}-\d{2}-\d{2}$/);
+    const nextWeekUrl = page.url();
+    await expect(page.locator('.week-heading > strong')).not.toHaveText(currentWeek);
+    await page.reload();
+    await expect(page).toHaveURL(nextWeekUrl);
+    await expect(page.locator('.day-card')).toHaveCount(7);
+    await page.getByRole('button', { name: 'Minggu ini', exact: true }).click();
+    await expect(page.locator('.week-heading > strong')).toHaveText(currentWeek);
+    await page.getByRole('button', { name: 'Harian', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Jadwal harian Anda', exact: true })).toBeVisible();
+    const selectedDate = dateAfter(2);
+    await page.getByLabel('Tanggal kerja (WIB)', { exact: true }).fill(selectedDate);
+    await expect(page).toHaveURL(new RegExp(`/assignments\\?date=${selectedDate}$`));
+    await page.reload();
+    await expect(page.getByLabel('Tanggal kerja (WIB)', { exact: true })).toHaveValue(selectedDate);
+    await nav.getByRole('link', { name: 'Jadwal saya', exact: true }).click();
+    await expect(page).toHaveURL(/\/assignments$/);
+    await expect(page.locator('.week-heading > strong')).toHaveText(currentWeek);
+    for (const query of [`date=${selectedDate}`, `workDate=${selectedDate}`, `week=invalid&date=${selectedDate}`]) {
+      await page.goto(`/assignments?${query}`);
+      await expect(page.getByRole('heading', { name: 'Jadwal harian Anda', exact: true })).toBeVisible();
+      await expect(page.getByLabel('Tanggal kerja (WIB)', { exact: true })).toHaveValue(selectedDate);
+    }
+    await page.getByRole('button', { name: 'Mingguan', exact: true }).click();
+    await expect(page.locator('.day-card')).toHaveCount(7);
+    await expect(page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Tukar / pengganti shift', exact: true }).click();
+    await expect(page).toHaveURL(/\/operations\?exchange$/);
+    await expect(page.getByRole('navigation', { name: 'Modul operasi' }).getByRole('button', { name: /Tukar \/ pengganti/ })).toHaveClass(/active/);
+    await nav.getByRole('link', { name: 'Profil saya', exact: true }).click();
+    await expect(page.getByRole('link', { name: 'Jadwal saya', exact: true }).last()).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Operasi outlet', exact: true }).last()).toBeVisible();
   });
 
   test('Admin HR follows an outlet case and saves a weekly roster and minimum', async ({ page }) => {
