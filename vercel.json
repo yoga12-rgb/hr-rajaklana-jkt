@@ -2,6 +2,7 @@
   "installCommand": "npm ci",
   "buildCommand": "npm run check && npm run build",
   "outputDirectory": "build",
+  "regions": ["syd1"],
   "rewrites": [{ "source": "/((?!api/|_app/|icons/|icon.svg|manifest.webmanifest|service-worker.js|200.html).*)", "destination": "/200.html" }],
   "headers": [
     { "source": "/service-worker.js", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] },
