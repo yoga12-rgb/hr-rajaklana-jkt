@@ -58,7 +58,7 @@
     <div class="sidebar-bottom">{#if installEvent}<button class="install" aria-busy={installing} disabled={installing} on:click={install}>{#if !installing}<Icon name="download" size={17}/>{/if}{installing?'Menyiapkan…':'Pasang aplikasi'}</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" aria-busy={loggingOut} disabled={loggingOut} on:click={logout}>{#if !loggingOut}<Icon name="logout" size={17}/>{/if}{loggingOut?'Keluar…':'Keluar akun'}</button><small>Rajaklana HR · v0.1</small></div>
   </aside>
   <div class="main-area">
-    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span><NotificationCenter/><a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
+    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span>{#if !$app.workspaceLoading}<NotificationCenter/>{/if}<a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
       {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
       {#if $app.sessionValidating}<div class="session-strip" role="status" aria-live="polite"><span class="loading-indicator"><span class="sr-only">Memeriksa sesi</span></span><span>Sesi sedang diverifikasi. Form dan data tetap terbuka; simpanan baru dilanjutkan setelah pemeriksaan selesai.</span></div>{/if}
@@ -66,7 +66,13 @@
       {#if !networkOnline}<div class="error">Internet terputus. Absensi dan penyimpanan data memerlukan koneksi internet.</div>{/if}
       {#if actionError}<div class="error" role="alert">{actionError}</div>{/if}
       {#if $app.error}<div class="error" role="alert">{$app.error} <button class="retry" aria-busy={refreshing} disabled={refreshing} on:click={refresh}>{refreshing?'Memuat ulang…':'Coba lagi'}</button></div>{/if}
-      <slot />
+      {#if $app.workspaceLoading}
+        <section class="workspace-loading panel" role="status" aria-live="polite" aria-busy="true">
+          <h1>Halo, {$app.user.fullName.split(' ')[0]} 👋</h1>
+          <p class="loading-indicator">Menyiapkan data ruang kerja…</p>
+          <p>Akun Anda sudah terverifikasi. Jadwal, kehadiran, dan pengajuan sedang dimuat.</p>
+        </section>
+      {:else}<slot />{/if}
       <footer class="footer"><span>Rajaklana · Jabodetabek</span><span>Setiap orang, satu ruang kerja.</span></footer>
     </main>
   </div>
@@ -130,6 +136,10 @@ main { max-width: 1320px; margin: auto; padding: 27px 42px 0; }
 .loading { display: grid; place-content: center; min-height: 100dvh; text-align: center; color: var(--muted); gap: 20px; font-size: 13px; }
 .loading img { width: 60px; height: 60px; justify-self: center; border-radius: 18px; box-shadow: var(--raised); }
 .retry { border: 0; background: transparent; text-decoration: underline; color: inherit; font-size: 12px; padding: 6px; }
+.workspace-loading { padding: 28px; min-height: 210px; }
+.workspace-loading h1 { font-size: 23px; margin: 0 0 24px; }
+.workspace-loading p { font-size: 12px; color: var(--muted); line-height: 1.8; }
+.workspace-loading .loading-indicator { font-weight: 600; color: var(--ink); }
 @media (max-width: 1100px) { main { padding: 24px; } .topbar { padding: 0 24px; } .sidebar { width: 210px; padding: 26px 16px; } .main-area { margin-left: 210px; } }
 @media (max-width: 760px) {
   .sidebar { display: none; } .main-area { margin-left: 0; } .topbar { height: 68px; padding: 0 20px; } .breadcrumb { font-size: 10px; gap: 8px; } .topbar-right { gap: 12px; } .account > span:not(.avatar) { display: none; } .connection { font-size: 9px; }

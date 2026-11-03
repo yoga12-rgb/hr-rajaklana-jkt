@@ -46,6 +46,10 @@ let realtimeAuthRevision = 0;
 let liveAuthUserId: string | null = null;
 let liveAuthAccessToken: string | null = null;
 let sessionRevalidating = false;
+let identityValidationGeneration = 0;
+// A refresh that started before a confirmed write must not overwrite that
+// receipt with an older attendance snapshot. Never reset this counter on logout.
+let attendanceWriteRevision = 0;
 const demoFollowupReceipts = new Map<string, { fingerprint: string; result: SpvFollowup }>();
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -62,6 +66,7 @@ const user = () => {
   const u = get(app).user;
   if (!u || !activeAccount(u)) throw new Error('Silakan masuk dengan akun aktif.');
   if (configured && sessionRevalidating) throw new Error('Sesi sedang diverifikasi. Coba lagi sesaat.');
+  if (configured && get(app).workspaceLoading) throw new Error('Data ruang kerja masih dimuat. Coba lagi sesaat.');
   return u;
 };
 export const isAdmin = (employee: Employee | undefined | null = get(app).user) => employee?.roles.includes('admin_hr') ?? false;
@@ -216,6 +221,70 @@ const cutTime = (v: string | null | undefined) => v?.slice(0, 5) ?? '';
 function mapEmployee(r: any, roles: any[]): Employee {
   return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], canClock: r.can_clock === true, approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoUrl: r.photo_path, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
 }
+function mapAttendanceRecord(r: any, previous?: AttendanceRecord): AttendanceRecord {
+  return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, workDate: r.work_date,
+    clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes,
+    durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude,
+    inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude,
+    outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m,
+    selfiePath: r.selfie_path ?? '', selfieUrl: previous?.selfiePath === r.selfie_path ? previous?.selfieUrl : undefined,
+    selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined,
+    corrected: r.corrected, correctionReason: previous?.correctionReason ?? '', source: r.source === 'manual' ? 'manual' : 'device',
+    assignmentId: r.assignment_id ?? null, outletSnapshot: { morningStart: cutTime(r.morning_starts_at),
+      afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes,
+      latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
+}
+function attendanceReceiptFingerprint(record: AttendanceRecord | undefined) {
+  if (!record) return null;
+  const { selfieUrl: _url, correctionReason: _reason, ...data } = record;
+  return JSON.stringify(data);
+}
+async function publishConfirmedAttendance(row: any, actor: Employee, revision: number, expected: { outletId: string; recordId?: string; closed: boolean; previous?: AttendanceRecord }) {
+  try { assertAttendanceActor(actor, revision); } catch (error) { void refresh(); throw error; }
+  // This is a committed server row, never a client prediction. Fail closed on
+  // a mismatched receipt instead of applying an unrelated employee's result.
+  if (!row || typeof row.id !== 'string' || !row.id || row.employee_id !== actor.id
+    || row.outlet_id !== expected.outletId || (expected.recordId && row.id !== expected.recordId)
+    || !['morning', 'afternoon', 'middle'].includes(row.shift) || !Number.isFinite(Date.parse(row.clock_in))
+    || (expected.closed ? !Number.isFinite(Date.parse(row.clock_out)) : row.clock_out !== null)) {
+    void refresh();
+    throw new Error('Respons absensi belum dapat dikonfirmasi. Periksa riwayat sebelum mencoba kembali.');
+  }
+  attendanceWriteRevision += 1;
+  const current = get(app).attendanceRecords.find(record => record.id === row.id);
+  const mapped = mapAttendanceRecord(row, current);
+  if (current && attendanceReceiptFingerprint(current) !== attendanceReceiptFingerprint(expected.previous)
+    && attendanceReceiptFingerprint(current) !== attendanceReceiptFingerprint(mapped)) {
+    // A Realtime read may already have seen a later SPV correction while the
+    // original RPC response was still in transit. Reconcile this one row under
+    // RLS instead of replacing that correction with the older receipt.
+    try {
+      const { data, error } = await supabase!.from('attendance').select('*').eq('id', row.id).single();
+      assertAttendanceActor(actor, revision);
+      if (error) fail(error);
+      if (!data || data.id !== row.id || data.employee_id !== actor.id || data.outlet_id !== expected.outletId
+        || !['morning', 'afternoon', 'middle'].includes(data.shift) || !Number.isFinite(Date.parse(data.clock_in))
+        || (data.clock_out !== null && !Number.isFinite(Date.parse(data.clock_out)))) {
+        throw new Error('Catatan absensi berubah. Periksa riwayat sebelum mencoba kembali.');
+      }
+      if (attendanceReceiptFingerprint(get(app).attendanceRecords.find(record => record.id === row.id)) !== attendanceReceiptFingerprint(current)) {
+        void refresh(); return;
+      }
+      row = data;
+    } catch (error) { void refresh(); throw error; }
+  }
+  // Also fence refreshes that began during the rare reconciliation await.
+  attendanceWriteRevision += 1;
+  app.update(state => {
+    const previous = state.attendanceRecords.find(record => record.id === row.id);
+    const record = mapAttendanceRecord(row, previous);
+    return { ...state, attendanceRecords: [record, ...state.attendanceRecords.filter(item => item.id !== record.id)],
+      dataRevision: (state.dataRevision ?? 0) + 1 };
+  });
+  // The action resolves from its authoritative receipt. Reconciliation keeps
+  // audit, notifications and other screens current without delaying success.
+  void refresh();
+}
 function mapSpvFollowup(r: any): SpvFollowup {
   return { id: r.id, caseKey: r.case_key ?? r.caseKey, issueType: r.issue_type ?? r.issueType,
     sourceType: r.source_type ?? r.sourceType, sourceId: r.source_id ?? r.sourceId ?? null,
@@ -361,6 +430,42 @@ async function refresh() {
   refreshPromise = (async () => { do { refreshRequested = false; await refreshNow(); } while (refreshRequested); })();
   try { await refreshPromise; } finally { refreshPromise = null; }
 }
+async function prepareLoginWorkspace(expectedUserId: string, expectedAccessToken: string) {
+  const startingRevision = authRevision;
+  const startingValidation = identityValidationGeneration;
+  let settled = false, sawExpectedScope = liveAuthUserId === expectedUserId;
+  let unsubscribe = () => {};
+  let resolveReady!: () => void, rejectReady!: (reason: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const settle = (error?: Error) => {
+    if (settled) return;
+    settled = true; unsubscribe();
+    if (error) rejectReady(error); else resolveReady();
+  };
+  const inspect = (state: AppState) => {
+    if (settled) return;
+    sawExpectedScope ||= liveAuthUserId === expectedUserId;
+    if (sawExpectedScope && liveAuthUserId !== expectedUserId) {
+      settle(new Error('Sesi akun berubah. Silakan masuk kembali.')); return;
+    }
+    // A same-account rotation may supersede the token returned by setSession.
+    // Only a later, freshly validated revision may satisfy this login waiter.
+    if (state.mode === 'live' && state.initialized && state.user?.authUserId === expectedUserId
+      && liveAuthUserId === expectedUserId && !sessionRevalidating && !state.sessionValidating
+      && identityValidationGeneration > startingValidation
+      && (liveAuthAccessToken === expectedAccessToken || authRevision > startingRevision)) settle();
+    else if (state.initialized && !state.user && state.error) settle(new Error(state.error));
+  };
+  unsubscribe = app.subscribe(inspect);
+  if (settled) unsubscribe();
+  // The complete refresh remains authoritative and reports failures through
+  // app.error. Login waits only for the validated identity stage, not history.
+  void refresh().then(() => {
+    inspect(get(app));
+    if (!settled) settle(new Error(get(app).error ?? 'Akun belum dapat dimuat. Coba masuk kembali.'));
+  }, error => settle(error instanceof Error ? error : new Error('Akun belum dapat dimuat.')));
+  try { await ready; } finally { unsubscribe(); }
+}
 function clearLiveState(error: string | null = null, validatingSession = false) {
   // A known Auth session still needs employee/RLS validation. Keep protected
   // routes loading while clearing old account data, rather than briefly
@@ -477,6 +582,7 @@ async function readAll(table: string, fields = '*'): Promise<any[]> {
 async function refreshNow() {
   if (!supabase || refreshing) return; refreshing = true;
   let revision = authRevision;
+  const attendanceRevision = attendanceWriteRevision;
   let sessionUserId: string | null = null;
   let contextValidatedSession: { userId: string; accessToken: string } | null = null;
   try {
@@ -511,47 +617,88 @@ async function refreshNow() {
     }
     if (!access.allowed) { clearLiveState('Sesi akun tidak berlaku. Silakan masuk kembali.'); return; }
     contextValidatedSession = { userId: session.user.id, accessToken: session.access_token };
-    const tables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets', 'leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
-    const [employeeRows, roleRows, departmentRows, positionRows, outletRows, leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
+    // Validate the account and navigation first. Photos, history, balances and
+    // operational tables must not prolong the login confirmation itself.
+    const identityTables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets'];
+    const [employeeRows, roleRows, departmentRows, positionRows, outletRows] = await Promise.all(identityTables.map(name => readAll(name)));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
-    if (!current || current.status !== 'active') {
+    if (!current || !activeAccount(current) || current.id !== access.employeeId) {
       // Background validation denies access without mutating the shared Auth
       // session: an awaited signOut for A could otherwise clear a newer login B.
       if (revision === authRevision) clearLiveState('Akses akun tidak aktif. Hubungi Admin HR.');
       return;
     }
-    const [staffingRows, followupResponse] = isAdmin(current)
-      ? await Promise.all([readAll('staffing_requirements'), rpc('spv_followup_page', {
-          p_view: 'all_open', p_outlet_id: null, p_from: null, p_to: null, p_page_size: 100, p_cursor: null
-        })])
-      : [[], { items: [] }];
-    const followupRows = followupResponse?.items ?? [];
-    const directory = await rpc('employee_directory', {});
-    for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
-    const attendanceRecords: AttendanceRecord[] = await Promise.all(attendanceRows.map(async r => {
-      const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-      return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, workDate: r.work_date, clockIn: r.clock_in, clockOut: r.clock_out, scheduledStart: r.expected_in, lateMinutes: r.late_minutes, durationMinutes: r.worked_minutes, inLatitude: r.in_latitude, inLongitude: r.in_longitude, inAccuracy: r.in_accuracy_m, inDistance: r.in_distance_m, outLatitude: r.out_latitude, outLongitude: r.out_longitude, outDistance: r.out_distance_m, outAccuracy: r.out_accuracy_m, selfiePath: r.selfie_path ?? '', selfieUrl: signed?.data?.signedUrl, selfieCapturedAt: r.selfie_captured_at ?? undefined, selfieOutletName: r.selfie_outlet_name ?? undefined, corrected: r.corrected, correctionReason: '', source: r.source === 'manual' ? 'manual' : 'device', assignmentId: r.assignment_id ?? null, outletSnapshot: { morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.tolerance_minutes, latitude: r.outlet_latitude, longitude: r.outlet_longitude, radiusMeters: r.radius_m } };
-    }));
-    let auditEntries: AppState['auditEntries'] = [];
-    if (isAdmin(current)) {
-      const data = await readAll('audit_events', 'id,entity,actor_employee_id,entity_id,action,reason,before_data,after_data,created_at');
-      auditEntries = data.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at, detail: r.entity === 'leave' ? leaveAuditDetail(r.reason,r.before_data,r.after_data) : r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
-      for (const record of attendanceRecords) record.correctionReason = auditEntries.find(entry => entry.entityId === record.id && entry.detail)?.detail ?? '';
+    const { data: { session: identitySession } } = await supabase.auth.getSession();
+    if (revision !== authRevision || identitySession?.user.id !== session.user.id) return;
+    if (identitySession.access_token !== session.access_token) {
+      if (get(app).user?.authUserId === session.user.id) beginSessionRevalidation();
+      else clearLiveState(null, true);
+      refreshRequested = true; return;
     }
+    identityValidationGeneration += 1;
+    if (!get(app).initialized || get(app).user?.authUserId !== session.user.id || get(app).workspaceLoading) {
+      // A partial snapshot is deliberately read-only. Feature routes remain
+      // behind the workspace-loading view, so empty tables cannot be mistaken
+      // for zero pending requests, zero attendance or an available shift.
+      const identityEmployees = employees.map(({ photoUrl: _path, ...employee }) => employee);
+      sessionRevalidating = false;
+      app.update(state => ({ ...state, mode: 'live', initialized: true, loading: false, sessionValidating: false,
+        workspaceLoading: true, user: identityEmployees.find(e => e.id === current.id)!, employees: identityEmployees,
+        departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })),
+        positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })),
+        outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location,
+          latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at),
+          morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes,
+          maxAccuracyMeters: r.max_accuracy_m ?? 100 })), error: null }));
+    } else {
+      // Notify login waiters of this fresh identity validation without
+      // replacing the already hydrated page or its per-account drafts.
+      app.update(state => ({ ...state }));
+    }
+    const tables = ['leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
+    const [leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
+    if (revision !== authRevision) return;
     const balanceCache: Record<string, number> = {};
     const year = Number(jakartaDate().slice(0,4));
     const balanceYears = new Set<number>([year, year + 1]);
     for (const row of [...leaveRows, ...adjustmentRows]) for (const date of [row.starts_on, row.ends_on]) if (date) balanceYears.add(Number(date.slice(0,4)));
     const balanceIds = isAdmin(current) ? employeeRows.map(e => e.id) : [...new Set([current.id,...leaveRows.map(r => r.employee_id)])];
-    await Promise.all(balanceIds.flatMap(employeeId => [...balanceYears].map(async balanceYear => { const balance = await rpc('leave_balance', { p_employee_id: employeeId, p_year: balanceYear }); balanceCache[`${employeeId}:${balanceYear}`] = balance.expired ? 0 : Number(balance.remaining); })));
-    for (const employee of employees.filter(e => e.photoUrl)) { const signed = await supabase.storage.from('profile-photos').createSignedUrl(employee.photoUrl!,300); employee.photoUrl = signed.data?.signedUrl; }
-    const leaveRequests: LeaveRequest[] = await Promise.all(leaveRows.map(async r => {
+    // Independent resources share a parallel phase instead of serial network
+    // waterfalls. Keep publication behind the final token/revision checks.
+    const [[staffingRows, followupResponse], directory, auditRows, attendanceRecords] = await Promise.all([
+      isAdmin(current) ? Promise.all([readAll('staffing_requirements'), rpc('spv_followup_page', {
+        p_view: 'all_open', p_outlet_id: null, p_from: null, p_to: null, p_page_size: 100, p_cursor: null
+      })]) : Promise.resolve<[any[], { items: any[] }]>([[], { items: [] }]),
+      rpc('employee_directory', {}),
+      isAdmin(current) ? readAll('audit_events', 'id,entity,actor_employee_id,entity_id,action,reason,before_data,after_data,created_at') : Promise.resolve([]),
+      Promise.all(attendanceRows.map(async r => {
+        const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
+        return { ...mapAttendanceRecord(r), selfieUrl: signed?.data?.signedUrl };
+      })),
+      Promise.all(balanceIds.flatMap(employeeId => [...balanceYears].map(async balanceYear => {
+        const balance = await rpc('leave_balance', { p_employee_id: employeeId, p_year: balanceYear });
+        balanceCache[`${employeeId}:${balanceYear}`] = balance.expired ? 0 : Number(balance.remaining);
+      })))
+    ]);
+    if (revision !== authRevision) return;
+    const followupRows = followupResponse?.items ?? [];
+    for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
+    const auditEntries: AppState['auditEntries'] = auditRows.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at,
+      detail: r.entity === 'leave' ? leaveAuditDetail(r.reason,r.before_data,r.after_data) : r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
+    for (const record of attendanceRecords) record.correctionReason = auditEntries.find(entry => entry.entityId === record.id && entry.detail)?.detail ?? '';
+    const [, leaveRequests]: [unknown, LeaveRequest[]] = await Promise.all([
+      Promise.all(employees.filter(e => e.photoUrl).map(async employee => {
+        const signed = await supabase!.storage.from('profile-photos').createSignedUrl(employee.photoUrl!, 300);
+        employee.photoUrl = signed.data?.signedUrl;
+      })),
+      Promise.all(leaveRows.map(async r => {
       const history = adjustmentRows.filter(a => a.leave_request_id === r.id).sort((a,b) => b.created_at.localeCompare(a.created_at));
       const adjustment = history.find(a => a.status === 'pending') ?? history[0];
       const attachment = r.attachment_path ? await supabase!.storage.from('leave-attachments').createSignedUrl(r.attachment_path,300) : null;
       return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
-    }));
+      }))
+    ]);
     const cashierAssignments: CashierAssignment[] = assignmentRows.map(mapCashierAssignment);
     const attendanceCorrectionRequests = correctionRows.map(r => ({ id: r.id, employeeId: r.employee_id, attendanceId: r.attendance_id, workDate: r.work_date,
       outletId: r.outlet_id, shift: r.shift, proposedClockIn: r.proposed_clock_in, proposedClockOut: r.proposed_clock_out, reason: r.reason,
@@ -569,8 +716,9 @@ async function refreshNow() {
       else clearLiveState(null, true);
       refreshRequested = true; return;
     }
+    if (attendanceRevision !== attendanceWriteRevision) { refreshRequested = true; return; }
     sessionRevalidating = false;
-    app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, workspaceLoading: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
   } catch (e) {
     if (revision === authRevision) {
@@ -681,7 +829,14 @@ export const actions = {
     commit(s => { for (const n of s.notifications ?? []) if (n.employeeId === actor.id && (!notificationId || n.id === notificationId) && !n.readAt) n.readAt = new Date().toISOString(); });
   },
   async login(employeeNumber: string, password: string) {
-    if (configured) { const data = await edge('login', { employee_number: employeeNumber, password }); const { error } = await supabase!.auth.setSession(data.session); if (error) fail(error); await refresh(); if (!get(app).user) throw new Error(get(app).error ?? 'Akun belum dapat dimuat.'); }
+    if (configured) {
+      const data = await edge('login', { employee_number: employeeNumber, password });
+      const { data: authData, error } = await supabase!.auth.setSession(data.session);
+      if (error) fail(error);
+      const session = authData.session;
+      if (!session) throw new Error('Sesi akun belum dapat dibuat. Coba masuk kembali.');
+      await prepareLoginWorkspace(session.user.id, session.access_token);
+    }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
   async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
@@ -1379,19 +1534,25 @@ export const actions = {
       if (!session || session.user.id !== u.authUserId) throw new Error('Sesi berubah. Silakan ulangi absensi dengan akun Anda.');
       const path = `${session.user.id}/${id()}.jpg`, upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'});
       if(upload.error) fail(upload.error);
+      let row;
       try { assertAttendanceActor(u, revision); const verificationToken = await verifyAttendanceSelfie(input,path,u,revision);
-        await rpc('attendance_clock_in_selfie',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
+        row = await rpc('attendance_clock_in_selfie',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
           p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName,p_geo_captured_at:input.geoCapturedAt,p_verification_token:verificationToken });
       } catch(e) { await cleanupRejectedUpload('attendance-selfies',path,e); throw e; }
-      assertAttendanceActor(u, revision);
-      await refresh(); return;
+      await publishConfirmedAttendance(row,u,revision,{ outletId: outlet.id, closed: false });
+      return;
     }
     const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',assignmentId:assignment.id,selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
   },
   async clockOut(input: ClockOutInput) {
+    const revision = authRevision;
     const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = attendanceOutlet(record,get(app).outlets.find(o => o.id === record.outletId)!); const distance = validateGeo(input,outlet);
     assertFreshGps(input.geoCapturedAt);
-    if(configured) { await rpc('attendance_clock_out_fresh',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_geo_captured_at:input.geoCapturedAt}); await refresh(); return; }
+    if(configured) {
+      assertAttendanceActor(u,revision);
+      const row = await rpc('attendance_clock_out_fresh',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_geo_captured_at:input.geoCapturedAt});
+      await publishConfirmedAttendance(row,u,revision,{ outletId: record.outletId, recordId: record.id, closed: true, previous: record }); return;
+    }
     const now = new Date().toISOString(); commit(s => { const r = s.attendanceRecords.find(x => x.id === record.id)!; r.clockOut = now; r.durationMinutes = Math.floor((+new Date(now)-+new Date(r.clockIn))/60000); r.outLatitude = input.latitude; r.outLongitude = input.longitude; r.outDistance = distance; r.outAccuracy = input.accuracy; },'clock_out',record.id);
   },
   async correctAttendance(recordId: string, input: { clockIn: string; clockOut: string | null; shift?: Shift; reason: string }) {

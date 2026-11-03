@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-04",
+  "baseline": "2accb633b030068ec30ca2f971844a75a0a9f20b",
+  "sourceSha256": "a0cb568195ae8b3c6d4c0d7b20b3cf6319ea21e04c73ff9a34ba85705eb8c1ed",
+  "status": "PASS_LOCAL",
+  "local": {
+    "manifest": ".codex-test-tmp/evidence/release-local-2026-11-03T18-48-32-007Z/manifest.json",
+    "gates": [
+      {
+        "name": "check",
+        "exitCode": 0,
+        "logSha256": "c562ec3c1929595d328794bebc470f9dbf12e74921cb1b7ebca0fe8645c7fbbe"
+      },
+      {
+        "name": "unit",
+        "exitCode": 0,
+        "logSha256": "ed0f98d46822449db929524a2eaafa89887e27121d09631e935a5b847676940b"
+      },
+      {
+        "name": "database",
+        "exitCode": 0,
+        "logSha256": "d5c9e4fc2fd443c87d7f113a49c30b4840f8813119067f544e37bd6337f71c65"
+      },
+      {
+        "name": "legacy",
+        "exitCode": 0,
+        "logSha256": "e6c6e3db1fcc09fd3d958b05e7ad4507c7531f371b334fe541c2de70ba80f1dd"
+      },
+      {
+        "name": "historical-readiness",
+        "exitCode": 0,
+        "logSha256": "b68d09f10d0c9ad8b83fbd37cc9dec157d2a0f6564997af2681a0f0ff77c5c19"
+      },
+      {
+        "name": "browser-checker",
+        "exitCode": 0,
+        "logSha256": "10c57298d16463add35093436e37196a4aec482630601313ae300728fc9d3c37"
+      },
+      {
+        "name": "evidence-helper",
+        "exitCode": 0,
+        "logSha256": "555a460c19520946f213aaf6c1a7fdb0d7695b455b4b401cf8f8f05cfafa484b"
+      },
+      {
+        "name": "audit",
+        "exitCode": 0,
+        "logSha256": "999515fd67408fbfa2bd0c59c3004d7892e943d31cb76dc379dc43de261d25b0"
+      },
+      {
+        "name": "build",
+        "exitCode": 0,
+        "logSha256": "96821f800c62cd0cc842d9d4bc77ff851737d9e3ba628d17292a0d0af81c8bb3"
+      }
+    ],
+    "unitFiles": 39,
+    "unitPassed": 496,
+    "checkErrors": 0,
+    "checkWarnings": 0,
+    "dependencyAudit": {
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "low": 4
+    }
+  },
+  "browser": [
+    {
+      "suite": "live-mock",
+      "passed": 32,
+      "skipped": 0,
+      "flaky": 0,
+      "unexpected": 0,
+      "manifest": ".codex-test-tmp/evidence/2026-11-03T18-50-57-510Z-live-mock-2856471a-c81c-4375-9a28-46f7833caad0/manifest.json",
+      "reportSha256": "50f8a69103a2911ed1ff9435e9d5d004e8637b9a3851007d59cfa19d34f0635d"
+    },
+    {
+      "suite": "demo-pwa",
+      "passed": 24,
+      "skipped": 0,
+      "flaky": 0,
+      "unexpected": 0,
+      "manifest": ".codex-test-tmp/evidence/2026-11-03T18-51-37-238Z-demo-pwa-6e2be8aa-a35b-4618-a608-1aa94a851528/manifest.json",
+      "reportSha256": "33fcb6192b608c27af07b86242f9dafccafdd73d996271c299e6238f6a43dabe"
+    }
+  ],
+  "scope": "Synthetic SDK/browser and local database fixtures; not real-user hosted workflow or real-device evidence"
+}

@@ -244,6 +244,9 @@ export interface AppState {
   // Keep the shell mounted while the new token is revalidated, but make the
   // transitional state visible to protected client actions.
   sessionValidating?: boolean;
+  // Identity and navigation may be ready before the operational snapshot.
+  // Keep incomplete data out of feature views and mutation preconditions.
+  workspaceLoading?: boolean;
   employees: Employee[]; outlets: Outlet[]; departments: Department[]; positions: Position[];
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];

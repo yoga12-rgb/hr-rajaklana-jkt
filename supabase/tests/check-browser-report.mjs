@@ -5,6 +5,9 @@ const required = {
   'live-mock': [
     ['SELFIE-ONLY-01', 'live SDK camera/GPS clock-in needs no face reference, failed photo retry succeeds and saved attendance survives reload'],
     ['SELFIE-ONLY-02', 'revoked clock permission during pending selfie API prevents final attendance RPC and preserves account guard'],
+    ['RESPONSIVE-ATTENDANCE-01', 'camera/GPS RPC confirmation updates clock-in and clock-out before held background employee reads; reload retains server result'],
+    ['RESPONSIVE-ATTENDANCE-02', 'final RPC rejection never publishes optimistic attendance or success while retaining retry form'],
+    ['RESPONSIVE-LOGIN-01', 'validated account reaches greeting and explicit workspace loading while operational reads are held; route actions wait for complete hydration'],
     ['BR01', 'leave form textarea and dialog remain mounted and action is rejected during session validation'],
     ['BR02', 'employee inputs and draft remain mounted after token rotation'],
     ['BR03a', 'live camera video and track identity remain connected during token rotation'],
