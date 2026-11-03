@@ -19,3 +19,4 @@ src/**/*.test.ts
 .env
 .env.*
 *.log
+.codex-test-tmp/

@@ -92,5 +92,9 @@
     "change": "one trailing empty line removed after full gates; no executable change",
     "sha256": "1aba82ecafadf0f785f30255cf418f0c63f0f6b5011a3e1ede2b1e52cb034220",
     "targetedRegression": "face-retirement-release suite rerun on normalized file"
+  },
+  "finalPackaging": {
+    "change": "Exclude .codex-test-tmp/ local synthetic verification artifacts from CLI uploads; app/API/SQL unchanged",
+    "verification": "tracked release source and .gitignore already exclude these artifacts from Git; CLI staging package now explicitly excludes them too"
   }
 }
