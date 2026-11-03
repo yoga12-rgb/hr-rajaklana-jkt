@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolve } from 'node:path';
 
 const baseURL = process.env.E2E_BASE_URL || 'http://127.0.0.1:5173';
 
@@ -23,7 +24,8 @@ export default defineConfig({
     permissions: ['geolocation', 'camera'],
     geolocation: { latitude: -6.2, longitude: 106.816666, accuracy: 10 },
     launchOptions: {
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+        `--use-file-for-fake-video-capture=${resolve('tests/fixtures/fake-camera.y4m')}`],
     },
   },
   webServer: process.env.E2E_BASE_URL ? undefined : {

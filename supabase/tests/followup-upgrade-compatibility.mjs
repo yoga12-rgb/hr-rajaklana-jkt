@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { installAuthSessionFixture, fixtureSession } from './auth-session-fixture.mjs';
 
 const migrationDir = new URL('../migrations/', import.meta.url);
-const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql')).sort();
+const migrationNames = (await readdir(migrationDir)).filter(name => name.endsWith('.sql') && name <= '20261030031318_retire_application_authenticator.sql').sort();
 const preflight = await readFile(new URL('../deployment/preflight-followup-off-compatibility.sql', import.meta.url), 'utf8');
 const hardeningPreflight = await readFile(new URL('../deployment/preflight-supervisor-operational-hardening.sql', import.meta.url), 'utf8');
 const migrationVersion = name => name.slice(0, name.indexOf('_'));
@@ -345,7 +345,7 @@ const setupHistory = async (db, sourceShift='off') => {
     await runRpc(ids.authUser,'aal2','select public.supervisor_capability_save($1,$2,$3,null,true)',
       [ids.admin,'coverage_configure',ids.outletA]);
     requests.planning={key:'80000000-0000-4000-8000-000000000003',outlet:ids.outletA,weekday:1,starts:'09:00',ends:'12:00',minimum:1,
-      from:'2026-11-02',until:null,reason:'Kebutuhan interval untuk uji replay migrasi'};
+      from:(await scalar(db,"select ((clock_timestamp() at time zone 'Asia/Jakarta')::date+2)::text as day")).day,until:null,reason:'Kebutuhan interval untuk uji replay migrasi'};
     const planningResult=(await runRpc(ids.authUser,'aal2',
       'select public.staffing_interval_requirement_save_v2(null,null,$1,$2,$3,$4,$5,$6,$7,$8,$9) as result',
       [requests.planning.key,requests.planning.outlet,requests.planning.weekday,requests.planning.starts,requests.planning.ends,

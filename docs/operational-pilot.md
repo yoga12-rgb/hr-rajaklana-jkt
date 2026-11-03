@@ -25,15 +25,15 @@ Ini panduan uji, bukan pernyataan seluruh langkah sudah lulus. Gunakan akun/data
 4. HR memakai **Catat sakit / izin lampau** untuk karyawan lain, mengisi tanggal lampau, cakupan/jam, alasan, keputusan dan sumber konfirmasi, potongan, serta nama pemberi keputusan eksternal bila berlaku. Catatan harus jelas sebagai pencatatan HR; tidak mengubah jam absensi. Tambahan potongan tahun hangus harus ditolak.
 5. Periksa keputusan tim Produksi oleh Head Baker, keputusan jabatan lain oleh atasan yang ditetapkan, serta keputusan eksternal yang dicatat HR lain. Tidak ada persetujuan atau pencatatan keputusan untuk diri sendiri.
 
-## Wajah dan notifikasi perangkat
+## Selfie dan notifikasi perangkat
 
-- Buka **Profil → Verifikasi wajah**, baca persetujuan, lalu daftarkan referensi. HR lain meninjau; referensi disimpan privat. Uji kebutuhan daftar ulang dan pencocokan server 1:1 pada selfie masuk. Ini belum merupakan liveness kuat atau jaminan anti foto. Kegagalan/mismatch tidak otomatis menjadi pelanggaran atau potongan; gunakan konfirmasi dan jalur manual HR.
+- Buka **Absensi**, periksa GPS dan ambil selfie dari kamera. Tidak ada pendaftaran atau persetujuan foto referensi. HR/SPV memeriksa foto serta cap waktu/lokasi melalui detail kehadiran. Uji kasir tanpa referensi; jadwal, GPS dan selfie baru tetap wajib. Kendala kamera/GPS ditangani melalui koreksi/manual HR.
 - Buka lonceng untuk pengajuan, keputusan, penugasan, dan koreksi. Pastikan tautan sesuai akun, status dibaca persisten, dan akun lain tidak dapat membaca/menandai inbox pengguna lain.
 - Push bersifat opt-in pada browser/perangkat yang mendukung. Uji izin diterima, ditolak, platform tanpa dukungan, dan logout yang melepas langganan. Lonceng/pengingat dalam aplikasi tetap tersedia. Pengingat 8 jam di luar aplikasi memerlukan scheduler/pengirim server aktif; keberadaan komponen bukan bukti pengiriman telah berhasil.
 - Pada iPhone/iPad iOS/iPadOS 16.4+, buka Safari → Bagikan → Tambah ke Layar Utama. Aktifkan **Buka sebagai App Web** jika muncul. Buka ikon tersebut, login, lalu lonceng → **Aktifkan notifikasi perangkat** → Izinkan. Tab Safari menampilkan petunjuk pemasangan. Pemeriksaan yang gagal menyediakan **Periksa ulang**; status Aktif baru muncul setelah langganan akun dikonfirmasi server. Tutup aplikasi tanpa logout untuk menguji penerimaan push.
 
 ## Batas bukti dan uji perangkat
 
-Mode demo serta helper lokal tidak membuktikan layanan hosted, kualitas pencocokan wajah, atau pengiriman push. [Laporan hosted terdahulu](hosted-verification.md) hanya berlaku untuk snapshot yang disebut di sana. Setelah migrasi/config/deployment terbaru diverifikasi, ulangi alur inti pada dua akun/perangkat melalui HTTPS, termasuk GPS/kamera nyata di ponsel outlet, koneksi buruk, lintas tengah malam, aplikasi tertutup, izin push, pemasangan, dan pembaruan PWA.
+Mode demo serta helper lokal tidak membuktikan layanan hosted, kamera/GPS perangkat nyata, atau pengiriman push. [Laporan hosted terdahulu](hosted-verification.md) hanya berlaku untuk snapshot yang disebut di sana. Setelah migrasi/config/deployment terbaru diverifikasi, ulangi alur inti pada dua akun/perangkat melalui HTTPS, termasuk GPS/kamera nyata di ponsel outlet, koneksi buruk, lintas tengah malam, aplikasi tertutup, izin push, pemasangan, dan pembaruan PWA.
 
 Catat akun uji, langkah, hasil aktual/harapan, perangkat/browser, dan waktu WIB tanpa data pribadi. Tandai setiap langkah **belum diuji**, **lulus**, atau **gagal** sesuai hasil nyata. [Uji lokal 12 Oktober](local-validation-2026-10-12.md) tetap menjadi riwayat versi lama, bukan bukti semua perubahan ini.

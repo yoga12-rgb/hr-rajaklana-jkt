@@ -18,7 +18,9 @@ grant select,insert,update,delete on storage.objects to authenticated;
 create function storage.foldername(name text) returns text[] language sql immutable as $$select string_to_array(name,'/')$$;
 create publication supabase_realtime;`);
 await installAuthSessionFixture(db);
-for(const name of (await readdir(new URL('../migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')).sort()) {
+const baseline26=(await readdir(new URL('../migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')&&n<='20261030031318_retire_application_authenticator.sql').sort();
+assert.equal(baseline26.length,26,'historical biometric/push contract is explicitly bounded to baseline26');
+for(const name of baseline26) {
   const sql=(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8')).replace('create extension if not exists pgcrypto with schema extensions;','');
   await db.exec(sql);
 }

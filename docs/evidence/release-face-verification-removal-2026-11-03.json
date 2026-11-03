@@ -1,0 +1,96 @@
+{
+  "scope": "isolated face-verification removal from verified26 baseline; no unpublished conflict feature",
+  "sourceSha256": "9ae78525a7bc0939775dee7feca51147686af35f08225c7200018cd15e9ffeac",
+  "sourceBase": "62ecdfd797efc3957646ed3beb1a3b3ec7b4124e",
+  "localGates": [
+    {
+      "name": "check",
+      "exitCode": 0,
+      "logSha256": "c562ec3c1929595d328794bebc470f9dbf12e74921cb1b7ebca0fe8645c7fbbe"
+    },
+    {
+      "name": "unit",
+      "exitCode": 0,
+      "logSha256": "14c6ae516ac33465053e06d25b9328b8db58b9d5b958abef2117b792d6ef808a"
+    },
+    {
+      "name": "database",
+      "exitCode": 0,
+      "logSha256": "d5c9e4fc2fd443c87d7f113a49c30b4840f8813119067f544e37bd6337f71c65"
+    },
+    {
+      "name": "legacy",
+      "exitCode": 0,
+      "logSha256": "e6c6e3db1fcc09fd3d958b05e7ad4507c7531f371b334fe541c2de70ba80f1dd"
+    },
+    {
+      "name": "historical-readiness",
+      "exitCode": 0,
+      "logSha256": "b68d09f10d0c9ad8b83fbd37cc9dec157d2a0f6564997af2681a0f0ff77c5c19"
+    },
+    {
+      "name": "browser-checker",
+      "exitCode": 0,
+      "logSha256": "10c57298d16463add35093436e37196a4aec482630601313ae300728fc9d3c37"
+    },
+    {
+      "name": "evidence-helper",
+      "exitCode": 0,
+      "logSha256": "555a460c19520946f213aaf6c1a7fdb0d7695b455b4b401cf8f8f05cfafa484b"
+    },
+    {
+      "name": "audit",
+      "exitCode": 0,
+      "logSha256": "999515fd67408fbfa2bd0c59c3004d7892e943d31cb76dc379dc43de261d25b0"
+    },
+    {
+      "name": "build",
+      "exitCode": 0,
+      "logSha256": "c529a1bfddd9c8dbe71d09ba3a49756a9f8185ba6116cdf0fe580ccfbc180cdb"
+    }
+  ],
+  "unit": {
+    "files": 37,
+    "tests": 474
+  },
+  "browser": [
+    {
+      "suite": "live-mock",
+      "stats": {
+        "startTime": "2026-11-03T02:43:16.412Z",
+        "duration": 228360.059,
+        "expected": 29,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "reportSha256": "a8cf5742eeae1923d0f2a78e5de4c76c9170f795e34a8c7274d615c4b21c5abb"
+    },
+    {
+      "suite": "demo-pwa",
+      "stats": {
+        "startTime": "2026-11-03T03:21:02.377Z",
+        "duration": 99481.523,
+        "expected": 24,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "reportSha256": "1ddbce87df9b4944d3301769fc515c187b2f51136fa6741ba3dd87cfa8b7a6d9"
+    }
+  ],
+  "migration": {
+    "version": "20261103021143",
+    "name": "remove_face_verification",
+    "ordinal": 27,
+    "sha256": "6eb57db2fbd4829292270cd5fd628996911ee748a6c743604276dd2a1519a05e"
+  },
+  "hosted": "separate release verification required; these are local synthetic tests",
+  "devices": "PVR-02/iPhone/iPad DEFERRED",
+  "finalFormatting": {
+    "file": "supabase/tests/face-retirement-release.mjs",
+    "change": "one trailing empty line removed after full gates; no executable change",
+    "sha256": "1aba82ecafadf0f785f30255cf418f0c63f0f6b5011a3e1ede2b1e52cb034220",
+    "targetedRegression": "face-retirement-release suite rerun on normalized file"
+  }
+}

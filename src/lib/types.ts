@@ -15,6 +15,7 @@ export interface Employee {
   positionId: string; outletId: string; managerId: string | null; joinDate: string;
   status: 'active' | 'inactive'; employmentType: 'permanent'; accountStatus: 'not_invited' | 'invited' | 'active' | 'disabled';
   authUserId?: string | null; roles: Role[]; canMiddleShift: boolean; weeklyOffDays: number[];
+  canClock?: boolean;
   approvalMode: 'internal' | 'external'; address: string; birthDate: string; gender: string;
   emergencyName: string; emergencyPhone: string; photoUrl?: string; exitDate?: string; exitReason?: string;
 }

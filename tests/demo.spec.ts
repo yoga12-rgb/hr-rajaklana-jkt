@@ -44,6 +44,14 @@ function dateAfter(days: number) {
   return date.toISOString().slice(0, 10);
 }
 
+function nextWeekStart() {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const date = new Date(`${today}T12:00:00Z`);
+  const daysUntilNextMonday = (8 - date.getUTCDay()) % 7 || 7;
+  date.setUTCDate(date.getUTCDate() + daysUntilNextMonday);
+  return date.toISOString().slice(0, 10);
+}
+
 async function submitLeave(page: Page, reason: string, start = dateAfter(3), end = dateAfter(5)) {
   await page.goto('/leave');
   await page.getByRole('button', { name: 'Buat pengajuan', exact: true }).click();
@@ -302,6 +310,10 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
       const storageKey = `rajaklana-hr-roster-draft-v1:employee-1:${weekStart}`;
       await secondTab.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: storageKey, value: record });
 
+      // Return to the older tab as a user would. The storage event remains a
+      // real cross-tab event; do not rely on an occluded renderer being scheduled
+      // promptly while the second tab is foregrounded on a loaded Windows host.
+      await page.bringToFront();
       await expect(page.getByText('Ada percobaan simpan sebelumnya yang belum dipastikan', { exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Minggu berikutnya', exact: true }).click();
       await expect(page.locator('.planner-heading')).toContainText('2026-11-02 – 2026-11-08');
@@ -369,20 +381,31 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
 
   test('cashier weekly notification URL shows only that account’s seven-day roster', async ({ page }) => {
     await login(page);
-    await page.goto('/assignments?week=2026-11-02');
-    await page.getByLabel(/Shift Sari Lestari,/).nth(1).selectOption('morning');
-    await page.getByLabel(/Shift Sari Lestari,/).nth(2).selectOption('afternoon');
+    // Use a future roster and explicit date labels. Past-day cells intentionally
+    // have no select, so indexing only editable controls shifts weekday meaning
+    // as the real calendar advances.
+    const weekStart = nextWeekStart();
+    const dateAt = (offset: number) => new Date(Date.parse(`${weekStart}T12:00:00Z`) + offset * 86_400_000).toISOString().slice(0, 10);
+    const dateLabel = (day: string) => new Intl.DateTimeFormat('id-ID', {
+      day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Jakarta'
+    }).format(new Date(`${day}T12:00:00+07:00`));
+    const tuesday = dateAt(1), wednesday = dateAt(2);
+    await page.goto(`/assignments?week=${weekStart}`);
+    await page.getByLabel(`Shift Sari Lestari, ${dateLabel(tuesday)}`, { exact: true }).selectOption('morning');
+    await page.getByLabel(`Shift Sari Lestari, ${dateLabel(wednesday)}`, { exact: true }).selectOption('afternoon');
     await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Jadwal uji untuk tautan notifikasi mingguan');
     await page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
     await expect(page.getByText(/perubahan jadwal tersimpan bersama/)).toBeVisible();
 
     await switchUser(page, 'employee-6');
-    await page.goto('/assignments?week=2026-11-05');
+    await page.goto(`/assignments?week=${dateAt(3)}`);
     await expect(page.getByRole('heading', { name: 'Jadwal mingguan Anda', exact: true })).toBeVisible();
-    await expect(page.locator('.week-heading')).toContainText('2026-11-02 – 2026-11-08');
+    await expect(page.locator('.week-heading')).toContainText(`${weekStart} – ${dateAt(6)}`);
     await expect(page.locator('.day-card')).toHaveCount(7);
     await expect(page.locator('.day-card').nth(1)).toContainText('Pagi');
     await expect(page.locator('.day-card').nth(2)).toContainText('Sore');
+    await expect(page.locator('.day-card').nth(1)).toContainText(dateLabel(tuesday));
+    await expect(page.locator('.day-card').nth(2)).toContainText(dateLabel(wednesday));
     await expect(page.locator('.day-card').nth(1)).toContainText(/Outlet/);
     await expect(page.getByRole('combobox')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true })).toHaveCount(0);
@@ -391,7 +414,7 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
 
   test('reverting the last weekly change clears the empty local draft', async ({ page }) => {
     await login(page);
-    await page.goto('/assignments?week=2026-10-26');
+    await page.goto(`/assignments?week=${nextWeekStart()}`);
     const shift = page.getByLabel(/Shift Sari Lestari,/).first();
     await shift.selectOption('morning');
     await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Uji batal draft jadwal');
@@ -604,8 +627,31 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByRole('dialog').getByText('Tanpa potong cuti', { exact: true })).toBeVisible();
   });
 
+  test('retired face verification redirects without loading enrollment or biometric data', async ({ page }, testInfo) => {
+    browserAcceptance(testInfo, 'FACE-REMOVED-01|retired face verification bookmarks redirect to attendance without enrollment, reference calls or camera; profile and guide use selfie attendance');
+    await login(page, 'Kasir');
+    const referenceRequests: string[] = [];
+    page.on('request', request => { if (/\/api\/biometric|\/biometric_references|\/biometric-references/.test(request.url())) referenceRequests.push(request.url()); });
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async () => { throw new Error('Retired route must not open the camera'); } });
+    });
+    await page.goto('/face-verification');
+    await expect(page).toHaveURL(/\/attendance\?notice=face-verification-retired$/);
+    await expect(page.getByRole('status').filter({ hasText: 'Verifikasi wajah sudah dihapus.' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Kirim untuk ditinjau', exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('Kamera foto referensi', { exact: true })).toHaveCount(0);
+    await page.goto('/profile');
+    await expect(page.locator('a[href="/face-verification"]')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Kehadiran & selfie absensi', exact: true })).toBeVisible();
+    await page.goto('/guide');
+    await expect(page.locator('a[href="/face-verification"]')).toHaveCount(0);
+    await expect(page.getByText('Tidak perlu mendaftarkan wajah atau menunggu persetujuan foto referensi.', { exact: false })).toBeVisible();
+    await expect(page.getByText('Pemeriksaan selfie:', { exact: true })).toBeVisible();
+    expect(referenceRequests).toEqual([]);
+  });
+
   test('cashier attendance requires inside GPS and new camera selfie; clock out checks location again', async ({ page, context }, testInfo) => {
-    browserAcceptance(testInfo, 'camera/GPS biometric clock-in|real camera and browser geolocation satisfy same-account attendance flow; clock-out checks GPS again');
+    browserAcceptance(testInfo, 'camera/GPS selfie clock-in|real camera and browser geolocation satisfy same-account attendance flow without face enrollment; clock-out checks GPS again');
     // Test-only browser camera: this host's Edge fake camera ends before it
     // emits frames. A canvas video stream exercises the app's real preview,
     // drawImage, JPEG capture and selfie validation without a physical camera.
@@ -633,6 +679,8 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await page.goto('/attendance');
     await context.setGeolocation({ latitude: -6.3, longitude: 106.9, accuracy: 10 });
     await page.getByRole('button', { name: 'Clock in · Masuk', exact: true }).click();
+    await expect(page.getByRole('dialog').getByText('Ambil selfie langsung dari kamera agar SPV dapat memeriksa foto absensi. Tidak perlu mendaftarkan wajah atau menunggu persetujuan foto referensi.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog').locator('a[href="/face-verification"]')).toHaveCount(0);
     await expect(page.getByRole('dialog').getByText('Lokasi belum memenuhi syarat', { exact: true })).toBeVisible();
     await expect(page.getByRole('dialog').getByRole('button', { name: 'Konfirmasi clock in', exact: true })).toBeDisabled();
     await context.setGeolocation({ latitude: -6.2, longitude: 106.816666, accuracy: 10 });

@@ -78,15 +78,23 @@ function assertFreshGps(capturedAt: string | undefined) {
   const age = Date.now() - Date.parse(capturedAt ?? '');
   if (!Number.isFinite(age) || age < -5000 || age > 60_000) throw new Error('Lokasi sudah kedaluwarsa. Periksa ulang lokasi sebelum konfirmasi.');
 }
-async function verifyBiometricSelfie(input: ClockInInput, selfiePath: string): Promise<string> {
+async function verifyAttendanceSelfie(input: ClockInInput, selfiePath: string, actor: Employee, revision: number): Promise<string> {
   const { data: { session } } = await supabase!.auth.getSession();
-  if (!session) throw new Error('Silakan masuk kembali.');
-  const response = await fetch('/api/biometric', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+  assertAttendanceActor(actor, revision);
+  if (!session || session.user.id !== actor.authUserId) throw new Error('Sesi berubah. Silakan ulangi absensi dengan akun Anda.');
+  const response = await fetch('/api/attendance-selfie', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
     body: JSON.stringify({ action: 'verify', selfiePath, shift: input.shift, latitude: input.latitude, longitude: input.longitude, accuracy: input.accuracy,
       geoCapturedAt: input.geoCapturedAt, selfieCapturedAt: input.selfieCapturedAt, selfieOutletName: input.selfieOutletName }) });
   const result = await response.json();
-  if (!response.ok || !result.verificationToken) throw Object.assign(new Error(result.error || 'Wajah belum berhasil diverifikasi. Periksa pendaftaran wajah atau hubungi HR.'), { uploadRejected: true });
+  assertAttendanceActor(actor, revision);
+  if (!response.ok || !result.verificationToken) throw Object.assign(new Error(result.error || 'Selfie belum berhasil diperiksa. Ambil ulang atau hubungi HR.'), { uploadRejected: response.status >= 400 && response.status < 500 });
   return result.verificationToken;
+}
+function assertAttendanceActor(actor: Employee, revision: number) {
+  const current = user();
+  if (revision !== authRevision || current.id !== actor.id || current.authUserId !== actor.authUserId || !current.canClock) {
+    throw new Error('Sesi atau akses absensi berubah. Silakan ulangi dengan akun Anda.');
+  }
 }
 function selfieMetadata(input: ClockInInput): Pick<AttendanceRecord, 'selfieCapturedAt' | 'selfieOutletName'> {
   if (input.selfieCapturedAt === undefined && input.selfieOutletName === undefined) return {};
@@ -206,7 +214,7 @@ async function edge(action: string, body: Record<string, unknown> = {}) {
 }
 const cutTime = (v: string | null | undefined) => v?.slice(0, 5) ?? '';
 function mapEmployee(r: any, roles: any[]): Employee {
-  return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoUrl: r.photo_path, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
+  return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], canClock: r.can_clock === true, approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoUrl: r.photo_path, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
 }
 function mapSpvFollowup(r: any): SpvFollowup {
   return { id: r.id, caseKey: r.case_key ?? r.caseKey, issueType: r.issue_type ?? r.issueType,
@@ -1351,6 +1359,8 @@ export const actions = {
   },
   async clockIn(input: ClockInInput) {
     const u = user(), s = get(app), assignment = assignmentFor(s,u.id), outlet = s.outlets.find(o => o.id === assignment?.outletId);
+    const revision = authRevision;
+    if (configured && !u.canClock) throw new Error('Akun tidak diizinkan mencatat absensi. Hubungi HR.');
     if (!isCashier(u)) throw new Error('Absensi hanya untuk kasir.');
     if (!assignment || assignment.shift === 'off') throw new Error('Belum ada penugasan kerja hari ini atau Anda dijadwalkan libur. Hubungi HR.');
     if (!outlet || input.outletId !== outlet.id || input.shift !== assignment.shift) throw new Error('Outlet dan shift harus sesuai penugasan harian HR.');
@@ -1364,13 +1374,16 @@ export const actions = {
     assertFreshGps(input.geoCapturedAt);
     if(configured) {
       if (!metadata.selfieCapturedAt || !metadata.selfieOutletName) throw new Error('Ambil selfie baru dengan informasi pengambilan yang lengkap.');
-      const { data: { session } } = await supabase!.auth.getSession(); if (!session) throw new Error('Silakan masuk kembali.');
+      const { data: { session } } = await supabase!.auth.getSession();
+      assertAttendanceActor(u, revision);
+      if (!session || session.user.id !== u.authUserId) throw new Error('Sesi berubah. Silakan ulangi absensi dengan akun Anda.');
       const path = `${session.user.id}/${id()}.jpg`, upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'});
       if(upload.error) fail(upload.error);
-      try { const verificationToken = await verifyBiometricSelfie(input,path);
-        await rpc('attendance_clock_in_verified',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
+      try { assertAttendanceActor(u, revision); const verificationToken = await verifyAttendanceSelfie(input,path,u,revision);
+        await rpc('attendance_clock_in_selfie',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
           p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName,p_geo_captured_at:input.geoCapturedAt,p_verification_token:verificationToken });
       } catch(e) { await cleanupRejectedUpload('attendance-selfies',path,e); throw e; }
+      assertAttendanceActor(u, revision);
       await refresh(); return;
     }
     const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',assignmentId:assignment.id,selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);

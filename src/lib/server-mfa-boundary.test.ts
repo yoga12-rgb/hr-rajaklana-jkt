@@ -2,12 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const boundary = vi.hoisted(() => ({ createClient: vi.fn() }));
 vi.mock('@supabase/supabase-js', () => ({ createClient: boundary.createClient }));
-vi.mock('../../server/face-engine.mjs', () => ({
-  extractFace: vi.fn(), assertFaceMatch: vi.fn(), MODEL_ID: 'synthetic-model'
-}));
 
 import { authenticate } from '../../server/security.mjs';
-import { POST as biometric } from '../../api/biometric.mjs';
 import { POST as push } from '../../api/push.mjs';
 
 type Access = {

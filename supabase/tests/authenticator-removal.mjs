@@ -28,7 +28,7 @@ try {
     create schema supabase_migrations;
     create table supabase_migrations.schema_migrations(version text primary key,name text);
   `);
-  for (const name of (await readdir(migrationDir)).filter(n => n.endsWith('.sql')).sort()) {
+  for (const name of (await readdir(migrationDir)).filter(n => n.endsWith('.sql') && n <= '20261030031318_retire_application_authenticator.sql').sort()) {
     const sql = (await readFile(new URL(name, migrationDir), 'utf8')).replace('create extension if not exists pgcrypto with schema extensions;', '');
     await db.exec(sql);
     await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)', [name.slice(0, name.indexOf('_')), name.slice(name.indexOf('_') + 1, -4)]);

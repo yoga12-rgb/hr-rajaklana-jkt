@@ -146,6 +146,7 @@ const employeeMutexFunctions = [
   'public.biometric_enroll_server', 'public.biometric_review',
   'public.biometric_withdraw', 'public.biometric_issue_receipt',
   'public.attendance_clock_in_verified', 'private.protect_verified_selfie_delete',
+  'public.attendance_issue_selfie_receipt', 'public.attendance_clock_in_selfie',
   'private.dispatch_push_tick'
 ];
 for (const qualifiedName of employeeMutexFunctions) {

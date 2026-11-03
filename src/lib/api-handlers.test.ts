@@ -1,180 +1,139 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const boundary = vi.hoisted(() => ({ authenticate: vi.fn(), extractFace: vi.fn() }));
+import sharp from 'sharp';
+const boundary = vi.hoisted(() => ({ authenticate: vi.fn() }));
 vi.mock('../../server/security.mjs', async () => ({
   ...await vi.importActual<typeof import('../../server/security.mjs')>('../../server/security.mjs'),
   authenticate: boundary.authenticate
 }));
-vi.mock('../../server/face-engine.mjs', async () => ({
-  ...await vi.importActual<typeof import('../../server/face-engine.mjs')>('../../server/face-engine.mjs'),
-  extractFace: boundary.extractFace
-}));
-
 import { POST as biometric } from '../../api/biometric.mjs';
+import { POST as selfie, validateSelfieImage } from '../../api/attendance-selfie.mjs';
 import { POST as push } from '../../api/push.mjs';
 import { ApiError, sha256 } from '../../server/security.mjs';
-import { MODEL_ID } from '../../server/face-engine.mjs';
-
 const now = new Date('2026-10-18T01:00:00Z');
 const authId = '10000000-0000-4000-9000-000000000011';
 const employeeId = '20000000-0000-4000-9000-000000000011';
 const foreignId = '20000000-0000-4000-9000-000000000099';
-const referenceId = '30000000-0000-4000-9000-000000000011';
 const nonce = '40000000-0000-4000-9000-000000000011';
 const storageObjectId = '50000000-0000-4000-9000-000000000011';
 const expiresAt = '2026-10-18T01:02:00Z';
-const storedSelfie = Buffer.from('synthetic stored image bytes, never uploaded or inferred');
+const pixels = Buffer.from(Array.from({length:480*480*3},(_,i)=>(i*37+Math.floor(i/480))%256));
+const storedSelfie = await sharp(pixels,{raw:{width:480,height:480,channels:3}}).jpeg().toBuffer();
 const clientRPC = vi.fn(), adminRPC = vi.fn(), download = vi.fn(), upload = vi.fn(), remove = vi.fn(), fetchSpy = vi.fn();
 const storageFrom = vi.fn(() => ({ download, upload, remove }));
-let materials: Array<{ id: string; status: string; model_id: string; descriptor: number[] }>;
-
-const request = (body: unknown, route = 'biometric') => new Request(`https://hr.example/api/${route}`, {
+const request = (body: unknown, route = 'attendance-selfie') => new Request('https://hr.example/api/'+route, {
   method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.jwt.only' }, body: JSON.stringify(body)
 });
 const verifyInput = (overrides: Record<string, unknown> = {}) => ({
-  action: 'verify', selfiePath: `${authId}/fresh-selfie.jpg`, shift: 'morning',
+  action: 'verify', selfiePath: authId+'/fresh-selfie.jpg', shift: 'morning',
   latitude: -6.2, longitude: 106.8, accuracy: 10,
   geoCapturedAt: now.toISOString(), selfieCapturedAt: now.toISOString(), selfieOutletName: 'Synthetic outlet', ...overrides
-});
-const enrollment = (overrides: Record<string, unknown> = {}) => ({
-  action: 'enroll', consent: true, capturedAt: now.toISOString(), image: storedSelfie.toString('base64'), ...overrides
 });
 const validSubscription = (endpoint = 'https://fcm.googleapis.com/fcm/send/synthetic-device') => ({
   endpoint, keys: { p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') }
 });
-const receiptCalls = () => adminRPC.mock.calls.filter(([name]) => name === 'biometric_issue_receipt');
-
+const receiptCalls = () => adminRPC.mock.calls.filter(([name]) => name === 'attendance_issue_selfie_receipt');
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(now); vi.clearAllMocks();
   vi.stubGlobal('fetch', fetchSpy);
   fetchSpy.mockRejectedValue(new Error('Network is forbidden in handler tests'));
-  materials = [{ id: referenceId, status: 'approved', model_id: MODEL_ID, descriptor: Array(128).fill(0) }];
   adminRPC.mockImplementation(async (name: string) => {
-    if (name === 'biometric_server_material') return { data: materials, error: null };
-    if (name === 'biometric_selfie_object') return { data: storageObjectId, error: null };
+    if (name === 'attendance_selfie_object') return { data: storageObjectId, error: null };
     if (name === 'auth_rate_limit') return { data: true, error: null };
-    if (name === 'biometric_issue_receipt') return { data: [{ id: nonce, expires_at: expiresAt }], error: null };
-    if (name === 'biometric_enroll_server') return { data: referenceId, error: null };
-    if (name === 'biometric_stage_reference') return { data: null, error: null };
-    throw new Error(`Unexpected synthetic RPC: ${name}`);
+    if (name === 'attendance_issue_selfie_receipt') return { data: [{ id: nonce, expires_at: expiresAt }], error: null };
+    throw new Error('Unexpected synthetic RPC: '+name);
   });
-  clientRPC.mockResolvedValue({ data: true, error: null });
+  clientRPC.mockImplementation(async(name: string)=>({data:name==='auth_access_context'?{employee_id:employeeId,allowed:true,requires_mfa:false,current_level:'aal1',reason:null}:true,error:null}));
   download.mockResolvedValue({ data: new Blob([storedSelfie]), error: null });
   upload.mockResolvedValue({ data: {}, error: null }); remove.mockResolvedValue({ data: {}, error: null });
   boundary.authenticate.mockResolvedValue({
     user: { id: authId }, employee: { id: employeeId, can_clock: true },
     admin: { rpc: adminRPC, storage: { from: storageFrom } }, client: { rpc: clientRPC }
   });
-  boundary.extractFace.mockImplementation(async (bytes: Buffer) => ({ descriptor: Array(128).fill(0), modelId: MODEL_ID, imageHash: sha256(bytes) }));
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+describe('Retired face endpoint', () => {
+  it.each(['status','enroll','review','withdraw','verify'])('returns410 without authenticating or touching data: %s', async action => {
+    const response=await biometric();
+    expect(response.status).toBe(410);expect(await response.json()).toMatchObject({code:'feature_removed'});
+    expect(boundary.authenticate).not.toHaveBeenCalled();expect(adminRPC).not.toHaveBeenCalled();expect(storageFrom).not.toHaveBeenCalled();
+  });
+});
 describe('Actual API authentication/error boundary', () => {
-  it.each([['biometric', biometric], ['push', push]] as const)('%s returns normalized unauthenticated errors before side effects', async (route, handler) => {
+  it.each([['attendance-selfie', selfie], ['push', push]] as const)('%s denies unauthenticated side effects', async (route, handler) => {
     boundary.authenticate.mockRejectedValue(new ApiError('unauthorized', 'Silakan login kembali.', 401));
     const response = await handler(request({ action: 'verify' }, route));
-    expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ code: 'unauthorized', error: 'Silakan login kembali.' });
+    expect(response.status).toBe(401);expect(await response.json()).toEqual({ code: 'unauthorized', error: 'Silakan login kembali.' });
     expect(response.headers.get('Cache-Control')).toBe('no-store');
-    expect(adminRPC).not.toHaveBeenCalled(); expect(clientRPC).not.toHaveBeenCalled(); expect(download).not.toHaveBeenCalled();
+    expect(adminRPC).not.toHaveBeenCalled();expect(clientRPC).not.toHaveBeenCalled();expect(download).not.toHaveBeenCalled();
   });
-  it('hides unexpected credential, image and descriptor details in both response and logs', async () => {
-    const logs = vi.spyOn(console, 'error').mockImplementation(() => {});
-    boundary.authenticate.mockRejectedValue(new Error('SERVICE_SECRET synthetic-descriptor private-photo-path'));
-    const response = await biometric(request(verifyInput()));
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ code: 'unavailable', error: expect.any(String) });
-    expect(JSON.stringify(logs.mock.calls)).not.toMatch(/SERVICE_SECRET|synthetic-descriptor|private-photo-path/);
-    expect(receiptCalls()).toHaveLength(0);
+  it('hides unexpected credentials/image details in responses and logs', async () => {
+    const logs=vi.spyOn(console,'error').mockImplementation(()=>{});
+    boundary.authenticate.mockRejectedValue(new Error('SERVICE_SECRET private-photo-path'));
+    const response=await selfie(request(verifyInput()));expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({code:'unavailable'});expect(JSON.stringify(logs.mock.calls)).not.toMatch(/SERVICE_SECRET|private-photo-path/);
   });
-  it('uses the actual JSON parser before touching storage or RPCs', async () => {
-    const response = await biometric(new Request('https://hr.example/api/biometric', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '[1,2]' }));
-    expect(await response.json()).toMatchObject({ code: 'invalid_json' });
-    expect(adminRPC).not.toHaveBeenCalled(); expect(storageFrom).not.toHaveBeenCalled();
+  it('rejects non-object JSON before storage/RPC', async () => {
+    const response=await selfie(new Request('https://hr.example/api/attendance-selfie',{method:'POST',headers:{'Content-Type':'application/json'},body:'[1,2]'}));
+    expect(await response.json()).toMatchObject({code:'invalid_json'});expect(adminRPC).not.toHaveBeenCalled();expect(storageFrom).not.toHaveBeenCalled();
   });
 });
-
-describe('Actual biometric verify handler', () => {
-  it.each([`${foreignId}/foreign.jpg`, `${authId}/../foreign.jpg`, 'https://evil.example/image.jpg'])('cannot download another account or untrusted path: %s', async selfiePath => {
-    const response = await biometric(request(verifyInput({ selfiePath })));
-    expect(response.status).toBe(403); expect(await response.json()).toMatchObject({ code: 'selfie_owner' });
-    expect(download).not.toHaveBeenCalled(); expect(receiptCalls()).toHaveLength(0);
+describe('Non-biometric attendance selfie handler', () => {
+  it.each([foreignId+'/foreign.jpg', authId+'/../foreign.jpg', 'https://evil.example/image.jpg'])('denies an unowned path: %s', async selfiePath=>{
+    const response=await selfie(request(verifyInput({selfiePath})));expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({code:'selfie_owner'});expect(download).not.toHaveBeenCalled();expect(receiptCalls()).toHaveLength(0);
   });
-  it.each(['missing', 'pending', 'obsolete-model'])('requires a compatible approved reference: %s', async state => {
-    if (state === 'missing') materials = [];
-    else materials[0] = { ...materials[0], ...(state === 'pending' ? { status: 'pending' } : { model_id: 'obsolete-model' }) };
-    const response = await biometric(request(verifyInput()));
-    expect(await response.json()).toMatchObject({ code: 'reference_pending' });
-    expect(download).not.toHaveBeenCalled(); expect(receiptCalls()).toHaveLength(0);
-  });
-  it('uses authenticated employee, approved reference, own stored bytes and server hash; returns only receipt fields', async () => {
-    const response = await biometric(request(verifyInput({ employeeId: foreignId, p_employee_id: foreignId, referenceId: 'forged', storageObjectId: 'forged-object-id', descriptor: Array(128).fill(9), imageHash: 'forged-client-hash' })));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ verificationToken: nonce, expiresAt });
-    expect(adminRPC).toHaveBeenCalledWith('biometric_server_material', { p_employee_id: employeeId, p_pending: false });
-    expect(adminRPC).toHaveBeenCalledWith('biometric_selfie_object', { p_employee_id: employeeId, p_selfie_path: `${authId}/fresh-selfie.jpg` });
-    expect(storageFrom).toHaveBeenCalledWith('attendance-selfies'); expect(download).toHaveBeenCalledWith(`${authId}/fresh-selfie.jpg`);
-    expect(boundary.extractFace).toHaveBeenCalledWith(storedSelfie);
-    expect(adminRPC).toHaveBeenCalledWith('biometric_issue_receipt', {
-      p_employee_id: employeeId, p_reference_id: referenceId, p_storage_object_id: storageObjectId, p_selfie_path: `${authId}/fresh-selfie.jpg`, p_selfie_sha256: sha256(storedSelfie),
-      p_shift: 'morning', p_latitude: -6.2, p_longitude: 106.8, p_accuracy_m: 10,
-      p_geo_captured_at: now.toISOString(), p_selfie_captured_at: now.toISOString(), p_selfie_outlet_name: 'Synthetic outlet'
+  it('issues a server-hashed selfie receipt without any face reference or enrollment', async()=>{
+    const response=await selfie(request(verifyInput({employeeId:foreignId,p_employee_id:foreignId,referenceId:'forged',storageObjectId:'forged',descriptor:[9],imageHash:'forged'})));
+    expect(response.status).toBe(200);expect(await response.json()).toEqual({verificationToken:nonce,expiresAt});
+    expect(adminRPC).toHaveBeenCalledWith('attendance_selfie_object',{p_employee_id:employeeId,p_selfie_path:authId+'/fresh-selfie.jpg'});
+    expect(download).toHaveBeenCalledWith(authId+'/fresh-selfie.jpg');
+    expect(adminRPC).toHaveBeenCalledWith('attendance_issue_selfie_receipt',{
+      p_employee_id:employeeId,p_storage_object_id:storageObjectId,p_selfie_path:authId+'/fresh-selfie.jpg',p_selfie_sha256:sha256(storedSelfie),p_shift:'morning',
+      p_latitude:-6.2,p_longitude:106.8,p_accuracy_m:10,p_geo_captured_at:now.toISOString(),p_selfie_captured_at:now.toISOString(),p_selfie_outlet_name:'Synthetic outlet'
     });
-    expect(clientRPC).not.toHaveBeenCalled(); expect(fetchSpy).not.toHaveBeenCalled();
+    expect(adminRPC.mock.calls.every(([name])=>!name.startsWith('biometric'))).toBe(true);
+    expect(clientRPC).toHaveBeenCalledWith('auth_access_context');expect(fetchSpy).not.toHaveBeenCalled();
   });
-  it('does not issue a receipt when the actual matcher rejects a different descriptor', async () => {
-    boundary.extractFace.mockResolvedValue({ descriptor: Array(128).fill(0.5), modelId: MODEL_ID, imageHash: sha256(storedSelfie) });
-    const response = await biometric(request(verifyInput()));
-    expect(await response.json()).toMatchObject({ code: 'face_mismatch' }); expect(receiptCalls()).toHaveLength(0);
+  it.each(['geoCapturedAt','selfieCapturedAt'])('denies stale %s before download',async field=>{
+    const response=await selfie(request(verifyInput({[field]:new Date(now.getTime()-60001).toISOString()})));
+    expect(await response.json()).toMatchObject({code:'stale_capture'});expect(download).not.toHaveBeenCalled();expect(receiptCalls()).toHaveLength(0);
   });
-  it.each(['geoCapturedAt', 'selfieCapturedAt'])('rejects stale %s before download or receipt', async field => {
-    const response = await biometric(request(verifyInput({ [field]: new Date(now.getTime() - 60_001).toISOString() })));
-    expect(await response.json()).toMatchObject({ code: 'stale_capture' }); expect(download).not.toHaveBeenCalled(); expect(receiptCalls()).toHaveLength(0);
+  it('rechecks time after download and does not mint a stale receipt',async()=>{
+    download.mockImplementation(async()=>{vi.setSystemTime(new Date(now.getTime()+60001));return{data:new Blob([storedSelfie]),error:null};});
+    expect(await(await selfie(request(verifyInput()))).json()).toMatchObject({code:'stale_capture'});expect(receiptCalls()).toHaveLength(0);
   });
-  it('rechecks freshness after extraction, so a slow verification cannot issue an expired receipt', async () => {
-    boundary.extractFace.mockImplementation(async (bytes: Buffer) => { vi.setSystemTime(new Date(now.getTime() + 60_001)); return { descriptor: Array(128).fill(0), modelId: MODEL_ID, imageHash: sha256(bytes) }; });
-    const response = await biometric(request(verifyInput()));
-    expect(await response.json()).toMatchObject({ code: 'stale_capture' }); expect(receiptCalls()).toHaveLength(0);
+  it('rechecks live session after image decode',async()=>{
+    clientRPC.mockResolvedValue({data:{employee_id:employeeId,allowed:false,requires_mfa:false,reason:'session_revoked'},error:null});
+    expect((await selfie(request(verifyInput()))).status).toBe(401);expect(receiptCalls()).toHaveLength(0);
   });
-  it('does not claim success when the receipt RPC rejects the assignment/context', async () => {
-    adminRPC.mockImplementation(async (name: string) => ({ data: name === 'biometric_server_material' ? materials : name === 'biometric_selfie_object' ? storageObjectId : name === 'auth_rate_limit' ? true : null, error: name === 'biometric_issue_receipt' ? { message: 'Penugasan belum sesuai.' } : null }));
-    const response = await biometric(request(verifyInput()));
-    expect(response.status).toBe(400); expect(await response.json()).toEqual({ code: 'operation_rejected', error: 'Penugasan belum sesuai.' });
+  it('keeps malformed-image and can_clock failures closed',async()=>{
+    download.mockResolvedValue({data:new Blob([Buffer.alloc(2000,1)]),error:null});
+    expect(await(await selfie(request(verifyInput()))).json()).toMatchObject({code:'image_invalid'});expect(receiptCalls()).toHaveLength(0);
+    boundary.authenticate.mockResolvedValue({user:{id:authId},employee:{id:employeeId,can_clock:false}});
+    expect((await selfie(request(verifyInput()))).status).toBe(403);
   });
-});
-
-describe('Actual biometric enrollment and HR review handlers', () => {
-  it.each([{ consent: false }, { consent: 'true' }, { capturedAt: undefined }, { capturedAt: new Date(now.getTime() - 60_001).toISOString() }])('requires explicit consent and fresh capture: %j', async invalid => {
-    const response = await biometric(request(enrollment(invalid)));
-    expect(response.status).toBe(400); expect(await response.json()).toMatchObject({ code: expect.stringMatching(/consent|stale_capture/) });
-    expect(upload).not.toHaveBeenCalled(); expect(adminRPC).not.toHaveBeenCalled();
+  it('rejects the actual rate-limit denial before download',async()=>{
+    adminRPC.mockResolvedValue({data:false,error:null});
+    const response=await selfie(request(verifyInput()));
+    expect(response.status).toBe(429);expect(await response.json()).toMatchObject({code:'rate_limited'});
+    expect(download).not.toHaveBeenCalled();expect(receiptCalls()).toHaveLength(0);
   });
-  it('enrolls only the authenticated employee and returns pending status without descriptors', async () => {
-    const response = await biometric(request(enrollment({ employeeId: foreignId, p_employee_id: foreignId, status: 'approved', descriptor: [9] })));
-    expect(await response.json()).toEqual({ referenceId, status: 'pending' });
-    const call = adminRPC.mock.calls.find(([name]) => name === 'biometric_enroll_server');
-    expect(call?.[1]).toEqual({ p_employee_id: employeeId, p_image_path: expect.stringMatching(new RegExp(`^${authId}/[0-9a-f-]+\\.jpg$`)), p_image_sha256: sha256(storedSelfie), p_descriptor: Array(128).fill(0) });
-    expect(adminRPC).toHaveBeenCalledWith('biometric_stage_reference', { p_employee_id: employeeId, p_image_path: call?.[1].p_image_path });
-    const stageIndex=adminRPC.mock.calls.findIndex(([name])=>name==='biometric_stage_reference');
-    expect(adminRPC.mock.invocationCallOrder[stageIndex]).toBeLessThan(upload.mock.invocationCallOrder[0]);
-    expect(upload).toHaveBeenCalledWith(expect.stringContaining(`${authId}/`), storedSelfie, { contentType: 'image/jpeg', upsert: false });
+  it('rejects an oversized stored download before reading its bytes',async()=>{
+    const arrayBuffer=vi.fn();download.mockResolvedValue({data:{size:2*1024*1024+1,arrayBuffer},error:null});
+    expect(await(await selfie(request(verifyInput()))).json()).toMatchObject({code:'image_size'});
+    expect(arrayBuffer).not.toHaveBeenCalled();expect(receiptCalls()).toHaveLength(0);
   });
-  it('rechecks enrollment capture time after inference before writing a reference', async () => {
-    boundary.extractFace.mockImplementation(async (bytes: Buffer) => { vi.setSystemTime(new Date(now.getTime() + 60_001)); return { descriptor: Array(128).fill(0), modelId: MODEL_ID, imageHash: sha256(bytes) }; });
-    const response = await biometric(request(enrollment()));
-    expect(await response.json()).toMatchObject({ code: 'stale_capture' }); expect(upload).not.toHaveBeenCalled();
-    expect(adminRPC.mock.calls.some(([name]) => name === 'biometric_enroll_server')).toBe(false);
+  it('returns a rejected receipt RPC honestly',async()=>{
+    adminRPC.mockImplementation(async(name:string)=>({data:name==='attendance_selfie_object'?storageObjectId:name==='auth_rate_limit'?true:null,error:name==='attendance_issue_selfie_receipt'?{message:'Penugasan belum sesuai.'}:null}));
+    expect(await(await selfie(request(verifyInput()))).json()).toEqual({code:'operation_rejected',error:'Penugasan belum sesuai.'});
   });
-  it('routes HR approval through the authenticated client RPC, never a service-role mutation', async () => {
-    const response = await biometric(request({ action: 'review', referenceId, decision: 'approved', reason: 'Diperiksa HR lain', employeeId: foreignId }));
-    expect(await response.json()).toEqual({ ok: true });
-    expect(clientRPC).toHaveBeenCalledWith('biometric_review', { p_id: referenceId, p_decision: 'approved', p_reason: 'Diperiksa HR lain' });
-    expect(adminRPC).not.toHaveBeenCalled(); expect(storageFrom).not.toHaveBeenCalled();
-  });
-  it('preserves an authorization denial returned by the client RPC instead of falling back to admin', async () => {
-    clientRPC.mockResolvedValue({ data: null, error: { message: 'Admin HR lain diperlukan.' } });
-    const response = await biometric(request({ action: 'review', referenceId, decision: 'approved', reason: 'Tidak berwenang' }));
-    expect(await response.json()).toMatchObject({ code: 'operation_rejected' }); expect(adminRPC).not.toHaveBeenCalled();
+  it('checks image format/dimensions/complete decoding without requiring a detectable face',async()=>{
+    await expect(validateSelfieImage(storedSelfie)).resolves.toBeUndefined();
+    await expect(validateSelfieImage(Buffer.alloc(900))).rejects.toMatchObject({code:'image_size'});
+    const png=await sharp(pixels,{raw:{width:480,height:480,channels:3}}).png().toBuffer();
+    await expect(validateSelfieImage(png)).rejects.toMatchObject({code:'image_invalid'});
+    await expect(validateSelfieImage(storedSelfie.subarray(0,2000))).rejects.toMatchObject({code:'image_invalid'});
   });
 });
 

@@ -1,5 +1,7 @@
 # Face verification and device notifications
 
+> Historical face-verification instructions. The 3 November2026 release retires enrollment/review/matching. Do not follow the face setup steps for the new release. See [release contract](release-verifikasi-wajah-2026-11-03.md). Web Push is unchanged.
+
 This release adds server-side face matching and opt-in Web Push to the existing SPA. It does not introduce a paid face API or disable Preview deployment protection.
 
 ## Face verification contract

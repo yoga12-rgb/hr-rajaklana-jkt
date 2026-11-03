@@ -47,9 +47,9 @@
   $: correctionRequests = ($app.attendanceCorrectionRequests ?? []).filter(request => request.employeeId === $app.user?.id).slice().sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   $: plannedStart = shift === 'middle' ? new Date(now).toISOString() : new Date(`${today}T${shift === 'morning' ? selectedOutlet?.morningStart || '07:00' : selectedOutlet?.afternoonStart || '15:00'}:00+07:00`).toISOString();
   $: plannedEnd = addEightHours(plannedStart);
-  let requestedRecordId = '', linkedCorrectionId = '', handledCorrectionId = '';
+  let requestedRecordId = '', linkedCorrectionId = '', handledCorrectionId = '', faceVerificationRetired = false;
   let selectedCorrection: AttendanceCorrectionRequest | null = null;
-  afterNavigate(() => { const query = new URLSearchParams(window.location.search); requestedRecordId = query.get('record') ?? ''; linkedCorrectionId = query.get('request') ?? ''; });
+  afterNavigate(() => { const query = new URLSearchParams(window.location.search); requestedRecordId = query.get('record') ?? ''; linkedCorrectionId = query.get('request') ?? ''; faceVerificationRetired = query.get('notice') === 'face-verification-retired'; });
   $: if ($app.initialized && linkedCorrectionId && handledCorrectionId !== linkedCorrectionId) { const request = correctionRequests.find(request => request.id === linkedCorrectionId); if (request) { selectedCorrection = request; handledCorrectionId = linkedCorrectionId; } }
   $: selectedCorrectionCurrent = selectedCorrection ? correctionRequests.find(request => request.id === selectedCorrection?.id) ?? selectedCorrection : null;
   $: if ($app.initialized && requestedRecordId && openedRecordId !== requestedRecordId) {
@@ -178,6 +178,7 @@
 </script>
 
 <PageHeading eyebrow="KEHADIRAN KASIR" title="Masuk & pulang" description="Catat kehadiran dengan lokasi outlet dan selfie. Delapan jam, termasuk istirahat."/>
+{#if faceVerificationRetired}<p class="retired-notice" role="status">Verifikasi wajah sudah dihapus. Untuk absensi, gunakan lokasi outlet dan selfie langsung dari kamera. Pendaftaran wajah dan persetujuan foto referensi tidak diperlukan.</p>{/if}
 <Feedback {message} error={failed}/>
 {#if cashier && activeSession}
   <section class="session-notice" class:needs-review={activeStatus === 'stale'} aria-live="polite">
@@ -203,7 +204,7 @@
     <div class="geo-card"><div class="geo-top"><span class="geo-icon"><Icon name="pin" size={21}/></span><div><strong>{locating ? 'Memeriksa lokasi Anda…' : validLocation ? 'Lokasi sesuai' : location && !locationFresh ? 'GPS sudah lebih dari 60 detik · perbarui lokasi' : location ? 'Lokasi belum memenuhi syarat' : 'Lokasi belum tersedia'}</strong><p>{location && distance !== null ? `${Math.round(distance)} m dari outlet · Radius ${selectedOutlet?.radiusMeters} m · Akurasi ±${Math.round(location.accuracy)} m` : 'Aktifkan GPS dan izinkan akses lokasi perangkat.'}</p></div></div>{#if geoError}<p class="geo-error">{geoError}</p>{/if}{#if location && location.accuracy > (selectedOutlet?.maxAccuracyMeters ?? 100)}<p class="geo-error">GPS belum cukup akurat. Coba di area terbuka dan periksa kembali.</p>{/if}{#if selectedOutlet && (selectedOutlet.latitude === null || selectedOutlet.longitude === null)}<p class="geo-error">Lokasi outlet belum diatur. Hubungi Admin HR.</p>{/if}<button class="btn btn-secondary" type="button" on:click={getLocation} disabled={locating || saving} aria-busy={locating}><Icon name="refresh" size={14}/>{locating ? 'Mencari…' : 'Periksa ulang lokasi'}</button></div>
     {#if mode === 'in'}
       <div class="camera-section">
-        <div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div><p class="hint">Daftarkan wajah dan tunggu persetujuan HR melalui <a href="/face-verification">Verifikasi wajah</a> sebelum mencatat masuk.</p>
+        <div class="camera-heading"><h3>Selfie saat masuk</h3><span>Wajib</span></div><p class="hint">Ambil selfie langsung dari kamera agar SPV dapat memeriksa foto absensi. Tidak perlu mendaftarkan wajah atau menunggu persetujuan foto referensi.</p>
         <p class="hint">Foto mencantumkan outlet, GPS, tanggal dan jam pengambilan (WIB).</p>
         <div class="camera-preview" class:has-photo={!!preview}>
           {#if preview}
@@ -287,4 +288,5 @@
   .outlet-summary { color: var(--ink); }
 .correction-history{margin-top:1.2rem;padding:1rem}.correction-history article{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding:1rem 0}.correction-history article>div{flex:1;min-width:200px}.correction-history strong{font-size:.8rem}.correction-history p{font-size:.73rem;line-height:1.7;margin:.4rem 0}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin:1rem 0}@media(max-width:600px){.form-grid{grid-template-columns:1fr}}
 .correction-detail{font-size:.78rem;line-height:1.7}.correction-detail dt{font-weight:600;margin-top:.7rem}.correction-detail dd{margin-left:0;overflow-wrap:anywhere}
+  .retired-notice { padding: .9rem 1rem; margin: 0 0 1rem; border: 1px solid var(--panel-border); border-radius: 14px; background: var(--yellow-soft); color: var(--ink); font-size: .8rem; line-height: 1.7; }
 </style>

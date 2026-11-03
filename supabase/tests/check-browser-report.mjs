@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const required = {
   'live-mock': [
+    ['SELFIE-ONLY-01', 'live SDK camera/GPS clock-in needs no face reference, failed photo retry succeeds and saved attendance survives reload'],
+    ['SELFIE-ONLY-02', 'revoked clock permission during pending selfie API prevents final attendance RPC and preserves account guard'],
     ['BR01', 'leave form textarea and dialog remain mounted and action is rejected during session validation'],
     ['BR02', 'employee inputs and draft remain mounted after token rotation'],
     ['BR03a', 'live camera video and track identity remain connected during token rotation'],
@@ -22,7 +24,8 @@ const required = {
   ],
   'demo-pwa': [
     ['PWA offline shell', 'service worker controls root scope, caches static shell only, and opens offline route'],
-    ['camera/GPS biometric clock-in', 'real camera and browser geolocation satisfy same-account attendance flow; clock-out checks GPS again']
+    ['camera/GPS selfie clock-in', 'real camera and browser geolocation satisfy same-account attendance flow without face enrollment; clock-out checks GPS again'],
+    ['FACE-REMOVED-01', 'retired face verification bookmarks redirect to attendance without enrollment, reference calls or camera; profile and guide use selfie attendance']
   ]
 };
 

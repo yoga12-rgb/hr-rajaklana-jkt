@@ -238,7 +238,8 @@ describe('Pencatatan absensi kasir lokal', () => {
 });
 
 describe('Pengiriman metadata selfie ke Supabase', () => {
-  it('mewajibkan metadata untuk clock in live sebelum mengunggah atau memverifikasi wajah', async () => {
+  beforeEach(() => app.update(state => ({ ...state, user: { ...state.user!, authUserId: 'auth-kasir', canClock: true } })));
+  it('mewajibkan metadata untuk clock in live sebelum mengunggah atau memeriksa selfie', async () => {
     const upload=vi.fn(),rpc=vi.fn();
     clientMock.configured=true;clientMock.supabase={ storage:{from:()=>({upload})},rpc };
     await expect(actions.clockIn(input())).rejects.toThrow('informasi pengambilan');
@@ -257,8 +258,9 @@ describe('Pengiriman metadata selfie ke Supabase', () => {
     await expect(actions.clockIn(input(metadata))).rejects.toThrow('RPC simulasi ditolak');
     expect(upload).toHaveBeenCalledOnce();
     const [, args] = rpc.mock.calls[0];
-    expect(rpc.mock.calls[0][0]).toBe('attendance_clock_in_verified');
+    expect(rpc.mock.calls[0][0]).toBe('attendance_clock_in_selfie');
     expect(verify).toHaveBeenCalledOnce();
+    expect(verify.mock.calls[0][0]).toBe('/api/attendance-selfie');
     expect(args).toEqual({
       p_shift: 'morning', p_latitude: coordinates.latitude, p_longitude: coordinates.longitude,
       p_accuracy_m: 10, p_selfie_path: expect.stringMatching(/^auth-kasir\/.+\.jpg$/),
@@ -267,6 +269,41 @@ describe('Pengiriman metadata selfie ke Supabase', () => {
     });
     expect(remove).toHaveBeenCalledWith([args.p_selfie_path]);
     expect(get(app).attendanceRecords).toHaveLength(0);
+  });
+  it.each(['session', 'upload', 'verification'] as const)('menghentikan absensi jika akun berubah selama %s', async stage => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const hold = async () => { started(); await gate; };
+    const getSession = vi.fn(async () => {
+      if (stage === 'session') await hold();
+      return { data: { session: { user: { id: 'auth-kasir' }, access_token: 'test-access-token' } } };
+    });
+    const upload = vi.fn(async () => { if (stage === 'upload') await hold(); return { error: null }; });
+    const remove = vi.fn(), rpc = vi.fn();
+    const verify = vi.fn(async () => {
+      if (stage === 'verification') await hold();
+      return { ok: true, status: 200, json: async () => ({ verificationToken: 'selfie-token' }) };
+    });
+    vi.stubGlobal('fetch', verify);
+    clientMock.configured = true;
+    clientMock.supabase = { auth: { getSession }, storage: { from: () => ({ upload, remove }) }, rpc };
+    const pending = actions.clockIn(input({ selfieCapturedAt: new Date().toISOString(), selfieOutletName: 'Outlet Uji' }));
+    const rejected = expect(pending).rejects.toThrow('Sesi');
+    await entered;
+    app.update(state => ({ ...state, user: { ...state.user!, id: 'employee-other', authUserId: 'auth-other' } }));
+    release(); await rejected;
+    expect(rpc).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    if (stage !== 'verification') expect(verify).not.toHaveBeenCalled();
+  });
+  it('menolak akun tanpa hak absensi sebelum unggah selfie', async () => {
+    app.update(state => ({ ...state, user: { ...state.user!, canClock: false } }));
+    const upload = vi.fn(); clientMock.configured = true;
+    clientMock.supabase = { storage: { from: () => ({ upload }) } };
+    await expect(actions.clockIn(input())).rejects.toThrow('tidak diizinkan');
+    expect(upload).not.toHaveBeenCalled();
   });
 });
 
