@@ -126,7 +126,8 @@ describe('responsive authoritative attendance receipts', () => {
       await pending.started;
       expect(get(app).attendanceRecords[0]).toMatchObject({ id: 'attendance', durationMinutes: 10, outAccuracy: 10 });
       expect(get(app).attendanceRecords[0].clockOut).toBe(tables.attendance[0].clock_out);
-      expect(get(app).attendanceRecords[0].selfieUrl).toBe('https://example.test/selfie');
+      expect(get(app).attendanceRecords[0].selfieUrl).toBeUndefined();
+      expect(client.storage.from).not.toHaveBeenCalled();
       expect(singleReads).toEqual([]);
     } finally { pending.release(); await actions.refresh(); }
   });

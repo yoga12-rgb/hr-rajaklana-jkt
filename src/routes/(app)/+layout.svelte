@@ -1,8 +1,13 @@
 <script lang="ts">
-  import { afterNavigate, goto } from '$app/navigation';
+  import { afterNavigate, beforeNavigate, goto } from '$app/navigation';
   let pathname = '';
   afterNavigate(() => { pathname = window.location.pathname; });
   import { app, actions, isAdmin, isCashier } from '#lib/state/app';
+  beforeNavigate(({ to }) => {
+    if (to && typeof window !== 'undefined' && to.url.origin === window.location.origin && !['/login','/activate','/reset'].includes(to.url.pathname)) {
+      void actions.prepareWorkspaceRoute(to.url.pathname);
+    }
+  });
   import Icon from '#lib/components/Icon.svelte';
   import NotificationCenter from '#lib/components/NotificationCenter.svelte';
   import { onMount } from 'svelte';
@@ -58,7 +63,7 @@
     <div class="sidebar-bottom">{#if installEvent}<button class="install" aria-busy={installing} disabled={installing} on:click={install}>{#if !installing}<Icon name="download" size={17}/>{/if}{installing?'Menyiapkan…':'Pasang aplikasi'}</button>{/if}<div class="help-card"><span>HARI YANG LEBIH TERATUR</span><p>Fokus pada tim.<br/>Administrasi jadi mudah.</p><div class="help-mark">rk.</div></div><button class="logout" aria-busy={loggingOut} disabled={loggingOut} on:click={logout}>{#if !loggingOut}<Icon name="logout" size={17}/>{/if}{loggingOut?'Keluar…':'Keluar akun'}</button><small>Rajaklana HR · v0.1</small></div>
   </aside>
   <div class="main-area">
-    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span>{#if !$app.workspaceLoading}<NotificationCenter/>{/if}<a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
+    <header class="topbar"><div class="breadcrumb"><span>Rajaklana</span><Icon name="chevron" size={13}/><strong>Jabodetabek</strong></div><div class="topbar-right"><span class="connection" class:offline={connectionStatus==='offline'} class:connecting={connectionStatus==='connecting'}><span></span>{connectionLabel}</span>{#if !$app.workspaceLoading || $app.workspaceReady}<NotificationCenter/>{/if}<a class="account" href="/profile"><span class="avatar">{$app.user.fullName.split(' ').map(w=>w[0]).slice(0,2).join('')}</span><span><strong>{$app.user.fullName}</strong><small>{admin?'Admin HR':$app.user.roles.includes('head_baker')?'Head Baker':'Karyawan'}</small></span></a></div></header>
     <main>
       {#if applicationEnvironment === 'preview'}<div class="preview-strip" role="note"><Icon name="info" size={17}/><div><strong>Preview · Lingkungan uji</strong><span>Gunakan data uji untuk mencoba aplikasi sebelum rilis.</span></div></div>{/if}
       {#if $app.sessionValidating}<div class="session-strip" role="status" aria-live="polite"><span class="loading-indicator"><span class="sr-only">Memeriksa sesi</span></span><span>Sesi sedang diverifikasi. Form dan data tetap terbuka; simpanan baru dilanjutkan setelah pemeriksaan selesai.</span></div>{/if}

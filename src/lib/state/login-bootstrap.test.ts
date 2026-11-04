@@ -83,7 +83,9 @@ describe('validated login bootstrap', () => {
     await expect(actions.readNotification()).rejects.toThrow('Data ruang kerja masih dimuat');
     expect(client.rpc).not.toHaveBeenCalledWith('notifications_mark_read', expect.anything());
     releaseRead?.(); await actions.refresh();
-    expect(get(app)).toMatchObject({ workspaceLoading: false, user: { id: 'employee-auth-a', photoUrl: 'https://example.test/private-signed' } });
+    expect(get(app)).toMatchObject({ workspaceLoading: false, user: { id: 'employee-auth-a', photoPath: 'auth-a/private.jpg' } });
+    expect(get(app).user?.photoUrl).toBeUndefined();
+    expect(client.storage.from).not.toHaveBeenCalled();
   });
 
   it('does not publish identity or confirm login before employee validation finishes', async () => {

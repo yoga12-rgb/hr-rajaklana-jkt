@@ -3,6 +3,23 @@ import { readFileSync } from 'node:fs';
 
 const required = {
   'live-mock': [
+    ['UX-REPORT-05', 'unchanged full workspace refresh preserves the report revision and a held export completes all rows without a false data-change error'],
+    ["UX-REPORT-01","server reports render 25 rows per page and export all 122 matching rows through original cursor and asOf, then apply outlet filter on server"],
+    ["UX-REPORT-02","failed later export page and filter or authoritative data revision changes abort the complete CSV without a partial download"],
+    ["UX-REPORT-03","session revocation and SDK token rotation during a held report export deny further protected reads and prevent any CSV download"],
+    ["UX-REPORT-04","late report response from account A never publishes rows after account B replaces the live SDK session"],
+    ["UX-NOTIFY-01","supervisor and outlet destinations open before held read marker; pending marker does not block another notification"],
+    ["UX-NOTIFY-02","read marker failure remains visible after navigation and original notification stays unread until confirmed retry"],
+    ["UX-NOTIFY-03","late notification marker from account A cannot publish feedback, read state or navigation after account B takes over"],
+    ["UX-NOTIFY-04","invalid notification destination cannot navigate or mark a notification read"],
+    ["UX-ATTENDANCE-01","pending attendance survives modal close and same-account SPA navigation; one RPC receipt publishes the final result"],
+    ["UX-ATTENDANCE-02","closing a pending form with Escape retains the later server rejection and permits only an explicit retry"],
+    ["UX-ATTENDANCE-03","account switch clears attendance operation UI and rejects a late old-account receipt without leaking its record"],
+    ["UX-ATTENDANCE-04","open detail derives the current attendance ID after refresh and shows unavailable state when its record disappears"],
+    ["UX-ATTENDANCE-05","lost attendance reply checks scoped history once without automatic resubmission or false success"],
+    ["UX-ATTENDANCE-06","same-account token rotation retains the pending capture and lease; a guarded late receipt checks history and disables already-recorded submission"],
+    ["PRIVATE-MEDIA-01","workspace hydration makes no photo or attachment signing requests; opening a selfie signs on demand and failed signing retries safely"],
+    ["PRIVATE-MEDIA-02","revoked live session clears an open private photo detail and rejects its late signing response"],
     ['SELFIE-ONLY-01', 'live SDK camera/GPS clock-in needs no face reference, failed photo retry succeeds and saved attendance survives reload'],
     ['SELFIE-ONLY-02', 'revoked clock permission during pending selfie API prevents final attendance RPC and preserves account guard'],
     ['RESPONSIVE-ATTENDANCE-01', 'camera/GPS RPC confirmation updates clock-in and clock-out before held background employee reads; reload retains server result'],

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { goto } from '$app/navigation';
   import { app, actions } from '#lib/state/app';
   import type { AppNotification } from '#lib/types';
@@ -10,10 +11,14 @@
   import Feedback from './Feedback.svelte';
   import { devicePushStatus, enableDevicePush, disableDevicePush } from '../device-push';
   import type { DevicePushState } from '../device-push';
-  let open = false, saving = false, readingId = '', message = '', now = Date.now();
+  import { notificationDestination } from '../notification-destination';
+  let open = false, message = '', now = Date.now();
+  let navigatingId = '', readingAll = false, pendingReads = new Set<string>(), readMessage = '';
+  let readAccount = '', readGeneration = 0, navigationRevision = 0;
   let pushState:DevicePushState|'loading'='loading',pushBusy=false,mounted=false;
   let checkedAccount='',pushRevision=0;
-  $: accountKey=`${$app.mode}:${$app.user?.id??''}`;
+  $: accountKey=`${$app.mode}:${$app.user?.id??''}:${$app.user?.authUserId??''}`;
+  $: if(accountKey!==readAccount){readAccount=accountKey;readGeneration++;navigationRevision++;pendingReads=new Set();readingAll=false;navigatingId='';readMessage='';open=false;}
   $: if(mounted&&accountKey!==checkedAccount){checkedAccount=accountKey;message='';void checkPush();}
   $: inbox = ($app.notifications ?? []).filter(n => n.employeeId === $app.user?.id).slice().sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   $: unread = inbox.filter(n => !n.readAt).length;
@@ -23,7 +28,7 @@
     const interval=window.setInterval(()=>now=Date.now(),30000);
     const focus=()=>{if(open&&document.visibilityState==='visible')void checkPush();};
     window.addEventListener('focus',focus);document.addEventListener('visibilitychange',focus);
-    return()=>{mounted=false;pushRevision++;window.clearInterval(interval);window.removeEventListener('focus',focus);document.removeEventListener('visibilitychange',focus);};
+    return()=>{mounted=false;pushRevision++;readGeneration++;navigationRevision++;window.clearInterval(interval);window.removeEventListener('focus',focus);document.removeEventListener('visibilitychange',focus);};
   });
   async function checkPush(){
     if(pushBusy)return;
@@ -41,34 +46,66 @@
     catch(error){if(mounted&&account===accountKey){message=error instanceof Error?error.message:'Pengaturan notifikasi perangkat belum tersimpan.';try{pushState=await devicePushStatus();}catch{pushState='unavailable';}}}
     finally{pushBusy=false;if(mounted&&account!==accountKey)void checkPush();}
   }
+  function currentReadScope() {
+    const state = get(app);
+    return `${state.mode}:${state.user?.id??''}:${state.user?.authUserId??''}`;
+  }
+  function sameReadScope(scope: string, generation: number) {
+    return mounted && generation === readGeneration && scope === currentReadScope();
+  }
+  async function markRead(notification?: AppNotification) {
+    if (notification ? notification.readAt || pendingReads.has(notification.id) : readingAll || pendingReads.size > 0) return;
+    const scope = currentReadScope(), generation = readGeneration;
+    if (notification) pendingReads = new Set([...pendingReads, notification.id]); else readingAll = true;
+    try { await actions.readNotification(notification?.id); }
+    catch (error) {
+      if (sameReadScope(scope, generation)) readMessage = `Status dibaca belum dapat dikonfirmasi. ${error instanceof Error ? error.message : 'Buka notifikasi untuk mencoba lagi.'}`;
+    } finally {
+      if (sameReadScope(scope, generation)) {
+        if (notification) { const remaining = new Set(pendingReads); remaining.delete(notification.id); pendingReads = remaining; }
+        else readingAll = false;
+      }
+    }
+  }
   async function read(notification?: AppNotification) {
-    if (saving) return;
-    saving = true; readingId = notification?.id ?? 'all'; message = '';
-    try {
-      await actions.readNotification(notification?.id);
-      if (notification) { open = false; await goto(/^\/(leave|attendance|reports|assignments)\?/.test(notification.href)?notification.href:'/dashboard'); }
-    } catch (error) { message = error instanceof Error ? error.message : 'Notifikasi belum berhasil diperbarui.'; }
-    finally { saving = false; readingId = ''; }
+    if (navigatingId) return;
+    const actor = get(app).user;
+    if (!actor || (notification && notification.employeeId !== actor.id)) return;
+    readMessage = '';
+    if (!notification) { await markRead(); return; }
+    const destination = notificationDestination(notification);
+    if (!destination) { readMessage = 'Tautan notifikasi belum dapat dibuka. Muat ulang data atau hubungi HR.'; return; }
+    const scope = currentReadScope(), generation = readGeneration, navigation = ++navigationRevision;
+    navigatingId = notification.id;
+    // Opening the destination does not depend on the read marker. The marker
+    // is confirmed separately and a failure stays visible after navigation.
+    void markRead(notification);
+    open = false;
+    try { await goto(destination); }
+    catch { if (sameReadScope(scope, generation) && navigation === navigationRevision) readMessage = 'Halaman notifikasi belum dapat dibuka. Buka notifikasi untuk mencoba lagi.'; }
+    finally { if (sameReadScope(scope, generation) && navigation === navigationRevision) navigatingId = ''; }
   }
 </script>
 
-<button class="notification-toggle" type="button" aria-label={`Notifikasi, ${unread} belum dibaca${overdue ? ', pengingat clock out' : ''}`} on:click={openInbox}>
+<button class="notification-toggle" type="button" disabled={$app.workspaceLoading} aria-label={`Notifikasi, ${unread} belum dibaca${overdue ? ', pengingat clock out' : ''}`} on:click={openInbox}>
   <Icon name="bell" size={20}/>
   {#if unread || overdue}<span class="badge">{unread ? unread > 99 ? '99+' : unread : '!'}</span>{/if}
 </button>
+{#if readMessage && !open}<aside class="notification-status" role="alert"><span>{readMessage}</span><button type="button" class="retry-read" on:click={openInbox}>Buka notifikasi</button><button type="button" class="dismiss-read" aria-label="Tutup pesan notifikasi" on:click={() => readMessage = ''}>×</button></aside>{/if}
 <Modal {open} title="Notifikasi" description="Pengajuan, keputusan, dan pengingat Anda." onclose={() => open = false}>
   <Feedback {message} error/>
+  <Feedback message={readMessage} error/>
   {#if overdue}
     <a class="reminder" href="/attendance" on:click={() => open = false}><Icon name="clock" size={21}/><span><strong>Sudah waktunya memeriksa clock out</strong><small>Durasi kerja telah mencapai 8 jam. Jika Anda sudah pulang dan lupa mencatat, hubungi HR untuk koreksi.</small></span><Icon name="chevron" size={17}/></a>
   {/if}
   {#if inbox.length}
-    <div class="inbox-heading"><span>{unread} belum dibaca</span><button class="btn btn-secondary" type="button" disabled={saving || !unread} aria-busy={saving && readingId === 'all'} on:click={() => read()}>{saving && readingId === 'all' ? 'Menandai…' : 'Tandai semua dibaca'}</button></div>
+    <div class="inbox-heading"><span>{unread} belum dibaca</span><button class="btn btn-secondary" type="button" disabled={readingAll || pendingReads.size > 0 || !unread} aria-busy={readingAll} on:click={() => read()}>{readingAll ? 'Menandai…' : 'Tandai semua dibaca'}</button></div>
     <div class="inbox">
       {#each inbox as notification (notification.id)}
-        <button class="notification" class:unread={!notification.readAt} type="button" disabled={saving} aria-busy={saving && readingId === notification.id} on:click={() => read(notification)}>
+        <button class="notification" class:unread={!notification.readAt} type="button" disabled={!!navigatingId} aria-busy={pendingReads.has(notification.id) || navigatingId === notification.id} on:click={() => read(notification)}>
           <span class="notification-icon"><Icon name={notification.readAt ? 'file' : 'bell'} size={19}/></span>
           <span class="notification-copy"><strong>{notification.title}</strong><span>{notification.body}</span><small>{dateLabel(notification.createdAt)} · {timeLabel(notification.createdAt)} WIB{notification.readAt ? ' · Dibaca' : ' · Baru'}</small></span>
-          {#if saving && readingId === notification.id}<span class="notification-opening" role="status">Membuka…</span>{:else}<Icon name="chevron" size={16}/>{/if}
+          {#if navigatingId === notification.id}<span class="notification-opening" role="status">Membuka…</span>{:else if pendingReads.has(notification.id)}<span class="notification-opening" role="status">Menandai…</span>{:else}<Icon name="chevron" size={16}/>{/if}
         </button>
       {/each}
     </div>
@@ -112,6 +149,8 @@
   .notification-copy > span, .notification-copy small { font-size: 10px; color: var(--muted); line-height: 1.6; }
   .notification-copy small { font-size: 9px; }
   .notification-opening { font-size: 10px; color: var(--muted); }
+  .notification-status { position: fixed; z-index: 80; right: 18px; bottom: calc(100px + env(safe-area-inset-bottom)); max-width: min(440px, calc(100vw - 36px)); display: flex; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--control-border); border-radius: 15px; background: var(--surface); color: var(--ink); box-shadow: var(--raised-sm); font-size: 12px; line-height: 1.6; }
+  .notification-status span { flex: 1; }.retry-read { padding: 6px; font-size: 11px; font-weight: 600; color: var(--accent); background: transparent; border: 0; }.dismiss-read { border: 0; border-radius: 8px; background: transparent; color: var(--muted); min-width: 32px; min-height: 32px; font-size: 20px; }
   .reminder { display: flex; align-items: center; gap: 11px; padding: 14px; margin-bottom: 16px; border: 1px solid var(--control-border); border-left: 4px solid var(--primary); border-radius: 14px; background: var(--surface-cream); }
   .reminder > span { flex: 1; }
   .reminder strong, .reminder small { display: block; font-size: 12px; line-height: 1.6; }

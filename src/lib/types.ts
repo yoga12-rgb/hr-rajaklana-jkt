@@ -17,7 +17,7 @@ export interface Employee {
   authUserId?: string | null; roles: Role[]; canMiddleShift: boolean; weeklyOffDays: number[];
   canClock?: boolean;
   approvalMode: 'internal' | 'external'; address: string; birthDate: string; gender: string;
-  emergencyName: string; emergencyPhone: string; photoUrl?: string; exitDate?: string; exitReason?: string;
+  emergencyName: string; emergencyPhone: string; photoUrl?: string; photoPath?: string; exitDate?: string; exitReason?: string;
 }
 export interface LeaveAdjustment {
   id: string; type: 'change' | 'cancel'; startDate?: string; endDate?: string;
@@ -247,6 +247,8 @@ export interface AppState {
   // Identity and navigation may be ready before the operational snapshot.
   // Keep incomplete data out of feature views and mutation preconditions.
   workspaceLoading?: boolean;
+  workspaceReady?: boolean;
+  attendanceHistoryComplete?: boolean;
   employees: Employee[]; outlets: Outlet[]; departments: Department[]; positions: Position[];
   leaveRequests: LeaveRequest[]; attendanceRecords: AttendanceRecord[]; auditEntries: AuditEntry[];
   leaveLedger: LeaveLedgerEntry[];
@@ -260,6 +262,8 @@ export interface AppState {
   // use this to refetch their paged/query-local data after Realtime refreshes
   // without treating a connection-indicator change as a data conflict.
   dataRevision?: number;
+  // Report/export invalidation excludes unrelated connection/read indicators.
+  reportRevision?: number;
   connected: boolean; error: string | null;
 }
 export interface LeaveInput { type: LeaveRequest['type']; startDate: string; endDate: string; startTime?: string; endTime?: string; reason: string; attachment?: File; extent?: LeaveExtent }

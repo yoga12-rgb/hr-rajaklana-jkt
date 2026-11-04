@@ -1,0 +1,631 @@
+{
+  "baseline": "53393484877bd932fc55dfc14f7b68b5805aa0f0",
+  "recordedAt": "2026-11-04T05:12:12.484Z",
+  "status": "PASS",
+  "sourceFingerprint": "9c79b0ec02297dd96edcd19141f80ef5249b7f8004bc2173c519f9d2dbd4b921",
+  "sourceScope": "raw local worktree source bytes; hosted CI separately validates Git-normalized commit",
+  "local": {
+    "manifest": "release-local-2026-11-04T04-59-40-312Z",
+    "gates": [
+      {
+        "name": "check",
+        "exitCode": 0,
+        "logSha256": "c562ec3c1929595d328794bebc470f9dbf12e74921cb1b7ebca0fe8645c7fbbe"
+      },
+      {
+        "name": "unit",
+        "exitCode": 0,
+        "logSha256": "ccde12b1e7689310d1a026d3f5c3e0b7c80ed22f338aa8c576f2e951f2c6101e"
+      },
+      {
+        "name": "database",
+        "exitCode": 0,
+        "logSha256": "d5c9e4fc2fd443c87d7f113a49c30b4840f8813119067f544e37bd6337f71c65"
+      },
+      {
+        "name": "legacy",
+        "exitCode": 0,
+        "logSha256": "e6c6e3db1fcc09fd3d958b05e7ad4507c7531f371b334fe541c2de70ba80f1dd"
+      },
+      {
+        "name": "historical-readiness",
+        "exitCode": 0,
+        "logSha256": "b68d09f10d0c9ad8b83fbd37cc9dec157d2a0f6564997af2681a0f0ff77c5c19"
+      },
+      {
+        "name": "browser-checker",
+        "exitCode": 0,
+        "logSha256": "10c57298d16463add35093436e37196a4aec482630601313ae300728fc9d3c37"
+      },
+      {
+        "name": "evidence-helper",
+        "exitCode": 0,
+        "logSha256": "555a460c19520946f213aaf6c1a7fdb0d7695b455b4b401cf8f8f05cfafa484b"
+      },
+      {
+        "name": "audit",
+        "exitCode": 0,
+        "logSha256": "999515fd67408fbfa2bd0c59c3004d7892e943d31cb76dc379dc43de261d25b0"
+      },
+      {
+        "name": "build",
+        "exitCode": 0,
+        "logSha256": "a4e2f79f2315b6dc4c517d5f49f59d5a45b4787983c99160161550c9b442680f"
+      }
+    ],
+    "unit": {
+      "files": 48,
+      "passed": 594
+    },
+    "dependencyAdvisories": {
+      "info": 0,
+      "low": 4,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 4
+    }
+  },
+  "browser": [
+    {
+      "suite": "live-mock",
+      "runId": "2026-11-04T05-03-35-982Z-live-mock-6cd82479-2678-4399-8a9f-d79977d79917",
+      "reportSha256": "806ddd6b2a9764e1b2540d895592a4cb63303140d02090ca5eae3ac9604c10c3",
+      "sourceUnchanged": true,
+      "stats": {
+        "startTime": "2026-11-04T05:03:37.071Z",
+        "duration": 332638.695,
+        "expected": 49,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "acceptance": [
+        {
+          "file": "live-attendance-selfie.spec.ts",
+          "title": "selfie-only live SDK attendance validates camera GPS, retries failed photo and reloads saved attendance without enrollment",
+          "contracts": [
+            "live-mock|SELFIE-ONLY-01|live SDK camera/GPS clock-in needs no face reference, failed photo retry succeeds and saved attendance survives reload"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-selfie.spec.ts",
+          "title": "permission revoked while selfie verification is pending blocks the final attendance RPC",
+          "contracts": [
+            "live-mock|SELFIE-ONLY-02|revoked clock permission during pending selfie API prevents final attendance RPC and preserves account guard"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-selfie.spec.ts",
+          "title": "attendance resolves only after committed RPC response and never waits for unrelated background reads",
+          "contracts": [
+            "live-mock|RESPONSIVE-ATTENDANCE-01|camera/GPS RPC confirmation updates clock-in and clock-out before held background employee reads; reload retains server result"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-selfie.spec.ts",
+          "title": "a rejected final attendance RPC keeps the form open and cannot display a saved record",
+          "contracts": [
+            "live-mock|RESPONSIVE-ATTENDANCE-02|final RPC rejection never publishes optimistic attendance or success while retaining retry form"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-selfie.spec.ts",
+          "title": "validated login opens the account shell before operational hydration without presenting empty data as final",
+          "contracts": [
+            "live-mock|RESPONSIVE-LOGIN-01|validated account reaches greeting and explicit workspace loading while operational reads are held; route actions wait for complete hydration"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "closing a pending clock form retains operation status and duplicate protection across SPA navigation",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-01|pending attendance survives modal close and same-account SPA navigation; one RPC receipt publishes the final result"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "a rejected receipt remains visible after Escape closes the form without claiming cancellation",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-02|closing a pending form with Escape retains the later server rejection and permits only an explicit retry"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "a late account A attendance receipt cannot publish pending or success state into account B",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-03|account switch clears attendance operation UI and rejects a late old-account receipt without leaking its record"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "open attendance detail follows refreshed corrections and stops showing a removed record",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-04|open detail derives the current attendance ID after refresh and shows unavailable state when its record disappears"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "an ambiguous committed response triggers a status read without resending attendance or claiming success",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-05|lost attendance reply checks scoped history once without automatic resubmission or false success"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-attendance-ux.spec.ts",
+          "title": "same-account token rotation preserves the pending photo and blocks resubmission when refreshed attendance is already recorded",
+          "contracts": [
+            "live-mock|UX-ATTENDANCE-06|same-account token rotation retains the pending capture and lease; a guarded late receipt checks history and disables already-recorded submission"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI preserves a cold protected path and query across delayed session validation and reload",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI reconciles a committed weekly roster when the save response is lost",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI persists and replays the original payload/key after rotation and reload when reconciliation failed",
+          "contracts": [
+            "live-mock|BR09|ambiguous roster receipt keeps original baseline/key/body through token rotation, reload, and retry"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI releases only a definitely rejected leave-conflicting replay and saves the reviewed draft with a new key",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI retries an uncommitted ambiguous attempt once with its persisted original key and payload",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI resolves a definitely rejected stale replay through source review and a fresh attempt",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI keeps the original attempt when replay is rejected before the idempotency lookup",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI refuses a new roster save when local recovery persistence fails, then succeeds after reload",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI shows conflict review as soon as a source store refresh arrives",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI keeps another week's recovery unchanged after a delayed success response",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-cashier-roster-ambiguous.spec.ts",
+          "title": "live UI keeps another week's recovery unchanged after a delayed baseline-conflict response",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-mfa-recovery.spec.ts",
+          "title": "retired recovery action returns fixed 410 and never reaches factor API",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-mfa.spec.ts",
+          "title": "admin with no factor reaches Dashboard using password only and never calls MFA API",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-mfa.spec.ts",
+          "title": "legacy verified factor does not create an OTP challenge or enrollment route",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-mfa.spec.ts",
+          "title": "revoked live session fails closed before protected reads",
+          "contracts": [
+            "live-mock|BR07|revoked live session redirects to login with zero protected reads and no MFA API calls"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-mfa.spec.ts",
+          "title": "login shows progress, blocks duplicate submits, recovers from failure and stays busy through account loading",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-notification-navigation.spec.ts",
+          "title": "notification destinations open before a held marker RPC and another notification stays usable",
+          "contracts": [
+            "live-mock|UX-NOTIFY-01|supervisor and outlet destinations open before held read marker; pending marker does not block another notification"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-notification-navigation.spec.ts",
+          "title": "failed read marker remains visible after navigation and retries without false read status",
+          "contracts": [
+            "live-mock|UX-NOTIFY-02|read marker failure remains visible after navigation and original notification stays unread until confirmed retry"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-notification-navigation.spec.ts",
+          "title": "late account A marker failure cannot publish a notice or navigate account B",
+          "contracts": [
+            "live-mock|UX-NOTIFY-03|late notification marker from account A cannot publish feedback, read state or navigation after account B takes over"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-notification-navigation.spec.ts",
+          "title": "invalid notification destination remains in inbox without navigation or read mutation",
+          "contracts": [
+            "live-mock|UX-NOTIFY-04|invalid notification destination cannot navigate or mark a notification read"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-private-media.spec.ts",
+          "title": "private photos are signed only when their detail is opened and a failed signing read can be retried",
+          "contracts": [
+            "live-mock|PRIVATE-MEDIA-01|workspace hydration makes no photo or attachment signing requests; opening a selfie signs on demand and failed signing retries safely"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-private-media.spec.ts",
+          "title": "late signed photo cannot reappear after the live session is revoked",
+          "contracts": [
+            "live-mock|PRIVATE-MEDIA-02|revoked live session clears an open private photo detail and rejects its late signing response"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-report-pagination.spec.ts",
+          "title": "report server pages stay bounded and CSV walks the entire filtered range beyond the visible page",
+          "contracts": [
+            "live-mock|UX-REPORT-01|server reports render 25 rows per page and export all 122 matching rows through original cursor and asOf, then apply outlet filter on server"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-report-pagination.spec.ts",
+          "title": "failed, filter-changed and data-changed exports never download a partial CSV",
+          "contracts": [
+            "live-mock|UX-REPORT-02|failed later export page and filter or authoritative data revision changes abort the complete CSV without a partial download"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-report-pagination.spec.ts",
+          "title": "revoked session during a held export cannot download or continue protected report reads",
+          "contracts": [
+            "live-mock|UX-REPORT-03|session revocation and SDK token rotation during a held report export deny further protected reads and prevent any CSV download"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-report-pagination.spec.ts",
+          "title": "late report page from account A cannot replace account B report rows",
+          "contracts": [
+            "live-mock|UX-REPORT-04|late report response from account A never publishes rows after account B replaces the live SDK session"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-report-pagination.spec.ts",
+          "title": "an unchanged background refresh does not falsely cancel a complete report export",
+          "contracts": [
+            "live-mock|UX-REPORT-05|unchanged full workspace refresh preserves the report revision and a held export completes all rows without a false data-change error"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "follow-up survives committed response loss, reload and exact retry, then reviews a stale conflict",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 browser SDK keeps the case draft and live camera through two rotations during delayed Realtime removal, then accepts the newest event and exact persisted retry",
+          "contracts": [
+            "live-mock|BR03a|live camera video and track identity remain connected during token rotation",
+            "live-mock|BR03b|captured selfie blob preview and captured context survive token rotation",
+            "live-mock|BR04|two token rotations during delayed channel removal leave one current owner and accept newest event",
+            "live-mock|BR05|terminal Realtime close joins replacement and its event triggers a data read",
+            "live-mock|BR10|follow-up retry after rotation and reload sends original payload/key and commits once"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 browser SDK refresh leaves populated leave and employee forms mounted with their original input nodes",
+          "contracts": [
+            "live-mock|BR01|leave form textarea and dialog remain mounted and action is rejected during session validation",
+            "live-mock|BR02|employee inputs and draft remain mounted after token rotation"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 keeps same-account UI read-only after a transient protected read failure and retries against current context",
+          "contracts": [
+            "live-mock|BR08|allowed token rotation plus employees 503 retains form, blocks protected write, and retry succeeds"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 ordinary data refresh failure retains the form but cannot authorize from the cached admin role",
+          "contracts": [
+            "live-mock|BR08|ordinary same-token employees 503 retains form, blocks cached admin action, and retry applies revoked role"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 denies retry after role/session revocation during retained transient UI",
+          "contracts": [
+            "live-mock|BR08|transient read retry with revoked latest permission clears access and performs no protected write"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 ignores a late account-A context after account B replaces it",
+          "contracts": [
+            "live-mock|BR06|late account-A Auth context cannot replace or expose data after SDK session switches to account B"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-followup.spec.ts",
+          "title": "SEC31 ignores delayed account-A validation after logout",
+          "contracts": [
+            "live-mock|BR06|late Auth context after logout cannot republish the signed-out account"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-operations-planning.spec.ts",
+          "title": "Operations replays one committed issue after response loss and a reload",
+          "contracts": [
+            "live-mock|BR10|issue retry after committed response loss and reload preserves exact idempotency key and payload"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-operations-planning.spec.ts",
+          "title": "Planning restores an ambiguous interval request, retries its exact body, then preserves an edit during an external refresh conflict",
+          "contracts": [
+            "live-mock|BR11-PLAN|planning retry after token rotation and reload preserves original key/body; external revision conflict keeps newer local edit"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "live-supervisor-operations-planning.spec.ts",
+          "title": "Configuration restores and retries the original category request after token rotation and reload",
+          "contracts": [
+            "live-mock|BR11-CFG|configuration category retry after token rotation and reload preserves original key/payload and commits once"
+          ],
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "suite": "demo-pwa",
+      "runId": "2026-11-04T05-09-54-384Z-demo-pwa-34abf458-6763-4612-93d7-7cca9c4a97dc",
+      "reportSha256": "d5b940fb33c08e0393d2f9487a9a40fdd8c7cd480943b596d63c885ffd524570",
+      "sourceUnchanged": true,
+      "stats": {
+        "startTime": "2026-11-04T05:09:55.650Z",
+        "duration": 105972.217,
+        "expected": 24,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "acceptance": [
+        {
+          "file": "demo.spec.ts",
+          "title": "desktop navigation stays inside SPA and preserves the signed-in account",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "connection status recovers when the browser reconnects",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "mobile cashier navigation is usable and restricted employee pages stay protected",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "cashier can find weekly schedule, retain daily links and reach shift exchanges without losing navigation",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "Admin HR follows an outlet case and saves a weekly roster and minimum",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "an open unassigned case stays actionable after a historical assignment resolves its signal",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "weekly roster draft survives reload and is isolated by account and week",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "an older roster tab syncs and preserves another tab pending replay while changing weeks",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "weekly roster opens the requested week from a direct URL",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "weekly draft conflict survives refresh and editing another cell",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "cashier weekly notification URL shows only that account’s seven-day roster",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "reverting the last weekly change clears the empty local draft",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "weekly roster stays inside its horizontal scroll area on a phone viewport",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "outlet, department, position and employee can be created and maintained through forms",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "a delayed GPS response cannot replace the coordinates of a different outlet form",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "leave approval, date change and cancellation adjust balance only after decisions",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "Admin HR cannot approve own request and another admin records external decision",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "retired face verification redirects without loading enrollment or biometric data",
+          "contracts": [
+            "demo-pwa|FACE-REMOVED-01|retired face verification bookmarks redirect to attendance without enrollment, reference calls or camera; profile and guide use selfie attendance"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "cashier attendance requires inside GPS and new camera selfie; clock out checks location again",
+          "contracts": [
+            "demo-pwa|camera/GPS selfie clock-in|real camera and browser geolocation satisfy same-account attendance flow without face enrollment; clock-out checks GPS again"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "employee number login checks the password instead of silently entering demo",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "HR manual attendance is auditable, exported as unverified and cannot be self-corrected",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "manual WhatsApp reset token changes the demo password and cannot be reused",
+          "contracts": [],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "production PWA installs a shell cache, excludes dynamic responses and opens offline",
+          "contracts": [
+            "demo-pwa|PWA offline shell|service worker controls root scope, caches static shell only, and opens offline route"
+          ],
+          "status": "PASS"
+        },
+        {
+          "file": "demo.spec.ts",
+          "title": "visual QA captures desktop dashboard and mobile attendance",
+          "contracts": [],
+          "status": "PASS"
+        }
+      ]
+    }
+  ],
+  "deployment": {
+    "preview": "PENDING",
+    "production": "PENDING"
+  },
+  "hostedUserWorkflow": "NOT_RUN",
+  "realDevicePvr02": "DEFERRED",
+  "limitations": [
+    "Synthetic SDK/browser and PGlite database fixtures are separate from real-user hosted transactions.",
+    "No measured production latency or p95 claim.",
+    "No database migration, RLS or credential changes."
+  ]
+}

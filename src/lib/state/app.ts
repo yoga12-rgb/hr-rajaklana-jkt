@@ -23,6 +23,11 @@ import { disableDevicePush } from '../device-push';
 import { followupCaseKey, operationalSignals, validateRosterBatch } from '../cashier-spv';
 import { rpcError } from '../rpc-error';
 import { authAccessContext } from '../auth-mfa';
+import { measureOperation, clearOperationTimings } from '../operation-timing';
+import { refreshTables, realtimeRefreshTarget, type RefreshTarget } from '../workspace-refresh';
+import { createPrivateMediaLoader, assertPrivateMediaPath, type PrivateMediaBucket } from '../private-media';
+import { attendanceWindowFilter, workspaceDataMode, type WorkspaceDataMode } from '../workspace-window';
+import { queryReportPage, type ReportQueryInput, type ReportPage } from '../report-query';
 
 const KEY = 'rajaklana-hr-demo-v1';
 export const app = writable<AppState>(initialDemo());
@@ -33,6 +38,8 @@ let realtimeTerminal = false;
 let refreshing = false, timer: ReturnType<typeof setTimeout> | undefined;
 let refreshPromise: Promise<void> | null = null;
 let refreshRequested = false;
+const pendingRefreshTargets = new Set<RefreshTarget>();
+const pendingRealtimeTargets = new Set<RefreshTarget>();
 let initPromise: Promise<void> | null = null;
 let realtimeSubscribed = false;
 let realtimeRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,6 +57,27 @@ let identityValidationGeneration = 0;
 // A refresh that started before a confirmed write must not overwrite that
 // receipt with an older attendance snapshot. Never reset this counter on logout.
 let attendanceWriteRevision = 0;
+let notificationWriteRevision = 0;
+let workspaceViewRevision = 0;
+let requestedWorkspaceMode: WorkspaceDataMode | null = null;
+function currentWorkspaceMode(): WorkspaceDataMode {
+  return requestedWorkspaceMode ?? (typeof window !== 'undefined' && window.location ? workspaceDataMode(window.location.pathname) : 'full');
+}
+let rawSnapshot: { revision: number; identity: string; day: string; mode: WorkspaceDataMode; rows: Record<string, any[]>; directory: any[]; followups: any[]; balances: Record<string, number> } | null = null;
+const privateMedia = createPrivateMediaLoader({
+  allowedOrigin: import.meta.env.PUBLIC_SUPABASE_URL ? new URL(import.meta.env.PUBLIC_SUPABASE_URL).origin : undefined,
+  signOne: async (bucket, path) => measureOperation('media.sign', async () => {
+    const { data, error } = await supabase!.storage.from(bucket).createSignedUrl(path, 300);
+    if (error) fail(error);
+    if (!data?.signedUrl) throw new Error('Tautan berkas belum tersedia.');
+    return data.signedUrl;
+  }),
+  signMany: async (bucket, paths) => measureOperation('media.sign', async () => {
+    const { data, error } = await supabase!.storage.from(bucket).createSignedUrls(paths, 300);
+    if (error) fail(error);
+    return (data ?? []).map(row => ({ path: row.path ?? '', signedUrl: row.signedUrl, error: row.error }));
+  })
+});
 const demoFollowupReceipts = new Map<string, { fingerprint: string; result: SpvFollowup }>();
 const id = () => crypto.randomUUID();
 async function demoPasswordHash(password: string, salt: string) { const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}:${password}`)); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
@@ -74,6 +102,10 @@ export const isApprover = (employee: Employee | undefined | null = get(app).user
 export const isCashier = (employee: Employee | undefined | null = get(app).user) => !!employee && get(app).positions.some(p => p.id === employee.positionId && p.isCashier);
 export const displayName = (employeeId: string) => get(app).employees.find(e => e.id === employeeId)?.fullName ?? 'Karyawan';
 export const shiftLabel = (shift: Shift) => ({ morning: 'Pagi', afternoon: 'Sore', middle: 'Middle' })[shift];
+export type AttendanceProgress = 'upload' | 'verify' | 'save' | 'reconcile';
+function attendanceProgress(callback: ((stage: AttendanceProgress) => void) | undefined, stage: AttendanceProgress) {
+  try { callback?.(stage); } catch { /* A presentation callback cannot abort a server transaction. */ }
+}
 function attendanceSnapshot(outlet: Outlet): NonNullable<AttendanceRecord['outletSnapshot']> {
   const { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters } = outlet;
   return { morningStart, afternoonStart, lateToleranceMinutes, latitude, longitude, radiusMeters };
@@ -173,6 +205,36 @@ function auditDemoFollowupContextChanges(state: AppState, before: SpvFollowup[],
   }
 }
 function requireAdmin() { if (!isAdmin(user())) throw new Error('Tindakan ini hanya untuk Admin HR.'); }
+async function freshReportContext() {
+  requireAdmin();
+  const actor = user(), revision = authRevision;
+  const assertCurrent = () => {
+    const current = user();
+    if (revision !== authRevision || current.id !== actor.id || current.authUserId !== actor.authUserId || !isAdmin(current)) throw new Error('Sesi atau akses rekap berubah. Muat ulang dengan akun Anda.');
+  };
+  const access = authAccessContext(await rpc('auth_access_context', {})); assertCurrent();
+  if (!access.allowed || access.employeeId !== actor.id) throw new Error('Sesi akun tidak berlaku. Silakan masuk kembali.');
+  const [employees, roles] = await Promise.all([readAll('employees'), readAll('employee_roles')]); assertCurrent();
+  const mapped = employees.map(row => mapEmployee(row, roles)), current = mapped.find(row => row.id === actor.id && row.authUserId === actor.authUserId);
+  if (!activeAccount(current) || !isAdmin(current)) { void refresh(); throw new Error('Akses Admin HR diperlukan.'); }
+  const checkSession = async () => {
+    const { data: { session } } = await supabase!.auth.getSession(); assertCurrent();
+    if (!session || session.user.id !== actor.authUserId || session.access_token !== liveAuthAccessToken) throw new Error('Sesi sedang diperbarui. Muat ulang rekap.');
+  };
+  await checkSession();
+  const checkAuthorization = async () => {
+    const latestAccess = authAccessContext(await rpc('auth_access_context', {})); assertCurrent();
+    if (!latestAccess.allowed || latestAccess.employeeId !== actor.id) throw new Error('Sesi akun tidak berlaku.');
+    const { data, error, status } = await supabase!.from('employee_roles').select('employee_id,role')
+      .eq('employee_id', actor.id).eq('role', 'admin_hr').range(0, 0);
+    assertCurrent(); if (error) fail(error, status);
+    if (!(data ?? []).some(row => row.employee_id === actor.id && row.role === 'admin_hr')) {
+      void refresh(); throw new Error('Akses Admin HR berubah. Muat ulang dengan akun Anda.');
+    }
+    await checkSession();
+  };
+  return { employees: mapped, assertCurrent, checkSession, checkAuthorization };
+}
 function fail(error: unknown, responseStatus?: number): never {
   const source = typeof error === 'object' && error ? error as Record<string, unknown> : null;
   const message = error instanceof Error ? error.message : source && 'message' in source ? String(source.message) : 'Permintaan belum berhasil. Coba kembali.';
@@ -219,7 +281,7 @@ async function edge(action: string, body: Record<string, unknown> = {}) {
 }
 const cutTime = (v: string | null | undefined) => v?.slice(0, 5) ?? '';
 function mapEmployee(r: any, roles: any[]): Employee {
-  return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], canClock: r.can_clock === true, approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoUrl: r.photo_path, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
+  return { id: r.id, employeeNumber: r.employee_number, fullName: r.full_name, phone: r.whatsapp ?? '', departmentId: r.department_id ?? '', positionId: r.position_id ?? '', outletId: r.outlet_id ?? '', managerId: r.approver_employee_id, joinDate: r.starts_on ?? '', status: r.status ?? 'active', employmentType: 'permanent', accountStatus: ({ uninvited: 'not_invited', pending: 'invited', active: 'active', disabled: 'disabled' } as const)[r.account_status as 'uninvited'] ?? 'not_invited', authUserId: r.auth_user_id, roles: roles.filter(x => x.employee_id === r.id).map(x => x.role), canMiddleShift: r.can_middle_shift ?? false, weeklyOffDays: r.weekly_off_days ?? [], canClock: r.can_clock === true, approvalMode: r.approval_mode ?? 'internal', address: r.address ?? '', birthDate: r.birthday ?? '', gender: r.gender === 'unspecified' ? '' : r.gender ?? '', emergencyName: r.emergency_name ?? '', emergencyPhone: r.emergency_phone ?? '', photoPath: r.photo_path ?? undefined, photoUrl: undefined, exitDate: r.ends_on ?? '', exitReason: r.exit_reason ?? '' };
 }
 function mapAttendanceRecord(r: any, previous?: AttendanceRecord): AttendanceRecord {
   return { id: r.id, employeeId: r.employee_id, outletId: r.outlet_id, shift: r.shift, workDate: r.work_date,
@@ -259,7 +321,7 @@ async function publishConfirmedAttendance(row: any, actor: Employee, revision: n
     // original RPC response was still in transit. Reconcile this one row under
     // RLS instead of replacing that correction with the older receipt.
     try {
-      const { data, error } = await supabase!.from('attendance').select('*').eq('id', row.id).single();
+      const { data, error } = await measureOperation('attendance.reconcile', async () => await supabase!.from('attendance').select('*').eq('id', row.id).single());
       assertAttendanceActor(actor, revision);
       if (error) fail(error);
       if (!data || data.id !== row.id || data.employee_id !== actor.id || data.outlet_id !== expected.outletId
@@ -275,15 +337,16 @@ async function publishConfirmedAttendance(row: any, actor: Employee, revision: n
   }
   // Also fence refreshes that began during the rare reconciliation await.
   attendanceWriteRevision += 1;
+  if (rawSnapshot?.revision === revision) rawSnapshot.rows.attendance = [structuredClone(row), ...(rawSnapshot.rows.attendance ?? []).filter(item => item.id !== row.id)];
   app.update(state => {
     const previous = state.attendanceRecords.find(record => record.id === row.id);
     const record = mapAttendanceRecord(row, previous);
-    return { ...state, attendanceRecords: [record, ...state.attendanceRecords.filter(item => item.id !== record.id)],
+    return { ...state, attendanceRecords: [record, ...state.attendanceRecords.filter(item => item.id !== record.id)], reportRevision: (state.reportRevision ?? 0) + 1,
       dataRevision: (state.dataRevision ?? 0) + 1 };
   });
   // The action resolves from its authoritative receipt. Reconciliation keeps
   // audit, notifications and other screens current without delaying success.
-  void refresh();
+  void refresh('attendance');
 }
 function mapSpvFollowup(r: any): SpvFollowup {
   return { id: r.id, caseKey: r.case_key ?? r.caseKey, issueType: r.issue_type ?? r.issueType,
@@ -424,10 +487,15 @@ function elapsedTimeMinutes(startsAt: string, endsAt: string): number {
 function requireSupervisorBackend() {
   if (!configured) throw new Error('Modul supervisor operasional memerlukan Supabase Preview yang telah diperbarui.');
 }
-async function refresh() {
+async function refresh(target: RefreshTarget = 'all') {
   if (!supabase) return;
+  pendingRefreshTargets.add(target);
   if (refreshPromise) { refreshRequested = true; return refreshPromise; }
-  refreshPromise = (async () => { do { refreshRequested = false; await refreshNow(); } while (refreshRequested); })();
+  refreshPromise = (async () => { do {
+    refreshRequested = false;
+    const targets = new Set(pendingRefreshTargets); pendingRefreshTargets.clear();
+    await measureOperation('workspace.refresh', () => refreshNow(targets));
+  } while (refreshRequested || pendingRefreshTargets.size); })();
   try { await refreshPromise; } finally { refreshPromise = null; }
 }
 async function prepareLoginWorkspace(expectedUserId: string, expectedAccessToken: string) {
@@ -471,6 +539,9 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   // routes loading while clearing old account data, rather than briefly
   // presenting that pending validation as a completed signed-out state.
   sessionRevalidating = validatingSession;
+  rawSnapshot = null;
+  privateMedia.clear();
+  pendingRealtimeTargets.clear();
   app.set({ ...initialDemo(), mode: 'live', dataRevision: (get(app).dataRevision ?? 0) + 1, initialized: !validatingSession, loading: validatingSession, sessionValidating: validatingSession, user: null, employees: [], departments: [], positions: [], outlets: [], leaveRequests: [], attendanceRecords: [], auditEntries: [], leaveLedger: [], cashierAssignments: [], attendanceCorrectionRequests: [], notifications: [], balanceCache: {}, connected: navigator.onLine, error });
   if (timer) clearTimeout(timer);
   timer = undefined;
@@ -485,6 +556,7 @@ function clearLiveState(error: string | null = null, validatingSession = false) 
   if (previousChannel && supabase) void supabase.removeChannel(previousChannel);
 }
 function beginSessionRevalidation() {
+  privateMedia.clear();
   sessionRevalidating = true;
   app.update(state => state.mode === 'live' && state.user
     ? { ...state, sessionValidating: true, error: null }
@@ -540,8 +612,16 @@ function createRealtimeChannel(userId: string, revision: number) {
     for (const table of ['employees', 'attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'outlets', 'departments', 'positions', 'employee_roles', 'notifications', 'cashier_assignments', 'attendance_correction_requests', 'staffing_requirements', 'spv_followups', 'outlet_issues', 'shift_handovers', 'shift_exchange_requests', 'staffing_interval_requirements']) {
       target.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
         if (channel !== target || realtimeGeneration !== generation || authRevision !== revision) return;
+        if (table !== 'notifications') app.update(state => ({ ...state, reportRevision: (state.reportRevision ?? 0) + 1 }));
+        pendingRealtimeTargets.add(realtimeRefreshTarget(table));
         clearTimeout(timer);
-        timer = setTimeout(() => { if (channel === target && realtimeGeneration === generation && authRevision === revision) void refresh(); }, 300);
+        timer = setTimeout(() => {
+          if (channel !== target || realtimeGeneration !== generation || authRevision !== revision) return;
+          for (const changed of pendingRealtimeTargets) pendingRefreshTargets.add(changed);
+          pendingRealtimeTargets.clear();
+          const first = pendingRefreshTargets.values().next().value ?? 'all';
+          void refresh(first);
+        }, 300);
       });
     }
     target.subscribe(status => {
@@ -567,22 +647,25 @@ function resumeLiveConnection() {
   if (channel && realtimeTerminal && realtimeUserId) scheduleRealtimeReplacement(channel, realtimeGeneration, realtimeUserId, authRevision);
   void refresh();
 }
-async function readAll(table: string, fields = '*'): Promise<any[]> {
+async function readAll(table: string, fields = '*', configure?: (query: any) => any): Promise<any[]> {
   if (!supabase) return [];
   const rows: any[] = [];
   for (let offset = 0; ; offset += 1000) {
     let query = supabase.from(table).select(fields).order(table === 'employee_roles' ? 'employee_id' : 'id');
     if (table === 'employee_roles') query = query.order('role');
+    if (configure) query = configure(query);
     const { data, error, status } = await query.range(offset, offset + 999);
     if (error) fail(error, status);
     rows.push(...(data ?? []));
     if (!data || data.length < 1000) return rows;
   }
 }
-async function refreshNow() {
+async function refreshNow(targets: ReadonlySet<RefreshTarget> = new Set(['all'])) {
   if (!supabase || refreshing) return; refreshing = true;
   let revision = authRevision;
   const attendanceRevision = attendanceWriteRevision;
+  const notificationRevision = notificationWriteRevision;
+  const viewRevision = workspaceViewRevision, dataMode = currentWorkspaceMode();
   let sessionUserId: string | null = null;
   let contextValidatedSession: { userId: string; accessToken: string } | null = null;
   try {
@@ -620,7 +703,7 @@ async function refreshNow() {
     // Validate the account and navigation first. Photos, history, balances and
     // operational tables must not prolong the login confirmation itself.
     const identityTables = ['employees', 'employee_roles', 'departments', 'positions', 'outlets'];
-    const [employeeRows, roleRows, departmentRows, positionRows, outletRows] = await Promise.all(identityTables.map(name => readAll(name)));
+    const [employeeRows, roleRows, departmentRows, positionRows, outletRows] = await measureOperation('workspace.identity', () => Promise.all(identityTables.map(name => readAll(name))));
     const employees = employeeRows.map(r => mapEmployee(r, roleRows));
     const current = employees.find(e => e.authUserId === session.user.id);
     if (!current || !activeAccount(current) || current.id !== access.employeeId) {
@@ -637,6 +720,29 @@ async function refreshNow() {
       refreshRequested = true; return;
     }
     identityValidationGeneration += 1;
+    const identity = JSON.stringify([employeeRows, roleRows, departmentRows, positionRows, outletRows]);
+    const cached = rawSnapshot;
+    const needed = refreshTables(targets);
+    if (needed && cached?.mode !== dataMode) { needed.add('attendance'); needed.add('audit_events'); }
+    const useCache = needed !== null && cached?.revision === revision && cached.identity === identity
+      && cached.day === jakartaDate() && !sessionRevalidating && !get(app).workspaceLoading && !get(app).error;
+    const rows: Record<string, any[]> = useCache ? { ...cached.rows } : {};
+    let caseDates: unknown[] = [];
+    const readRows = async (name: string, fields = '*'): Promise<any[]> => {
+      if (useCache && !needed!.has(name) && rows[name]) return rows[name];
+      if (revision !== authRevision) throw new Error('Sesi akun berubah.');
+      let data: any[];
+      if (name === 'audit_events' && dataMode === 'recent') {
+        const response = await supabase!.from(name).select(fields).order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, 99);
+        if (response.error) fail(response.error, response.status);
+        data = response.data ?? [];
+      } else {
+        const filter = name === 'attendance' ? attendanceWindowFilter(dataMode, caseDates) : null;
+        data = await readAll(name, fields, filter ? query => query.or(filter) : undefined);
+      }
+      if (revision !== authRevision) throw new Error('Sesi akun berubah.');
+      rows[name] = data; return data;
+    };
     if (!get(app).initialized || get(app).user?.authUserId !== session.user.id || get(app).workspaceLoading) {
       // A partial snapshot is deliberately read-only. Feature routes remain
       // behind the workspace-loading view, so empty tables cannot be mistaken
@@ -656,10 +762,23 @@ async function refreshNow() {
       // replacing the already hydrated page or its per-account drafts.
       app.update(state => ({ ...state }));
     }
+    const followupPromise = isAdmin(current)
+      ? useCache && !needed!.has('spv_followups') ? Promise.resolve({ items: cached!.followups }) : rpc('spv_followup_page', {
+          p_view: 'all_open', p_outlet_id: null, p_from: null, p_to: null, p_page_size: 100, p_cursor: null
+        })
+      : Promise.resolve({ items: [] });
     const tables = ['leave_requests', 'leave_adjustments', 'attendance', 'leave_ledger', 'notifications', 'cashier_assignments', 'attendance_correction_requests'];
-    const [leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await Promise.all(tables.map(name => readAll(name)));
+    const [leaveRows, adjustmentRows, attendanceRows, ledgerRows, notificationRows, assignmentRows, correctionRows] = await measureOperation('workspace.data', () => Promise.all(tables.map(name => name === 'attendance'
+      ? followupPromise.then(response => {
+          caseDates = (response?.items ?? []).map((row: any) => row.work_date);
+          const key = (dates: unknown[]) => JSON.stringify([...new Set(dates.filter(value => typeof value === 'string'))].sort());
+          if (useCache && dataMode === 'recent' && needed && key(caseDates) !== key(cached!.followups.map(row => row.work_date))) needed.add('attendance');
+          return readRows(name);
+        })
+      : readRows(name))));
     if (revision !== authRevision) return;
-    const balanceCache: Record<string, number> = {};
+    const refreshBalances = !useCache || ['leave_requests', 'leave_adjustments', 'leave_ledger'].some(name => needed!.has(name));
+    const balanceCache: Record<string, number> = refreshBalances ? {} : { ...cached!.balances };
     const year = Number(jakartaDate().slice(0,4));
     const balanceYears = new Set<number>([year, year + 1]);
     for (const row of [...leaveRows, ...adjustmentRows]) for (const date of [row.starts_on, row.ends_on]) if (date) balanceYears.add(Number(date.slice(0,4)));
@@ -667,19 +786,17 @@ async function refreshNow() {
     // Independent resources share a parallel phase instead of serial network
     // waterfalls. Keep publication behind the final token/revision checks.
     const [[staffingRows, followupResponse], directory, auditRows, attendanceRecords] = await Promise.all([
-      isAdmin(current) ? Promise.all([readAll('staffing_requirements'), rpc('spv_followup_page', {
-        p_view: 'all_open', p_outlet_id: null, p_from: null, p_to: null, p_page_size: 100, p_cursor: null
-      })]) : Promise.resolve<[any[], { items: any[] }]>([[], { items: [] }]),
-      rpc('employee_directory', {}),
-      isAdmin(current) ? readAll('audit_events', 'id,entity,actor_employee_id,entity_id,action,reason,before_data,after_data,created_at') : Promise.resolve([]),
+      isAdmin(current) ? Promise.all([readRows('staffing_requirements'), followupPromise]) : Promise.resolve<[any[], { items: any[] }]>([[], { items: [] }]),
+      useCache ? Promise.resolve(cached!.directory) : rpc('employee_directory', {}),
+      isAdmin(current) ? readRows('audit_events', 'id,entity,actor_employee_id,entity_id,action,reason,before_data,after_data,created_at') : Promise.resolve([]),
       Promise.all(attendanceRows.map(async r => {
-        const signed = r.selfie_path ? await supabase!.storage.from('attendance-selfies').createSignedUrl(r.selfie_path, 300) : null;
-        return { ...mapAttendanceRecord(r), selfieUrl: signed?.data?.signedUrl };
+
+        return mapAttendanceRecord(r);
       })),
-      Promise.all(balanceIds.flatMap(employeeId => [...balanceYears].map(async balanceYear => {
+      refreshBalances ? Promise.all(balanceIds.flatMap(employeeId => [...balanceYears].map(async balanceYear => {
         const balance = await rpc('leave_balance', { p_employee_id: employeeId, p_year: balanceYear });
         balanceCache[`${employeeId}:${balanceYear}`] = balance.expired ? 0 : Number(balance.remaining);
-      })))
+      }))) : Promise.resolve()
     ]);
     if (revision !== authRevision) return;
     const followupRows = followupResponse?.items ?? [];
@@ -688,15 +805,12 @@ async function refreshNow() {
       detail: r.entity === 'leave' ? leaveAuditDetail(r.reason,r.before_data,r.after_data) : r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
     for (const record of attendanceRecords) record.correctionReason = auditEntries.find(entry => entry.entityId === record.id && entry.detail)?.detail ?? '';
     const [, leaveRequests]: [unknown, LeaveRequest[]] = await Promise.all([
-      Promise.all(employees.filter(e => e.photoUrl).map(async employee => {
-        const signed = await supabase!.storage.from('profile-photos').createSignedUrl(employee.photoUrl!, 300);
-        employee.photoUrl = signed.data?.signedUrl;
-      })),
+      Promise.resolve(),
       Promise.all(leaveRows.map(async r => {
       const history = adjustmentRows.filter(a => a.leave_request_id === r.id).sort((a,b) => b.created_at.localeCompare(a.created_at));
       const adjustment = history.find(a => a.status === 'pending') ?? history[0];
-      const attachment = r.attachment_path ? await supabase!.storage.from('leave-attachments').createSignedUrl(r.attachment_path,300) : null;
-      return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: attachment?.data?.signedUrl, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
+
+      return { id: r.id, employeeId: r.employee_id, type: r.kind, extent: r.extent, attachmentUrl: undefined, attachmentName: r.attachment_path ? 'Lampiran pengajuan' : undefined, attachmentPath: r.attachment_path ?? undefined, startDate: r.starts_on, endDate: r.ends_on, startTime: cutTime(r.starts_at), endTime: cutTime(r.ends_at), reason: r.reason, status: r.status, deductionDays: Object.values(r.deductions ?? {}).reduce((a: number, b) => a + Number(b), 0), approverId: r.decision_by ?? employees.find(e => e.id === r.employee_id)?.managerId ?? null, note: r.decision_note ?? '', externalApproverName: r.external_decider ?? '', createdAt: r.created_at, adjustment: adjustment ? { id: adjustment.id, type: adjustment.type, startDate: adjustment.starts_on, endDate: adjustment.ends_on, reason: adjustment.reason, status: adjustment.status, requestedAt: adjustment.created_at, note: adjustment.decision_note ?? '', decidedAt: adjustment.decided_at ?? undefined, deciderName: adjustment.external_decider || employees.find(e => e.id === adjustment.decision_by)?.fullName } : null };
       }))
     ]);
     const cashierAssignments: CashierAssignment[] = assignmentRows.map(mapCashierAssignment);
@@ -716,9 +830,16 @@ async function refreshNow() {
       else clearLiveState(null, true);
       refreshRequested = true; return;
     }
-    if (attendanceRevision !== attendanceWriteRevision) { refreshRequested = true; return; }
+    if (attendanceRevision !== attendanceWriteRevision || notificationRevision !== notificationWriteRevision || viewRevision !== workspaceViewRevision) { refreshRequested = true; return; }
+    const changesBusinessData = !useCache || [...(needed ?? [])].some(name => name !== 'notifications');
+    const changesReportData = !cached || cached.revision !== revision || cached.identity !== identity
+      || ['attendance', 'leave_requests', 'leave_adjustments', 'leave_ledger', 'audit_events']
+        .some(name => JSON.stringify(cached.rows[name] ?? []) !== JSON.stringify(rows[name] ?? []))
+      || [...targets].some(target => target !== 'all' && target !== 'notifications');
+    if (rawSnapshot?.identity !== identity) privateMedia.clear();
+    rawSnapshot = { revision, identity, mode: dataMode, day: jakartaDate(), rows: structuredClone(rows), directory: structuredClone(directory ?? []), followups: structuredClone(followupRows), balances: { ...balanceCache } };
     sessionRevalidating = false;
-    app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, workspaceLoading: false, user: current, dataRevision: (get(app).dataRevision ?? 0) + 1, connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
+    app.set({ mode: 'live', initialized: true, loading: false, sessionValidating: false, workspaceLoading: false, workspaceReady: true, attendanceHistoryComplete: dataMode === 'full', user: current, reportRevision: (get(app).reportRevision ?? 0) + (changesReportData ? 1 : 0), dataRevision: (get(app).dataRevision ?? 0) + (changesBusinessData ? 1 : 0), connected: navigator.onLine && realtimeSubscribed, error: null, balanceCache, notifications, cashierAssignments, attendanceCorrectionRequests, staffingRequirements, spvFollowups, employees, departments: departmentRows.map(r => ({ id: r.id, name: r.name, code: r.code ?? '', active: r.active })), positions: positionRows.map(r => ({ id: r.id, name: r.name, departmentId: r.department_id, active: r.active, isCashier: r.is_cashier })), outlets: outletRows.map(r => ({ id: r.id, code: r.code, name: r.name, address: r.address, active: r.active, isProduction: r.production_location, latitude: r.latitude, longitude: r.longitude, radiusMeters: r.radius_m, opensAt: cutTime(r.opens_at), closesAt: cutTime(r.closes_at), morningStart: cutTime(r.morning_starts_at), afternoonStart: cutTime(r.afternoon_starts_at), lateToleranceMinutes: r.late_tolerance_minutes, maxAccuracyMeters: r.max_accuracy_m ?? 100 })), attendanceRecords, auditEntries, leaveLedger: ledgerRows.map(r => ({ id: r.id, employeeId: r.employee_id, year: r.year, days: -Number(r.amount), requestId: r.leave_request_id })), leaveRequests });
     createRealtimeChannel(session.user.id, revision);
   } catch (e) {
     if (revision === authRevision) {
@@ -823,15 +944,58 @@ export const actions = {
     try { await initPromise; } finally { initPromise = null; }
   },
   refresh,
+  reportScopeRevision() { requireAdmin(); return authRevision; },
+  async loadReportPage(input: ReportQueryInput): Promise<ReportPage> {
+    if (!supabase) throw new Error('Rekap server memerlukan koneksi Supabase.');
+    const context = await freshReportContext();
+    const page = await measureOperation('report.query', () => queryReportPage(supabase!, input, context));
+    context.assertCurrent(); await context.checkAuthorization(); return page;
+  },
+  async prepareWorkspaceRoute(path: string) {
+    if (!configured) return;
+    const mode = workspaceDataMode(path);
+    if (mode === currentWorkspaceMode()) return;
+    requestedWorkspaceMode = mode; workspaceViewRevision += 1;
+    const state = get(app);
+    if (!state.user) return;
+    if (mode === 'full' && !state.attendanceHistoryComplete) app.update(snapshot => ({ ...snapshot, workspaceLoading: true }));
+    await refresh('attendance');
+  },
+  async signedMediaUrl(bucket: PrivateMediaBucket, path: string, options: { force?: boolean } = {}) {
+    const actor = user(), revision = authRevision;
+    if (!supabase) throw new Error('Berkas privat memerlukan koneksi server.');
+    assertPrivateMediaPath(bucket, path);
+    const assertCurrent = () => {
+      const current = user();
+      if (revision !== authRevision || current.id !== actor.id || current.authUserId !== actor.authUserId || get(app).error) throw new Error('Sesi berubah. Buka berkas dengan akun Anda.');
+    };
+    const { data: { session } } = await supabase.auth.getSession(); assertCurrent();
+    if (!session || session.user.id !== actor.authUserId || session.access_token !== liveAuthAccessToken) throw new Error('Sesi sedang diverifikasi. Buka berkas kembali.');
+    return privateMedia.load({ bucket, path, scope: `${import.meta.env.PUBLIC_SUPABASE_URL ?? 'local'}:${actor.authUserId}:${revision}`, assertCurrent, force: options.force });
+  },
   async readNotification(notificationId?: string) {
     const actor = user();
-    if (configured) { await rpc('notifications_mark_read', { p_id: notificationId ?? null }); await refresh(); return; }
+    if (configured) {
+      const revision = authRevision, notificationIds = new Set((get(app).notifications ?? [])
+        .filter(row => row.employeeId === actor.id && (!notificationId || row.id === notificationId)).map(row => row.id));
+      const at = await rpc('notifications_mark_read', { p_id: notificationId ?? null });
+      const current = get(app).user;
+      if (revision !== authRevision || sessionRevalidating || !activeAccount(current) || current?.id !== actor.id || current.authUserId !== actor.authUserId) throw new Error('Sesi akun berubah. Buka notifikasi dengan akun Anda.');
+      // Patch only IDs present when the request began. New arrivals must not
+      // be marked by a local prediction of the mark-all transaction boundary.
+      const readAt = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : new Date().toISOString();
+      notificationWriteRevision += 1;
+      app.update(state => ({ ...state, notifications: (state.notifications ?? []).map(row => notificationIds.has(row.id) ? { ...row, readAt: row.readAt ?? readAt } : row) }));
+      if (rawSnapshot?.revision === revision) rawSnapshot.rows.notifications = (rawSnapshot.rows.notifications ?? []).map(row => notificationIds.has(row.id) ? { ...row, read_at: row.read_at ?? readAt } : row);
+      void refresh('notifications'); return;
+    }
     commit(s => { for (const n of s.notifications ?? []) if (n.employeeId === actor.id && (!notificationId || n.id === notificationId) && !n.readAt) n.readAt = new Date().toISOString(); });
   },
   async login(employeeNumber: string, password: string) {
     if (configured) {
-      const data = await edge('login', { employee_number: employeeNumber, password });
-      const { data: authData, error } = await supabase!.auth.setSession(data.session);
+      clearOperationTimings();
+      const data = await measureOperation('login.credentials', () => edge('login', { employee_number: employeeNumber, password }));
+      const { data: authData, error } = await measureOperation('login.session', () => supabase!.auth.setSession(data.session));
       if (error) fail(error);
       const session = authData.session;
       if (!session) throw new Error('Sesi akun belum dapat dibuat. Coba masuk kembali.');
@@ -839,7 +1003,7 @@ export const actions = {
     }
     else { const employee = get(app).employees.find(e => e.employeeNumber === employeeNumber.trim().toUpperCase() && e.status === 'active' && e.accountStatus === 'active'); if (!employee) throw new Error('Nomor karyawan atau kata sandi tidak sesuai.'); const passwords = JSON.parse(localStorage.getItem('rk-demo-passwords') ?? '{}'), stored = passwords[employee.id]; const valid = stored ? await demoPasswordHash(password,stored.salt) === stored.hash : password === 'DemoRajaklana123!'; if(!valid) throw new Error('Nomor karyawan atau kata sandi tidak sesuai. Kata sandi akun contoh: DemoRajaklana123!'); commit(s => { s.user = employee; }); }
   },
-  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
+  async logout() { if (supabase) { try { await disableDevicePush(); } catch { /* Session logout must remain available if the push service is unavailable. */ } const { error } = await supabase.auth.signOut(); if (error) fail(error); } clearOperationTimings(); authRevision += 1; liveAuthUserId = null; liveAuthAccessToken = null; if (supabase) clearLiveState(); else { clearRealtimeRetry(true); channel = null; realtimeUserId = null; realtimeGeneration += 1; realtimeTerminal = false; realtimeSubscribed = false; realtimeAuthRevision = 0; commit(s => { s.user = null; }); } },
   async bootstrap(input: { fullName: string; phone: string; outletName: string; secret: string; password: string }) { if(!configured)throw new Error('Hubungkan proyek Supabase terlebih dahulu.'); return edge('bootstrap',{full_name:input.fullName,whatsapp:input.phone,outlet_name:input.outletName,bootstrap_secret:input.secret,password:input.password}); },
   async switchDemoUser(employeeId: string) { if (configured) throw new Error('Pergantian akun contoh hanya tersedia dalam demo.'); const employee = get(app).employees.find(e => e.id === employeeId && activeAccount(e)); if (!employee) throw new Error('Akun contoh tidak ditemukan atau tidak aktif.'); commit(s => { s.user = employee; }); },
   async saveEmployee(input: Partial<Employee>) {
@@ -951,7 +1115,7 @@ export const actions = {
       let path: string | null = null;
       if (input.attachment) { if (input.attachment.size > 5 * 1024 * 1024 || !['image/jpeg','image/png','image/webp','application/pdf'].includes(input.attachment.type)) throw new Error('Lampiran harus foto/PDF maksimal 5 MB.'); const { data: { session } } = await supabase!.auth.getSession(); path = `${session!.user.id}/${id()}.${input.attachment.type === 'application/pdf' ? 'pdf' : 'jpg'}`; const result = await supabase!.storage.from('leave-attachments').upload(path, input.attachment); if (result.error) fail(result.error); }
       try { await rpc('leave_submit', { p_kind: input.type, p_starts_on: input.startDate, p_ends_on: input.endDate, p_reason: input.reason, p_extent: extent, p_starts_at: input.startTime || null, p_ends_at: input.endTime || null, p_attachment_path: path }); }
-      catch(e) { await cleanupRejectedLeaveUpload(path,e); throw e; } await refresh(); return;
+      catch(e) { await cleanupRejectedLeaveUpload(path,e); throw e; } await refresh('leave'); return;
     }
     const requestId = id(); commit(s => { s.leaveRequests.unshift({ id: requestId, employeeId: u.id, type: input.type, extent, attachmentUrl: input.attachment ? URL.createObjectURL(input.attachment) : undefined, attachmentName: input.attachment?.name, startDate: input.startDate, endDate: input.endDate, startTime: input.startTime ?? '', endTime: input.endTime ?? '', reason: input.reason, status: 'pending', deductionDays: 0, approverId: u.managerId, note: '', externalApproverName: '', createdAt: new Date().toISOString(), adjustment: null }); }, 'leave_submitted', requestId);
   },
@@ -961,7 +1125,7 @@ export const actions = {
     const employee = get(app).employees.find(e => e.id === request.employeeId)!;
     if (employee.approvalMode === 'external' && (decision.externalApproverName?.trim().length ?? 0) < 3) throw new Error('Nama pemberi keputusan eksternal minimal 3 karakter.');
     if (decision.decision !== 'approve' && (decision.note?.trim().length ?? 0) < 3) throw new Error('Catatan keputusan minimal 3 karakter.');
-    if (configured) { await rpc('leave_decide', { p_id: requestId, p_decision: ({ approve: 'approved', reject: 'rejected', needs_info: 'needs_info' })[decision.decision], p_deductions: decision.decision === 'approve' ? deductionByYear(request.startDate, request.endDate, decision.deductionDays) : {}, p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh(); return; }
+    if (configured) { await rpc('leave_decide', { p_id: requestId, p_decision: ({ approve: 'approved', reject: 'rejected', needs_info: 'needs_info' })[decision.decision], p_deductions: decision.decision === 'approve' ? deductionByYear(request.startDate, request.endDate, decision.deductionDays) : {}, p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh('leave'); return; }
     commit(s => { const r = s.leaveRequests.find(x => x.id === requestId)!; if (decision.decision === 'approve') updateCharge(s, r, r.startDate, r.endDate, decision.deductionDays); r.status = ({ approve: 'approved', reject: 'rejected', needs_info: 'needs_info' } as const)[decision.decision]; r.deductionDays = decision.decision === 'approve' ? decision.deductionDays : 0; r.note = decision.note ?? ''; r.externalApproverName = decision.externalApproverName ?? ''; }, 'leave_decided', requestId, decision.note);
   },
   async changeLeave(requestId: string, input: { startDate: string; endDate: string; reason: string; startTime?: string; endTime?: string; attachment?: File; removeAttachment?: boolean }) {
@@ -989,7 +1153,7 @@ export const actions = {
         if (r.status === 'approved') await rpc('leave_request_change', args);
         else await rpc('leave_edit', { ...args, p_attachment_path: path, p_replace_attachment: !!input.attachment || !!input.removeAttachment });
       } catch (error) { await cleanupRejectedLeaveUpload(path,error); throw error; }
-      await refresh(); return;
+      await refresh('leave'); return;
     }
     commit(s => {
       const request = s.leaveRequests.find(x => x.id === requestId)!;
@@ -1014,7 +1178,7 @@ export const actions = {
     validateLeavePeriod({ ...request, startDate, endDate, startTime, endTime });
     const allocation: Record<number, number> = input.cancel ? {} : deductionByYear(startDate, endDate, input.deductionDays);
     if (!input.cancel && duplicateLeave(state, request.employeeId, { ...request, startDate, endDate, startTime, endTime }, requestId)) throw new Error('Pengajuan yang sama sudah ada.');
-    if (configured) { await rpc('leave_correct_hours', { p_id: requestId, p_starts_on: startDate, p_ends_on: endDate, p_deductions: allocation, p_reason: input.reason, p_cancel: input.cancel, p_external_decider: input.externalApproverName || null, p_starts_at: startTime || null, p_ends_at: endTime || null }); await refresh(); return; }
+    if (configured) { await rpc('leave_correct_hours', { p_id: requestId, p_starts_on: startDate, p_ends_on: endDate, p_deductions: allocation, p_reason: input.reason, p_cancel: input.cancel, p_external_decider: input.externalApproverName || null, p_starts_at: startTime || null, p_ends_at: endTime || null }); await refresh('leave'); return; }
     commit(s => {
       const r = s.leaveRequests.find(x => x.id === requestId)!;
       applyLeaveAllocation(s,r,allocation);
@@ -1033,7 +1197,7 @@ export const actions = {
     if (duplicateLeave(state,employee.id,{ ...input,extent,startTime,endTime })) throw new Error('Pengajuan yang sama sudah ada dan masih aktif.');
     if (configured) { const row = await rpc('leave_record_retrospective', { p_employee_id: employee.id, p_kind: input.type, p_starts_on: input.startDate,
       p_ends_on: input.endDate, p_reason: input.reason, p_extent: extent, p_starts_at: startTime || null, p_ends_at: endTime || null,
-      p_deductions: allocation, p_note: input.note, p_external_decider: input.externalApproverName || null }); await refresh(); return row.id; }
+      p_deductions: allocation, p_note: input.note, p_external_decider: input.externalApproverName || null }); await refresh('leave'); return row.id; }
     const requestId = id();
     commit(s => { const request: LeaveRequest = { id: requestId, employeeId: employee.id, type: input.type, extent, startDate: input.startDate,
       endDate: input.endDate, startTime, endTime, reason: input.reason.trim(), status: 'approved', deductionDays: input.deductionDays,
@@ -1045,7 +1209,7 @@ export const actions = {
   async saveCashierAssignment(input: CashierAssignmentInput) {
     requireAdmin(); assertCashierAssignment(get(app),input);
     if (configured) { const row = await rpc('cashier_assignment_save',{ p_employee_id: input.employeeId, p_work_date: input.workDate,
-      p_outlet_id: input.outletId, p_shift: input.shift, p_reason: input.reason, p_id: input.id ?? null, p_cancel: input.cancel ?? false }); await refresh(); return row.id; }
+      p_outlet_id: input.outletId, p_shift: input.shift, p_reason: input.reason, p_id: input.id ?? null, p_cancel: input.cancel ?? false }); await refresh('schedule'); return row.id; }
     let result = ''; commit(s => {
       const previousFollowups = structuredClone(s.spvFollowups ?? []);
       result = saveAssignmentInState(s,input).id;
@@ -1062,7 +1226,7 @@ export const actions = {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveFrom) || !Number.isFinite(+date) || date.toISOString().slice(0,10) !== input.effectiveFrom || input.effectiveFrom < jakartaDate()) throw new Error('Tanggal berlaku harus hari ini atau mendatang.');
     if (configured) {
       const row = await rpc('staffing_requirement_save', { p_outlet_id: input.outletId, p_weekday: input.weekday, p_shift: input.shift, p_minimum: input.minimum, p_effective_from: input.effectiveFrom });
-      await refresh(); return row.id;
+      await refresh('schedule'); return row.id;
     }
     const now = new Date().toISOString(), before = (state.staffingRequirements ?? []).find(row => row.outletId === input.outletId && row.weekday === input.weekday && row.shift === input.shift && row.effectiveFrom === input.effectiveFrom);
     const row: StaffingRequirement = { id: before?.id ?? id(), ...input, createdBy: before?.createdBy ?? actor.id, createdAt: before?.createdAt ?? now, updatedAt: now };
@@ -1081,7 +1245,7 @@ export const actions = {
       const result = await rpc('cashier_roster_batch_save', { p_week_start: weekStart, p_idempotency_key: idempotencyKey,
         p_changes: changes.map(change => ({ id: change.id ?? null, employee_id: change.employeeId, work_date: change.workDate,
           outlet_id: change.outletId, shift: change.shift, reason: change.reason, expected_updated_at: change.expectedUpdatedAt ?? null, cancel: change.cancel ?? false })) });
-      await refresh(); return result as { batch_id: string; week_start: string; saved_count: number; assignments: unknown[] };
+      await refresh('schedule'); return result as { batch_id: string; week_start: string; saved_count: number; assignments: unknown[] };
     }
     const next = structuredClone(state), saved = changes.map(change => saveAssignmentInState(next, { ...change, reason: change.reason.trim() }));
     commit(s => {
@@ -1101,7 +1265,7 @@ export const actions = {
     if (configured) {
       const row = await rpc('spv_followup_start', { p_issue_type: input.issueType, p_work_date: input.workDate, p_outlet_id: input.outletId,
         p_employee_id: input.employeeId, p_shift: input.shift, p_source_type: input.sourceType, p_source_id: input.sourceId });
-      await refresh(); return row.id;
+      await refresh('supervisor'); return row.id;
     }
     const now = new Date().toISOString(), before = (state.spvFollowups ?? []).find(row => row.caseKey === caseKey);
     if (before && before.status !== 'completed') return before.id;
@@ -1158,7 +1322,7 @@ export const actions = {
       const row = await rpc('spv_followup_update_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
         p_idempotency_key: input.idempotencyKey, p_status: input.status, p_owner_id: input.ownerId,
         p_note: input.note, p_resolution_note: input.resolutionNote, p_due_at: input.dueAt, p_reason: input.reason });
-      await refresh(); return mapSpvFollowup(row);
+      await refresh('supervisor'); return mapSpvFollowup(row);
     }
     const receiptKey = `${actor.id}:${input.idempotencyKey}`;
     const fingerprint = JSON.stringify(input);
@@ -1313,7 +1477,7 @@ export const actions = {
       const row = await rpc('outlet_issue_submit', { p_outlet_id: input.outletId, p_category_id: input.categoryId,
         p_description: input.description.trim(), p_urgency: input.urgency, p_photo_path: photoPath,
         p_reporter_employee_id: input.reporterEmployeeId ?? null, p_idempotency_key: input.idempotencyKey });
-      await refresh();
+      await refresh('supervisor');
       return mapOutletIssue(row);
     } catch (error) {
       // A durable replay can supply a path that was uploaded before the
@@ -1336,7 +1500,7 @@ export const actions = {
     const row = await rpc('outlet_issue_update_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
       p_idempotency_key: input.idempotencyKey, p_status: input.status, p_owner_id: input.ownerId,
       p_due_at: input.dueAt, p_resolution_note: input.resolutionNote, p_reason: input.reason });
-    await refresh();
+    await refresh('supervisor');
     return mapOutletIssue(row);
   },
   async loadShiftHandovers(input: { outletId?: string; from?: string; to?: string; pageSize?: number; cursor?: Record<string, string | number> | null } = {}): Promise<SupervisorPage<ShiftHandover>> {
@@ -1363,7 +1527,7 @@ export const actions = {
       p_sender_assignment_id: input.senderAssignmentId, p_recipient_employee_id: input.recipientEmployeeId,
       p_recipient_assignment_id: input.recipientAssignmentId, p_pending_work: input.pendingWork, p_outlet_condition: input.outletCondition,
       p_notes: input.notes, p_send: input.send, p_reason: input.reason });
-    await refresh();
+    await refresh('supervisor');
     return mapShiftHandover(row);
   },
   async respondShiftHandover(input: ShiftHandoverResponseInput): Promise<ShiftHandover> {
@@ -1372,7 +1536,7 @@ export const actions = {
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || input.reason.trim().length < 3) throw new Error('Versi dan alasan respons serah terima wajib diisi.');
     const row = await rpc('shift_handover_respond_v2', { p_id: input.id, p_expected_version: input.expectedVersion,
       p_idempotency_key: input.idempotencyKey, p_accept: input.accept, p_reason: input.reason });
-    await refresh();
+    await refresh('supervisor');
     return mapShiftHandover(row);
   },
   async loadShiftExchanges(input: { view?: ShiftExchangeView; pageSize?: number; cursor?: Record<string, string | number> | null } = {}): Promise<SupervisorPage<ShiftExchangeRequest>> {
@@ -1390,7 +1554,7 @@ export const actions = {
     }
     const row = await rpc('shift_exchange_submit', { p_request_type: input.requestType, p_requester_assignment_id: input.requesterAssignmentId,
       p_peer_employee_id: input.peerEmployeeId, p_reason: input.reason, p_idempotency_key: input.idempotencyKey });
-    await refresh();
+    await refresh('supervisor');
     return mapShiftExchange(row);
   },
   async respondShiftExchange(input: ShiftExchangeResponseInput): Promise<ShiftExchangeRequest> {
@@ -1399,7 +1563,7 @@ export const actions = {
     if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || input.note.trim().length < 3 || input.note.length > 2000) throw new Error('Versi dan catatan respons pengajuan wajib diisi.');
     const row = await rpc('shift_exchange_respond_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
       p_idempotency_key: input.idempotencyKey, p_accept: input.accept, p_note: input.note });
-    await refresh();
+    await refresh('supervisor');
     return mapShiftExchange(row);
   },
   async decideShiftExchange(input: ShiftExchangeDecisionInput): Promise<ShiftExchangeRequest> {
@@ -1408,7 +1572,7 @@ export const actions = {
     if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || input.note.trim().length < 5 || input.note.length > 2000) throw new Error('Versi dan catatan keputusan minimal 5 karakter wajib diisi.');
     const row = await rpc('shift_exchange_decide_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
       p_idempotency_key: input.idempotencyKey, p_approved: input.approved, p_note: input.note });
-    await refresh();
+    await refresh('schedule');
     return mapShiftExchange(row);
   },
   async cancelShiftExchange(input: ShiftExchangeCancelInput): Promise<ShiftExchangeRequest> {
@@ -1419,14 +1583,14 @@ export const actions = {
     }
     const row = await rpc('shift_exchange_cancel_v2', { p_id: input.id, p_expected_revision: input.expectedRevision,
       p_idempotency_key: input.idempotencyKey, p_note: input.note });
-    await refresh();
+    await refresh('supervisor');
     return mapShiftExchange(row);
   },
   async expireStaleShiftExchanges(idempotencyKey: string): Promise<{ expiredCount: number; asOf: string }> {
     requireAdmin(); requireSupervisorBackend();
     assertIdempotencyKey(idempotencyKey, 'penutupan pengajuan kedaluwarsa');
     const row = await rpc('shift_exchange_expire_stale_v2', { p_idempotency_key: idempotencyKey });
-    await refresh();
+    await refresh('supervisor');
     return { expiredCount: numberValue(row?.expired_count ?? row?.expiredCount), asOf: row?.as_of ?? row?.asOf ?? new Date().toISOString() };
   },
   async loadIntervalRequirements(outletId?: string): Promise<StaffingIntervalRequirement[]> {
@@ -1451,7 +1615,7 @@ export const actions = {
       p_idempotency_key: input.idempotencyKey, p_outlet_id: input.outletId, p_weekday: input.weekday, p_starts_at: input.startsAt,
       p_ends_at: input.endsAt, p_minimum: input.minimum, p_effective_from: input.effectiveFrom, p_effective_until: input.effectiveUntil,
       p_reason: input.reason });
-    await refresh();
+    await refresh('supervisor');
     return mapIntervalRequirement(row);
   },
   async saveCashierAssignmentPlan(input: CashierAssignmentPlanInput): Promise<CashierAssignment> {
@@ -1462,7 +1626,7 @@ export const actions = {
     if (elapsedTimeMinutes(input.startsAt, input.endsAt) !== 8 * 60) throw new Error('Jam rencana Middle harus tepat 8 jam termasuk istirahat.');
     const row = await rpc('cashier_assignment_plan_save_v2', { p_assignment_id: input.assignmentId, p_expected_updated_at: input.expectedUpdatedAt,
       p_idempotency_key: input.idempotencyKey, p_starts_at: input.startsAt, p_ends_at: input.endsAt, p_reason: input.reason });
-    await refresh();
+    await refresh('schedule');
     return mapCashierAssignment(row);
   },
   async loadSupervisorCoverage(outletId: string, workDate: string): Promise<SupervisorCoverage> {
@@ -1480,26 +1644,26 @@ export const actions = {
   async submitAttendanceCorrection(input: AttendanceCorrectionInput) {
     const actor = user(); assertCorrectionInput(get(app),actor.id,input);
     if (configured) { const row = await rpc('attendance_correction_submit',{ p_attendance_id: input.attendanceId, p_work_date: input.workDate,
-      p_clock_in: input.clockIn, p_clock_out: input.clockOut, p_shift: input.shift, p_reason: input.reason }); await refresh(); return row.id; }
+      p_clock_in: input.clockIn, p_clock_out: input.clockOut, p_shift: input.shift, p_reason: input.reason }); await refresh('attendance'); return row.id; }
     let result = ''; commit(s => { result = submitCorrectionInState(s,input).id; },'attendance_correction_requested',input.attendanceId ?? '',input.reason); return result;
   },
   async decideAttendanceCorrection(requestId: string, approved: boolean, note: string) {
     requireAdmin(); const request = (get(app).attendanceCorrectionRequests ?? []).find(r => r.id === requestId);
     if (!request || request.status !== 'pending' || request.employeeId === user().id) throw new Error('Permintaan tidak tersedia atau tidak boleh diproses sendiri.');
     if (note.trim().length < 5) throw new Error('Catatan keputusan minimal 5 karakter.');
-    if (configured) { await rpc('attendance_correction_decide',{ p_id: requestId, p_approved: approved, p_note: note }); await refresh(); return; }
+    if (configured) { await rpc('attendance_correction_decide',{ p_id: requestId, p_approved: approved, p_note: note }); await refresh('attendance'); return; }
     commit(s => { decideCorrectionInState(s,requestId,approved,note); },'attendance_correction_decided',requestId,note);
   },
   async cancelAttendanceCorrection(requestId: string) {
     const actor = user(), request = (get(app).attendanceCorrectionRequests ?? []).find(r => r.id === requestId);
     if (!request || request.employeeId !== actor.id || request.status !== 'pending') throw new Error('Hanya permintaan sendiri yang masih menunggu dapat dibatalkan.');
-    if (configured) { await rpc('attendance_correction_cancel',{ p_id: requestId }); await refresh(); return; }
+    if (configured) { await rpc('attendance_correction_cancel',{ p_id: requestId }); await refresh('attendance'); return; }
     commit(s => { (s.attendanceCorrectionRequests ?? []).find(r => r.id === requestId)!.status = 'cancelled'; },'attendance_correction_cancelled',requestId,'Dibatalkan pemohon sebelum keputusan HR');
   },
   async cancelLeave(requestId: string, reason: string) {
     const r = get(app).leaveRequests.find(x => x.id === requestId); if (!r || r.employeeId !== user().id) throw new Error('Pengajuan hanya dapat dibatalkan pemiliknya.'); if (reason.trim().length < 3) throw new Error('Alasan pembatalan minimal 3 karakter.');
     if (r.status === 'approved' && r.startDate < jakartaDate()) throw new Error('Pembatalan tanggal lampau harus dikoreksi HR.');
-    if (configured) { await rpc('leave_request_cancel', { p_id: requestId, p_reason: reason }); await refresh(); return; }
+    if (configured) { await rpc('leave_request_cancel', { p_id: requestId, p_reason: reason }); await refresh('leave'); return; }
     commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!; if(request.adjustment?.status === 'pending') throw new Error('Masih ada perubahan yang menunggu keputusan.'); if(['pending','needs_info'].includes(request.status)) request.status = 'cancelled'; else if(request.status === 'approved') request.adjustment = { id:id(),type:'cancel',reason,status:'pending',requestedAt:new Date().toISOString() }; else throw new Error('Pengajuan ini tidak dapat dibatalkan.'); }, 'leave_cancel_requested', requestId, reason);
   },
   async decideAdjustment(requestId: string, decision: { decision: 'approve' | 'reject'; deductionDays: number; note?: string; externalApproverName?: string }) {
@@ -1509,10 +1673,10 @@ export const actions = {
     if (decision.decision === 'reject' && (decision.note?.trim().length ?? 0) < 3) throw new Error('Alasan penolakan minimal 3 karakter.');
     if (!configured && decision.decision === 'approve' && r.adjustment.type === 'change'
       && duplicateLeave(get(app),r.employeeId,{ ...r,startDate:r.adjustment.startDate!,endDate:r.adjustment.endDate! },r.id)) throw new Error('Pengajuan yang sama sudah ada.');
-    if(configured) { await rpc('leave_decide_adjustment', { p_id: r.adjustment.id, p_approved: decision.decision === 'approve', p_deductions: r.adjustment.type === 'cancel' ? {} : deductionByYear(r.adjustment.startDate!,r.adjustment.endDate!,decision.deductionDays), p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh(); return; }
+    if(configured) { await rpc('leave_decide_adjustment', { p_id: r.adjustment.id, p_approved: decision.decision === 'approve', p_deductions: r.adjustment.type === 'cancel' ? {} : deductionByYear(r.adjustment.startDate!,r.adjustment.endDate!,decision.deductionDays), p_note: decision.note || null, p_external_decider: decision.externalApproverName || null }); await refresh('leave'); return; }
     commit(s => { const request = s.leaveRequests.find(x => x.id === requestId)!, a = request.adjustment!; if(decision.decision === 'approve') { if(a.type === 'cancel') { applyLeaveAllocation(s,request,{}); request.status = 'cancelled'; request.deductionDays = 0; } else { updateCharge(s,request,a.startDate!,a.endDate!,decision.deductionDays); request.startDate = a.startDate!; request.endDate = a.endDate!; request.deductionDays = decision.deductionDays; } } a.status = decision.decision === 'approve' ? 'approved' : 'rejected'; a.note = decision.note?.trim() ?? ''; a.decidedAt = new Date().toISOString(); a.deciderName = decision.externalApproverName?.trim() || user().fullName; }, 'leave_adjustment_decided', requestId, `${r.adjustment.type === 'cancel' ? 'Pembatalan' : 'Perubahan tanggal'} ${decision.decision === 'approve' ? 'disetujui' : 'ditolak'}${decision.externalApproverName ? ` oleh ${decision.externalApproverName.trim()}` : ''}${decision.note ? `: ${decision.note.trim()}` : ''}`);
   },
-  async clockIn(input: ClockInInput) {
+  async clockIn(input: ClockInInput, onProgress?: (stage: AttendanceProgress) => void) {
     const u = user(), s = get(app), assignment = assignmentFor(s,u.id), outlet = s.outlets.find(o => o.id === assignment?.outletId);
     const revision = authRevision;
     if (configured && !u.canClock) throw new Error('Akun tidak diizinkan mencatat absensi. Hubungi HR.');
@@ -1532,38 +1696,52 @@ export const actions = {
       const { data: { session } } = await supabase!.auth.getSession();
       assertAttendanceActor(u, revision);
       if (!session || session.user.id !== u.authUserId) throw new Error('Sesi berubah. Silakan ulangi absensi dengan akun Anda.');
-      const path = `${session.user.id}/${id()}.jpg`, upload = await supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'});
+      const path = `${session.user.id}/${id()}.jpg`;
+      attendanceProgress(onProgress,'upload');
+      const upload = await measureOperation('attendance.upload', () => supabase!.storage.from('attendance-selfies').upload(path,input.selfie,{contentType:'image/jpeg'}));
       if(upload.error) fail(upload.error);
       let row;
-      try { assertAttendanceActor(u, revision); const verificationToken = await verifyAttendanceSelfie(input,path,u,revision);
-        row = await rpc('attendance_clock_in_selfie',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
-          p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName,p_geo_captured_at:input.geoCapturedAt,p_verification_token:verificationToken });
+      try { assertAttendanceActor(u, revision); attendanceProgress(onProgress,'verify');
+        const verificationToken = await measureOperation('attendance.verify', () => verifyAttendanceSelfie(input,path,u,revision));
+        attendanceProgress(onProgress,'save');
+        row = await measureOperation('attendance.save', () => rpc('attendance_clock_in_selfie',{ p_shift:input.shift,p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_selfie_path:path,
+          p_selfie_captured_at:metadata.selfieCapturedAt,p_selfie_outlet_name:metadata.selfieOutletName,p_geo_captured_at:input.geoCapturedAt,p_verification_token:verificationToken }));
       } catch(e) { await cleanupRejectedUpload('attendance-selfies',path,e); throw e; }
+      attendanceProgress(onProgress,'reconcile');
       await publishConfirmedAttendance(row,u,revision,{ outletId: outlet.id, closed: false });
       return;
     }
     const now = new Date().toISOString(), recordId = id(); commit(state => { state.attendanceRecords.unshift({ id:recordId,employeeId:u.id,outletId:outlet.id,shift:input.shift,clockIn:now,clockOut:null,...attendanceTiming(now,input.shift,outlet),durationMinutes:null,inLatitude:input.latitude,inLongitude:input.longitude,inAccuracy:input.accuracy,inDistance:distance,selfiePath:'demo-session-only',assignmentId:assignment.id,selfieUrl:URL.createObjectURL(input.selfie),...metadata,corrected:false,correctionReason:'',outletSnapshot:attendanceSnapshot(outlet) }); },'clock_in',recordId);
   },
-  async clockOut(input: ClockOutInput) {
+  async clockOut(input: ClockOutInput, onProgress?: (stage: AttendanceProgress) => void) {
     const revision = authRevision;
     const u = user(), record = get(app).attendanceRecords.find(r => r.employeeId === u.id && !r.clockOut); if(!record) throw new Error('Tidak ada sesi kerja aktif.'); const outlet = attendanceOutlet(record,get(app).outlets.find(o => o.id === record.outletId)!); const distance = validateGeo(input,outlet);
     assertFreshGps(input.geoCapturedAt);
     if(configured) {
       assertAttendanceActor(u,revision);
-      const row = await rpc('attendance_clock_out_fresh',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_geo_captured_at:input.geoCapturedAt});
+      attendanceProgress(onProgress,'save');
+      const row = await measureOperation('attendance.save', () => rpc('attendance_clock_out_fresh',{p_latitude:input.latitude,p_longitude:input.longitude,p_accuracy_m:input.accuracy,p_geo_captured_at:input.geoCapturedAt}));
+      attendanceProgress(onProgress,'reconcile');
       await publishConfirmedAttendance(row,u,revision,{ outletId: record.outletId, recordId: record.id, closed: true, previous: record }); return;
     }
     const now = new Date().toISOString(); commit(s => { const r = s.attendanceRecords.find(x => x.id === record.id)!; r.clockOut = now; r.durationMinutes = Math.floor((+new Date(now)-+new Date(r.clockIn))/60000); r.outLatitude = input.latitude; r.outLongitude = input.longitude; r.outDistance = distance; r.outAccuracy = input.accuracy; },'clock_out',record.id);
   },
   async correctAttendance(recordId: string, input: { clockIn: string; clockOut: string | null; shift?: Shift; reason: string }) {
-    requireAdmin(); const r = get(app).attendanceRecords.find(x => x.id === recordId); if(!r || r.employeeId === user().id) throw new Error('Anda tidak dapat mengoreksi absensi sendiri.'); if(input.reason.trim().length < 5) throw new Error('Alasan koreksi minimal 5 karakter.');
+    requireAdmin(); let r = get(app).attendanceRecords.find(x => x.id === recordId);
+    if (!r && supabase) {
+      const context = await freshReportContext();
+      const { data, error, status } = await supabase.from('attendance').select('*').eq('id', recordId).single();
+      context.assertCurrent(); if (error) fail(error, status); await context.checkAuthorization();
+      if (data?.id === recordId) r = mapAttendanceRecord(data);
+    }
+    if(!r || r.employeeId === user().id) throw new Error('Anda tidak dapat mengoreksi absensi sendiri.'); if(input.reason.trim().length < 5) throw new Error('Alasan koreksi minimal 5 karakter.');
     const clockIn = +new Date(input.clockIn), clockOut = input.clockOut === null ? null : +new Date(input.clockOut);
     if (!Number.isFinite(clockIn) || clockIn > Date.now() || (clockOut !== null && (!Number.isFinite(clockOut) || clockOut < clockIn || clockOut > Date.now()))) throw new Error('Waktu koreksi tidak valid atau belum terjadi.');
     if (jakartaDate(input.clockIn) !== jakartaDate(r.clockIn)) throw new Error('Tanggal kerja tidak dapat diubah.');
     if (!['morning', 'afternoon', 'middle'].includes(input.shift ?? r.shift)) throw new Error('Shift tidak valid.');
     if (!input.clockOut && get(app).attendanceRecords.some(row => row.id !== r.id && row.employeeId === r.employeeId && !row.clockOut)) throw new Error('Masih ada sesi kerja lain yang belum clock out.');
     if (attendanceOverlaps(get(app).attendanceRecords,r.employeeId,input.clockIn,input.clockOut,r.id)) throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');
-    if(configured) { await rpc('attendance_correct',{p_id:recordId,p_clock_in:input.clockIn,p_clock_out:input.clockOut || null,p_shift:input.shift ?? null,p_reason:input.reason}); await refresh(); return; }
+    if(configured) { await rpc('attendance_correct',{p_id:recordId,p_clock_in:input.clockIn,p_clock_out:input.clockOut || null,p_shift:input.shift ?? null,p_reason:input.reason}); await refresh('attendance'); return; }
     commit(s => { const row = s.attendanceRecords.find(x => x.id === recordId)!; const before = JSON.stringify(row); const outlet = attendanceOutlet(row,s.outlets.find(o => o.id === row.outletId)!); Object.assign(row,{ clockIn:input.clockIn,clockOut:input.clockOut,shift:input.shift ?? row.shift,corrected:true,correctionReason:input.reason,durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,outletSnapshot:attendanceSnapshot(outlet) }); Object.assign(row,attendanceTiming(input.clockIn,row.shift,outlet)); s.auditEntries.unshift({id:id(),actorId:user().id,action:'attendance_original',entityId:recordId,at:new Date().toISOString(),detail:before}); },'attendance_corrected',recordId,input.reason);
   },
   async recordManualAttendance(input: { employeeId: string; shift: Shift; clockIn: string; clockOut: string | null; reason: string }) {
@@ -1573,7 +1751,7 @@ export const actions = {
     if (!['morning', 'afternoon', 'middle'].includes(input.shift)) throw new Error('Shift tidak valid.');
     if(input.shift==='middle'&&!employee.canMiddleShift)throw new Error('Kasir ini belum diizinkan menggunakan Middle.');
     if(!Number.isFinite(+new Date(input.clockIn)) || +new Date(input.clockIn)>Date.now() || (input.clockOut && (!Number.isFinite(+new Date(input.clockOut)) || input.clockOut<input.clockIn || +new Date(input.clockOut)>Date.now())))throw new Error('Waktu absensi tidak valid atau belum terjadi.');
-    if(configured){await rpc('attendance_record_manual',{p_employee_id:input.employeeId,p_shift:input.shift,p_clock_in:input.clockIn,p_clock_out:input.clockOut,p_reason:input.reason});await refresh();return;}
+    if(configured){await rpc('attendance_record_manual',{p_employee_id:input.employeeId,p_shift:input.shift,p_clock_in:input.clockIn,p_clock_out:input.clockOut,p_reason:input.reason});await refresh('attendance');return;}
     const assignment=assignmentFor(get(app),employee.id,jakartaDate(input.clockIn)), outlet=get(app).outlets.find(o=>o.id===(assignment?.outletId ?? employee.outletId))!;
     const recordId=id();commit(s=>{if(s.attendanceRecords.some(r=>r.employeeId===employee.id&&(!r.clockOut||jakartaDate(r.clockIn)===jakartaDate(input.clockIn))))throw new Error('Catatan pada tanggal ini sudah ada atau sesi sebelumnya belum selesai. Gunakan koreksi.');if(attendanceOverlaps(s.attendanceRecords,employee.id,input.clockIn,input.clockOut))throw new Error('Waktu absensi bertabrakan dengan catatan yang sudah ada.');s.attendanceRecords.unshift({id:recordId,employeeId:employee.id,outletId:outlet.id,assignmentId:assignment?.id ?? null,shift:input.shift,clockIn:input.clockIn,clockOut:input.clockOut,...attendanceTiming(input.clockIn,input.shift,outlet),durationMinutes:input.clockOut?Math.floor((+new Date(input.clockOut)-+new Date(input.clockIn))/60000):null,inLatitude:null,inLongitude:null,inAccuracy:null,inDistance:null,selfiePath:'',corrected:true,correctionReason:input.reason,source:'manual',outletSnapshot:attendanceSnapshot(outlet)});},'attendance_manual',recordId,input.reason);
   }
