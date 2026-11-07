@@ -143,6 +143,26 @@ describe('bounded server report queries', () => {
     expect(db.calls.filter(call => call.table === 'audit_events').every(call => call.ids?.join() === 'corrected')).toBe(true);
   });
 
+  // PostgREST serialises audit_events.id (bigint identity) as a JSON number.
+  // These two cases mirror the production shape behind the cashier attendance
+  // recap, which must not be mistaken for a concurrent history change.
+  it('keeps corrected attendance reasons when audit ids arrive as bigint numbers', async () => {
+    const db = database({ attendance: [attendance('corrected', undefined, { corrected: true, source: 'manual' })],
+      audit_events: [{ id: 7, entity_id: 'corrected', created_at: '2026-11-06T12:00:00.123456+00:00', reason: 'SPV reason numeric' }] });
+    const result = await queryReportPage(db.client, input(), context());
+    expect(result.attendanceRecords[0]).toMatchObject({ id: 'corrected', correctionReason: 'SPV reason numeric' });
+  });
+
+  it('paginates the audit tab with bigint numbers and keeps canonical string ids', async () => {
+    const row = (id: number, createdAt: string) => ({ id, actor_employee_id: 'cashier-a', entity_id: 'record-a', entity: 'attendance', action: 'attendance_manual', created_at: createdAt, reason: `Riwayat ${id}` });
+    const db = database({ audit_events: [row(9, '2026-11-03T20:00:00Z'), row(8, '2026-11-03T19:00:00Z'), row(7, '2026-11-03T18:00:00Z')] });
+    const first = await queryReportPage(db.client, input({ tab: 'audit', pageSize: 2 }), context());
+    expect(first.auditEntries.map(entry => entry.id)).toEqual(['9', '8']);
+    expect(first.nextCursor?.id).toBe('8');
+    const second = await queryReportPage(db.client, input({ tab: 'audit', pageSize: 2, cursor: first.nextCursor }), context());
+    expect(second.auditEntries.map(entry => entry.id)).toEqual(['7']);
+  });
+
   it('returns no matching employee rows instead of dropping a server filter', async () => {
     const db = database({ attendance: [attendance('unrelated')] });
     const result = await queryReportPage(db.client, input({ search: 'not found' }), context());

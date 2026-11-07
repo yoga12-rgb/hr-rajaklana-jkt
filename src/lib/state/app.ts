@@ -801,7 +801,9 @@ async function refreshNow(targets: ReadonlySet<RefreshTarget> = new Set(['all'])
     if (revision !== authRevision) return;
     const followupRows = followupResponse?.items ?? [];
     for (const d of directory ?? []) if (!employees.some(e => e.id === d.id)) employees.push(mapEmployee(d, []));
-    const auditEntries: AppState['auditEntries'] = auditRows.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at,
+    // audit_events.id is a bigint identity, so PostgREST sends a JSON number
+    // while AuditEntry.id is a string; keep the store shape stable for both.
+    const auditEntries: AppState['auditEntries'] = auditRows.map(r => ({ id: String(r.id), actorId: r.actor_employee_id, entityId: r.entity_id, action: r.action, at: r.created_at,
       detail: r.entity === 'leave' ? leaveAuditDetail(r.reason,r.before_data,r.after_data) : r.reason ?? '' })).sort((a,b) => b.at.localeCompare(a.at));
     for (const record of attendanceRecords) record.correctionReason = auditEntries.find(entry => entry.entityId === record.id && entry.detail)?.detail ?? '';
     const [, leaveRequests]: [unknown, LeaveRequest[]] = await Promise.all([

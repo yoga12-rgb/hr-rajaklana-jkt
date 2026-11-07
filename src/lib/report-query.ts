@@ -17,6 +17,14 @@ interface ReportContext { employees: Employee[]; assertCurrent?: () => void; now
 type Client = { from(table: string): any };
 const cutTime = (value: string | null | undefined) => value?.slice(0, 5) ?? '';
 const safeId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+// audit_events.id is a bigint identity column, so PostgREST serialises it as a
+// JSON number while every other report id is a uuid string. Normalise both
+// shapes to the canonical string used by cursors and dedupe keys; otherwise a
+// numeric bigint is rejected as if the history had changed mid-load.
+const reportId = (value: unknown): string | null => {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+  return safeId(value) ? value : null;
+};
 const timestamp = (value: unknown): value is string => typeof value === 'string'
   && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
   && Number.isFinite(Date.parse(value));
@@ -61,9 +69,10 @@ function applyLogical(query: any, clauses: string[]) {
   return query.or(clauses.length === 1 ? clauses[0].slice(3, -1) : `and(${clauses.join(',')})`);
 }
 function rowCursor(row: any, column: string) {
-  if (!timestamp(row?.[column]) || !safeId(row?.id)) throw new Error('Urutan data rekap tidak valid. Muat ulang rekap.');
+  const id = reportId(row?.id);
+  if (!timestamp(row?.[column]) || !id) throw new Error('Urutan data rekap tidak valid. Muat ulang rekap.');
   // Preserve PostgreSQL microseconds rather than round through Date.toISOString.
-  return { at: row[column] as string, id: row.id as string };
+  return { at: row[column] as string, id };
 }
 async function relatedRows(client: Client, table: string, foreignKey: string, ids: string[], fields: string, context: ReportContext) {
   if (!ids.length) return [];
@@ -75,8 +84,9 @@ async function relatedRows(client: Client, table: string, foreignKey: string, id
     if (cursor) query = applyLogical(query, [cursorClause('created_at', cursor)]);
     const page = await rows(query.range(0, 999), context);
     for (const row of page) {
-      if (!safeId(row.id) || seen.has(row.id)) throw new Error('Riwayat berubah saat dimuat. Muat ulang rekap.');
-      seen.add(row.id); output.push(row);
+      const id = reportId(row.id);
+      if (!id || seen.has(id)) throw new Error('Riwayat berubah saat dimuat. Muat ulang rekap.');
+      seen.add(id); output.push({ ...row, id });
     }
     if (page.length < 1000) return output;
     cursor = rowCursor(page[page.length - 1], 'created_at');
@@ -162,7 +172,7 @@ export async function queryReportPage(client: Client, input: ReportQueryInput, c
   } else if (input.tab === 'leave') {
     const adjustments = await relatedRows(client, 'leave_adjustments', 'leave_request_id', visible.map(r => r.id), '*', context);
     page.leaveRequests = visible.map(r => mapReportLeave(r, adjustments, context.employees));
-  } else page.auditEntries = visible.map(r => ({ id: r.id, actorId: r.actor_employee_id, entityId: r.entity_id,
+  } else page.auditEntries = visible.map(r => ({ id: rowCursor(r, column).id, actorId: r.actor_employee_id, entityId: r.entity_id,
     action: r.action, at: r.created_at, detail: r.entity === 'leave' ? leaveAuditDetail(r.reason, r.before_data, r.after_data) : r.reason ?? '' }));
   context.assertCurrent?.();
   return page;

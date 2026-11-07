@@ -78,7 +78,9 @@ async function setup(page: Page) {
       positions: [{ id: 'report-admin', name: 'SPV', department_id: 'report-dept', active: true, is_cashier: false }, { id: 'report-cashier', name: 'Kasir', department_id: 'report-dept', active: true, is_cashier: true }],
       outlets: ['a', 'b'].map(letter => ({ id: `outlet-${letter}`, code: `OUT-${letter}`, name: `Outlet ${letter.toUpperCase()}`, active: true, latitude: -6.2, longitude: 106.8, radius_m: 500, opens_at: '07:00:00', closes_at: '23:00:00', morning_starts_at: '07:00:00', afternoon_starts_at: '15:00:00', late_tolerance_minutes: 5 })),
       attendance: records,
-      audit_events: records.map((record, index) => ({ id: `audit-${scope}-${String(index).padStart(3, '0')}`, actor_employee_id: `admin-report-${scope}`, entity_id: record.id, entity: 'attendance', action: 'attendance_manual', reason: `CSV sentinel ${scope}-${String(index).padStart(3, '0')}`, created_at: record.created_at })),
+      // audit_events.id is a bigint identity column in PostgreSQL; PostgREST
+      // returns it as a JSON number, which the report must accept as-is.
+      audit_events: records.map((record, index) => ({ id: index + 1, actor_employee_id: `admin-report-${scope}`, entity_id: record.id, entity: 'attendance', action: 'attendance_manual', reason: `CSV sentinel ${scope}-${String(index).padStart(3, '0')}`, created_at: record.created_at })),
       leave_requests: [], leave_adjustments: [], notifications: [], cashier_assignments: [], attendance_correction_requests: [], leave_ledger: [], staffing_requirements: []
     };
   };
