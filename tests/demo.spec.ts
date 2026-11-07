@@ -336,8 +336,12 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
   });
 
   test('weekly draft conflict survives refresh and editing another cell', async ({ page, browser }) => {
+    // Use a week that stays in the future: the planner renders past days as
+    // read-only text, so a hardcoded week silently loses its second editable
+    // cell once that week is over (this broke on 2026-11-08).
+    const week = nextWeekStart();
     await login(page);
-    await page.goto('/assignments?week=2026-11-02');
+    await page.goto(`/assignments?week=${week}`);
     await page.getByLabel(/Shift Sari Lestari,/).nth(0).selectOption('afternoon');
     await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Draft sesi pertama harus ditinjau');
     await expect(page.locator('.save-info')).toContainText('1 perubahan draft');
@@ -350,7 +354,7 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
       await secondAdmin.goto(new URL('/login', page.url()).href);
       await secondAdmin.getByRole('button', { name: 'Admin HR', exact: true }).click();
       await expect(secondAdmin).toHaveURL(/\/dashboard$/);
-      await secondAdmin.goto(new URL('/assignments?week=2026-11-02', page.url()).href);
+      await secondAdmin.goto(new URL(`/assignments?week=${week}`, page.url()).href);
       await secondAdmin.getByLabel(/Shift Sari Lestari,/).nth(0).selectOption('morning');
       await secondAdmin.getByLabel('Alasan perubahan batch', { exact: true }).fill('Perubahan sesi kedua tersimpan di server');
       await secondAdmin.getByRole('button', { name: 'Simpan jadwal mingguan', exact: true }).click();
