@@ -44,7 +44,7 @@ async function signIn(page: Page, employeeNumber: string) {
   await page.getByRole('button', { name: 'Masuk', exact: false }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 }
-async function openExchangeMock(page: Page) {
+async function openExchangeMock(page: Page, options: { peerOptionsUnavailable?: boolean } = {}) {
   const now = new Date().toISOString();
   const workDate = dayAfter(2);
   const authUser = {
@@ -112,6 +112,10 @@ async function openExchangeMock(page: Page) {
     if (path === '/rest/v1/rpc/shift_exchange_peer_options') {
       const payload = route.request().postDataJSON() as PeerOptionPayload;
       peerOptionRequests.push(structuredClone(payload));
+      if (options.peerOptionsUnavailable) {
+        await respond(route, { code: 'PGRST202', message: 'Could not find the function public.shift_exchange_peer_options with parameter p_requester_assignment_id in the schema cache.' }, 404);
+        return;
+      }
       await respond(route, [
         { employee_id: peerId, employee_number: 'RK000010', full_name: 'Rekan Kasir', assignment_id: peerAssignmentId,
           shift: 'afternoon', outlet_id: outletId, work_date: workDate, has_active_assignment: true, blocked_reason: null }
@@ -173,6 +177,20 @@ test('a cashier can pick a swap peer even though peer profiles and rosters stay 
   expect(backendState.submitRequests[0].p_idempotency_key).toMatch(/^[0-9a-f-]{36}$/);
   await expect(page.getByRole('heading', { name: 'Tukar shift dua arah', exact: true })).toBeVisible();
   await expect(page.getByText('Menunggu rekan', { exact: true }).first()).toBeVisible();
+});
+
+test('a server without the peer-options migration routes the cashier to Admin HR instead of leaking PostgREST text', async ({ page }, testInfo) => {
+  testInfo.annotations.push({ type: 'browser-acceptance', description: 'live-mock|EXCHANGE-PEERS-MIGRATION|a missing shift_exchange_peer_options RPC shows an actionable Indonesian hint and keeps submits closed' });
+  const backendState = await openExchangeMock(page, { peerOptionsUnavailable: true });
+  await signIn(page, 'RK000009');
+  await page.goto('/operations?exchange');
+  await expect(page.getByRole('heading', { name: 'Tukar atau pengganti', exact: true })).toBeVisible();
+
+  await page.locator('.exchange-form form select').nth(1).selectOption(selfAssignmentId);
+  await expect(page.getByText('Daftar rekan belum tersedia di server. Hubungi Admin HR untuk memperbarui basis data.', { exact: true })).toBeVisible();
+  await expect(page.locator('.exchange-form form select').nth(2).locator('option')).toHaveCount(1);
+  await expect.poll(() => backendState.peerOptionRequests.length).toBe(1);
+  expect(backendState.submitRequests).toHaveLength(0);
 });
 
 

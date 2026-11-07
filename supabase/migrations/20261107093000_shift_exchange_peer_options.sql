@@ -8,7 +8,8 @@
 -- aturan yang sama dengan shift_exchange_submit, sehingga pratinjau jadwal
 -- rekan tidak lagi bergantung pada RLS cashier_assignments milik sendiri.
 
-drop function public.employee_directory();
+-- Aman dijalankan ulang dari SQL Editor: kedua fungsi dibuat ulang secara eksplisit.
+drop function if exists public.employee_directory();
 create function public.employee_directory() returns table(
   id uuid,employee_number text,full_name text,department_id uuid,position_id uuid,outlet_id uuid,
   approver_employee_id uuid,approval_mode text,status text,account_status text,can_clock boolean,can_middle_shift boolean)
@@ -26,6 +27,7 @@ grant execute on function public.employee_directory() to authenticated;
 -- Kandidat dikembalikan apa adanya beserta alasan blokir supaya UI dapat
 -- menampilkan pilihan yang pasti ditolak server (bukan menebak dari jadwal
 -- milik sendiri).  Hanya pengusul yang boleh membaca kandidat untuk jadwalnya.
+drop function if exists public.shift_exchange_peer_options(uuid);
 create function public.shift_exchange_peer_options(p_requester_assignment_id uuid)
 returns table(employee_id uuid,employee_number text,full_name text,assignment_id uuid,
   shift text,outlet_id uuid,work_date date,has_active_assignment boolean,blocked_reason text)

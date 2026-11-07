@@ -618,7 +618,13 @@
       exchangePeers = await operational.loadShiftExchangePeers(assignment.id);
     } catch (error) {
       exchangePeers = [];
-      exchangePeersError = error instanceof Error ? error.message : 'Daftar rekan belum dapat dimuat. Coba lagi.';
+      const detail = error instanceof Error ? error.message : '';
+      // A server that has not received the migration answers with PGRST202.
+      // Keep the raw PostgREST sentence out of the cashier UI and route the
+      // deployment gap to Admin HR instead.
+      exchangePeersError = /Could not find the function|PGRST202/i.test(detail)
+        ? 'Daftar rekan belum tersedia di server. Hubungi Admin HR untuk memperbarui basis data.'
+        : detail || 'Daftar rekan belum dapat dimuat. Coba lagi.';
     } finally {
       exchangePeersLoading = false;
     }
