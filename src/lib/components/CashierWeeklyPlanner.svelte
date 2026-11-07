@@ -109,7 +109,11 @@
     }
   });
   $: days = workWeekDates(weekStart);
-  $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
+  const byName = (a: string, b: string) => a.localeCompare(b, 'id', { sensitivity: 'base' });
+  // Karyawan tanpa outlet penempatan yang valid diurutkan paling akhir, bukan paling atas.
+  const outletSortName = (id: string) => $app.outlets.find(outlet => outlet.id === id)?.name ?? '\uffff';
+  $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee))
+    .sort((a, b) => byName(outletSortName(a.outletId), outletSortName(b.outletId)) || byName(a.fullName, b.fullName) || a.employeeNumber.localeCompare(b.employeeNumber));
   $: today = todayJakarta();
   const key = (employeeId: string, day: string) => `${employeeId}:${day}`;
   const existingFor = (employeeId: string, day: string) => ($app.cashierAssignments ?? []).find(row => row.employeeId === employeeId && row.workDate === day);
