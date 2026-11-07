@@ -9,6 +9,7 @@
     "#lib/domain": "./src/lib/domain.ts",
     "#lib/cashier-spv": "./src/lib/cashier-spv.ts",
     "#lib/cashier-spv-drafts": "./src/lib/cashier-spv-drafts.ts",
+    "#lib/leave-day-status": "./src/lib/leave-day-status.ts",
     "#lib/spv-followup-drafts": "./src/lib/spv-followup-drafts.ts",
     "#lib/spv-followup-recovery": "./src/lib/spv-followup-recovery.ts",
     "#lib/supervisor-planning-recovery": "./src/lib/supervisor-planning-recovery.ts",

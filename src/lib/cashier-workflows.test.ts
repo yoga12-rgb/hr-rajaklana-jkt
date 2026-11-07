@@ -51,7 +51,19 @@ describe('Penugasan harian kasir',()=>{
     app.update(s=>({...s,outlets:s.outlets.map(o=>o.id==='outlet-a'?{...o,active:false}:o)}));
     await expect(actions.saveCashierAssignment(assignment())).rejects.toThrow('outlet aktif');
   });
+  it('menolak shift kerja pada cuti sehari penuh yang disetujui, tetapi tetap mengizinkan libur dan pembatalan',async()=>{
+    app.update(s=>({...s,leaveRequests:[...s.leaveRequests,{id:'leave-full',employeeId:'employee-4',type:'annual',startDate:'2026-10-08',endDate:'2026-10-08',startTime:'',endTime:'',reason:'Cuti tahunan disetujui',status:'approved',deductionDays:1,approverId:'employee-1',note:'Disetujui',externalApproverName:'',createdAt:'2026-10-01T00:00:00.000Z',adjustment:null,extent:'full_day'}]}));
+    await expect(actions.saveCashierAssignment(assignment({workDate:'2026-10-08'}))).rejects.toThrow('berbenturan dengan cuti penuh');
+    expect(get(app).cashierAssignments).toHaveLength(0);
+    await actions.saveCashierAssignment(assignment({workDate:'2026-10-08',shift:'off',reason:'Libur pada hari cuti disetujui'}));
+    expect(get(app).cashierAssignments).toHaveLength(1);
+    const id=get(app).cashierAssignments![0].id;
+    await actions.saveCashierAssignment(assignment({id,workDate:'2026-10-08',shift:'off',cancel:true,reason:'Tanggal cuti tanpa penugasan'}));
+    expect(get(app).cashierAssignments![0]).toMatchObject({status:'cancelled',shift:'off'});
+  });
+
   it('dapat membatalkan penugasan saat outlet dinonaktifkan dan izin Middle dicabut',async()=>{
+
     const id=await actions.saveCashierAssignment(assignment({outletId:'outlet-b',shift:'middle'}));
     app.update(s=>({...s,outlets:s.outlets.map(o=>o.id==='outlet-b'?{...o,active:false}:o),employees:s.employees.map(e=>e.id==='employee-4'?{...e,canMiddleShift:false}:e)}));
     await actions.saveCashierAssignment(assignment({id,outletId:'outlet-b',shift:'middle',cancel:true,reason:'Dibatalkan setelah outlet ditutup'}));

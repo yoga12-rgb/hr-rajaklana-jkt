@@ -1,5 +1,6 @@
 import type { AppState, AttendanceCorrectionInput, AttendanceCorrectionRequest, AttendanceRecord, CashierAssignment, CashierAssignmentInput, Employee, Outlet, SpvFollowup } from './types';
 import { attendanceTiming, jakartaDate } from './domain';
+import { approvedFullDayLeave } from './leave-day-status';
 
 const uid = () => crypto.randomUUID();
 const timestamp = () => new Date().toISOString();
@@ -62,6 +63,10 @@ export function assertCashierAssignment(state: AppState, input: CashierAssignmen
   if (!['morning','afternoon','middle','off'].includes(input.shift)) throw new Error('Shift tidak valid.');
   if (!input.cancel && input.shift === 'middle' && !employee.canMiddleShift) throw new Error('Kasir ini belum diizinkan menggunakan Middle.');
   if (!input.cancel && !state.outlets.some(o => o.id === input.outletId && o.active)) throw new Error('Pilih outlet aktif.');
+  // Mirrors the weekly roster rule so the daily form cannot save a work shift
+  // that the roster batch already rejects. Cancelling or saving "Libur" stays allowed.
+  if (!input.cancel && input.shift !== 'off' && approvedFullDayLeave(state, input.employeeId, input.workDate))
+    throw new Error('Penugasan kerja berbenturan dengan cuti penuh yang sudah disetujui.');
   const before = input.id ? (state.cashierAssignments ?? []).find(a => a.id === input.id) : (state.cashierAssignments ?? []).find(a => a.employeeId === input.employeeId && a.workDate === input.workDate);
   if (input.id && !before) throw new Error('Penugasan tidak ditemukan.');
   if (before && (before.employeeId !== input.employeeId || before.workDate !== input.workDate)) throw new Error('Kasir dan tanggal penugasan tidak dapat diubah.');

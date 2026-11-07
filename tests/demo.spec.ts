@@ -609,6 +609,42 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByRole('button').filter({ hasText: reason })).toContainText('Dibatalkan');
   });
 
+  test('approved full-day leave marks the roster cell and locks the work shift', async ({ page }) => {
+    const workDate = dateAfter(4);
+    const label = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Jakarta' })
+      .format(new Date(`${workDate}T12:00:00+07:00`));
+    const reason = 'Cuti sehari penuh untuk uji penanda jadwal';
+    await login(page);
+    await page.goto(`/assignments?date=${workDate}`);
+    await page.locator('.assignment-form select').first().selectOption('employee-4');
+    await page.locator('.assignment-form select').nth(2).selectOption('morning');
+    await page.getByLabel('Alasan / sumber penugasan', { exact: true }).fill('Penugasan fixture sebelum cuti disetujui');
+    await page.getByRole('button', { name: 'Simpan penugasan', exact: true }).click();
+    await expect(page.getByText('Penugasan harian tersimpan. Kasir mengikuti outlet dan shift ini saat clock in.', { exact: true })).toBeVisible();
+
+    await switchUser(page, 'employee-4');
+    await submitLeave(page, reason, workDate, workDate);
+    await switchUser(page, 'employee-1');
+    await openRequest(page, reason, true);
+    await page.getByRole('dialog').getByLabel('Jumlah potongan cuti (hari)', { exact: true }).fill('1');
+    await page.getByRole('dialog').getByRole('button', { name: 'Simpan keputusan', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeHidden();
+
+    await page.goto(`/assignments?week=${workDate}`);
+    await expect(page.getByRole('heading', { name: 'Jadwal mingguan', exact: true })).toBeVisible();
+    await expect(page.locator(`#leave-employee-4-${workDate}`)).toHaveText('Cuti disetujui · jadwal perlu ditinjau');
+    const shiftSelect = page.getByRole('combobox', { name: `Shift Nadia Putri, ${label}` });
+    await expect(shiftSelect).toHaveValue('morning');
+    await expect(shiftSelect.locator('option', { hasText: 'Pagi · cuti disetujui' })).toHaveCount(1);
+    await expect(shiftSelect.locator('option').filter({ hasText: /^Pagi$/ })).toHaveCount(0);
+    await expect(shiftSelect.locator('option', { hasText: 'Libur' })).toHaveCount(1);
+
+    await page.goto(`/assignments?date=${workDate}`);
+    const row = page.getByRole('row', { name: /Nadia Putri/ });
+    await expect(row).toContainText('Cuti disetujui · jadwal perlu ditinjau');
+    await expect(row.getByRole('button', { name: 'Ubah', exact: true })).toBeDisabled();
+  });
+
   test('Admin HR cannot approve own request and another admin records external decision', async ({ page }) => {
     await login(page);
     const reason = 'Pengajuan supervisor untuk persetujuan eksternal';
