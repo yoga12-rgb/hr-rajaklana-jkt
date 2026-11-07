@@ -24,22 +24,26 @@
       if (!isAdmin($app.user)) { view = 'weekly'; date = todayJakarta(); }
     }
   });
+  const byName = (a: string, b: string) => a.localeCompare(b, 'id', { sensitivity: 'base' });
+  // Karyawan tanpa outlet penempatan yang valid diurutkan paling akhir, bukan paling atas.
+  const outletSortName = (id: string) => $app.outlets.find(outlet => outlet.id === id)?.name ?? '\uffff';
+  const outletName = (id: string) => $app.outlets.find(outlet => outlet.id === id)?.name ?? '—';
   $: admin = isAdmin($app.user);
-  $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee));
+  $: cashiers = $app.employees.filter(employee => employee.status === 'active' && isCashier(employee))
+    .sort((a, b) => byName(outletSortName(a.outletId), outletSortName(b.outletId)) || byName(a.fullName, b.fullName) || a.employeeNumber.localeCompare(b.employeeNumber));
   $: editableCashiers = cashiers.filter(employee => employee.id !== $app.user?.id);
   $: historical = date < todayJakarta();
   $: employee = editableCashiers.find(employee => employee.id === employeeId);
   $: if (shift === 'middle' && !employee?.canMiddleShift) shift = 'morning';
   $: assignments = ($app.cashierAssignments ?? []).filter(assignment => assignment.workDate === date && (admin || assignment.employeeId === $app.user?.id));
   $: active = assignments.filter(assignment => assignment.status === 'active');
-  $: coverage = $app.outlets.filter(outlet => outlet.active).map(outlet => ({ outlet,
+  $: coverage = $app.outlets.filter(outlet => outlet.active).slice().sort((a, b) => byName(a.name, b.name)).map(outlet => ({ outlet,
     morning: active.filter(a => a.outletId === outlet.id && a.shift === 'morning').length,
     afternoon: active.filter(a => a.outletId === outlet.id && a.shift === 'afternoon').length,
     middle: active.filter(a => a.outletId === outlet.id && a.shift === 'middle').length }));
   $: crew = admin ? cashiers : cashiers.filter(employee => employee.id === $app.user?.id);
   $: crewRows = crew.map(employee => ({ employee, assignment: active.find(assignment => assignment.employeeId === employee.id), attendance: $app.attendanceRecords.find(record => record.employeeId === employee.id && new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(record.clockIn)) === date) }));
   const assignmentFor = (id: string) => active.find(assignment => assignment.employeeId === id);
-  const outletName = (id: string) => $app.outlets.find(outlet => outlet.id === id)?.name ?? '—';
   function clearWeeklyLink() { requestedWeekStart = null; }
   function changeDate() { editId = undefined; reason = ''; clearWeeklyLink(); if (!admin) chooseView('daily'); }
   function chooseView(next: 'daily' | 'weekly') {
