@@ -189,6 +189,13 @@ export interface ShiftExchangeDecisionInput {
 export interface ShiftExchangeCancelInput {
   id: string; expectedRevision: number; idempotencyKey: string; note: string;
 }
+// A cashier cannot read peers' roster rows or private profiles, so candidates
+// come from the shift_exchange_peer_options RPC (demo mode computes the same
+// rules locally). `blockedReason` explains why the server would reject a pick.
+export interface ShiftExchangePeerOption {
+  employeeId: string; employeeNumber: string; fullName: string; assignmentId: string | null;
+  shift: Shift | 'off' | null; outletId: string | null; workDate: string; hasActiveAssignment: boolean; blockedReason: string;
+}
 export interface StaffingIntervalRequirement {
   id: string; outletId: string; weekday: number; startsAt: string; endsAt: string; minimum: number;
   effectiveFrom: string; effectiveUntil: string | null; revision: number; createdBy: string; createdAt: string; updatedAt: string;

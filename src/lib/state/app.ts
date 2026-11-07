@@ -7,7 +7,7 @@ import type {
   SupervisorCapabilitySaveInput, SupervisorCapabilitySaveResult, SupervisorIssueCategorySaveInput, SupervisorIssueRoute, SupervisorIssueRouteSaveInput,
   SupervisorOperationConfiguration, OutletIssue, OutletIssueSubmitInput, OutletIssueUpdate, OutletIssueView, SupervisorPage, ShiftHandover, ShiftHandoverSaveInput,
   ShiftHandoverResponseInput, ShiftExchangeRequest, ShiftExchangeSubmitInput, ShiftExchangeResponseInput,
-  ShiftExchangeDecisionInput, ShiftExchangeCancelInput, ShiftExchangeView, StaffingIntervalRequirement, StaffingIntervalRequirementInput,
+  ShiftExchangeDecisionInput, ShiftExchangeCancelInput, ShiftExchangeView, ShiftExchangePeerOption, StaffingIntervalRequirement, StaffingIntervalRequirementInput,
   CashierAssignmentPlanInput, SupervisorCoverage, SupervisorReport
 } from '../types';
 import { attendanceTiming, dateRange, deductionByYear, haversineMeters, jakartaDate, leaveEntitlement } from '../domain';
@@ -1556,6 +1556,37 @@ export const actions = {
       p_peer_employee_id: input.peerEmployeeId, p_reason: input.reason, p_idempotency_key: input.idempotencyKey });
     await refresh('supervisor');
     return mapShiftExchange(row);
+  },
+  // Peers' roster rows and profiles stay private, so the candidate list and the
+  // peer assignment snapshot always come from the server.  Demo mode mirrors the
+  // same rules from its local state so the picker stays testable offline.
+  async loadShiftExchangePeers(requesterAssignmentId: string): Promise<ShiftExchangePeerOption[]> {
+    const actor = user();
+    if (!requesterAssignmentId) return [];
+    if (!configured) {
+      const state = get(app);
+      const requester = (state.cashierAssignments ?? []).find(row => row.id === requesterAssignmentId);
+      if (!requester || requester.employeeId !== actor.id || requester.status !== 'active') return [];
+      return state.employees
+        .filter(employee => employee.id !== actor.id && employee.status === 'active' && employee.accountStatus === 'active')
+        .map(employee => {
+          const assignment = (state.cashierAssignments ?? []).find(row => row.employeeId === employee.id && row.workDate === requester.workDate);
+          const cashier = state.positions.some(position => position.id === employee.positionId && position.isCashier);
+          const hasActiveAssignment = !!assignment && assignment.status === 'active' && assignment.shift !== 'off';
+          const blockedReason = !cashier ? 'Rekan harus kasir aktif'
+            : assignment && assignment.status === 'active' && assignment.shift === 'off' ? 'Rekan sedang Libur pada tanggal ini' : '';
+          return { employeeId: employee.id, employeeNumber: employee.employeeNumber, fullName: employee.fullName,
+            assignmentId: assignment?.id ?? null, shift: assignment?.shift ?? null, outletId: assignment?.outletId ?? null,
+            workDate: requester.workDate, hasActiveAssignment, blockedReason };
+        })
+        .sort((left, right) => left.fullName.localeCompare(right.fullName, 'id'));
+    }
+    const rows = await rpc('shift_exchange_peer_options', { p_requester_assignment_id: requesterAssignmentId });
+    return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      employeeId: row.employee_id, employeeNumber: row.employee_number ?? '', fullName: row.full_name ?? '',
+      assignmentId: nullable(row.assignment_id), shift: row.shift ?? null, outletId: nullable(row.outlet_id),
+      workDate: row.work_date, hasActiveAssignment: row.has_active_assignment === true, blockedReason: row.blocked_reason ?? ''
+    }));
   },
   async respondShiftExchange(input: ShiftExchangeResponseInput): Promise<ShiftExchangeRequest> {
     user(); requireSupervisorBackend();

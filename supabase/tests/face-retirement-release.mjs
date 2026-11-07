@@ -24,7 +24,7 @@ await installAuthSessionFixture(db);
 const files=(await readdir(new URL('../migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')).sort();
 const retirement=files.findIndex(n=>n.endsWith('_remove_face_verification.sql'));
 assert.equal(retirement,26,'explicit immutable26 -> face-retirement release boundary');
-assert.equal(files.length,27,'release must contain exactly26 historical migrations plus retirement');
+assert.equal(files.length,28,'release must contain exactly26 historical migrations plus retirement and the shift-exchange peer-options fix');
 const apply=async name=>{await db.exec((await readFile(new URL('../migrations/'+name,import.meta.url),'utf8')).replace('create extension if not exists pgcrypto with schema extensions;',''));
 await db.query('insert into supabase_migrations.schema_migrations(version,name) values($1,$2)',[name.slice(0,name.indexOf('_')),name.slice(name.indexOf('_')+1,-4)]);};
 for(const name of files.slice(0,retirement)) await apply(name);

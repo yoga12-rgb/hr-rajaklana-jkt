@@ -309,7 +309,7 @@ assert.equal(rows[0].id,cashierId);
 assert.equal((await db.query('select * from public.employee_directory()')).rows.length,3);
 const directoryKeys=Object.keys((await db.query('select * from public.employee_directory()')).rows[0]).sort();
 assert.deepEqual(directoryKeys,['id','employee_number','full_name','department_id','position_id','outlet_id',
-  'approver_employee_id','approval_mode','status','can_clock','can_middle_shift'].sort(),
+  'approver_employee_id','approval_mode','status','account_status','can_clock','can_middle_shift'].sort(),
   'directory exposes only safe organization fields');
 await expectError('select public.leave_balance($1,$2)',[adminId,clock.year],'Tidak berhak');
 const bal=await scalar('select public.leave_balance() as balance');
@@ -1155,6 +1155,7 @@ for (const signature of [
   'public.shift_exchange_submit(text,uuid,uuid,text,uuid)',
   'public.shift_exchange_respond_v2(uuid,bigint,uuid,boolean,text)',
   'public.shift_exchange_decide_v2(uuid,bigint,uuid,boolean,text)',
+  'public.shift_exchange_peer_options(uuid)',
   'public.shift_exchange_page(text,integer,jsonb)'
 ]) {
   assert.equal((await scalar('select has_function_privilege($1,$2,$3) as allowed',['authenticated',signature,'EXECUTE'])).allowed,true,`${signature} is callable only through secured RPC`);
@@ -1378,6 +1379,30 @@ const cashierExchange=(await scalar("select to_jsonb(public.cashier_assignment_s
   [cashierId,exchangeDay,outlet.id,null])).row;
 const bakerExchange=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'afternoon','Jadwal rekan untuk tukar shift',$4,false)) as row",
   [bakerId,exchangeDay,outlet.id,null])).row;
+// A cashier cannot read peers' roster rows or private profiles, so the picker
+// depends on this RPC.  It must mirror the submit rules and carry the peer
+// assignment snapshot; an explicit Libur peer stays blocked for both modes.
+const peerOptionDay=(await scalar("select ((now() at time zone 'Asia/Jakarta')::date+11)::text as day")).day;
+const cashierPeerOption=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'morning','Jadwal pengusul untuk pratinjau kandidat',$4,false)) as row",
+  [cashierId,peerOptionDay,outlet.id,null])).row;
+const bakerPeerOption=(await scalar("select to_jsonb(public.cashier_assignment_save($1,$2,$3,'off','Libur eksplisit untuk uji pratinjau kandidat',$4,false)) as row",
+  [bakerId,peerOptionDay,outlet.id,null])).row;
+await asUser(cashierAuth);
+const peerOptions=(await db.query('select * from public.shift_exchange_peer_options($1) order by full_name',[cashierPeerOption.id])).rows;
+assert.deepEqual(peerOptions.map(row=>row.employee_id),[adminId,bakerId],
+  'candidate preview lists active peers only and never the requester');
+const bakerOption=peerOptions.find(row=>row.employee_id===bakerId);
+assert.deepEqual({assignment_id:bakerOption.assignment_id,shift:bakerOption.shift,has_active_assignment:bakerOption.has_active_assignment,
+  blocked_reason:bakerOption.blocked_reason},
+  {assignment_id:bakerPeerOption.id,shift:'off',has_active_assignment:false,blocked_reason:'Rekan sedang Libur pada tanggal ini'},
+  'explicit Libur peers stay blocked for swap and replacement');
+const adminOption=peerOptions.find(row=>row.employee_id===adminId);
+assert.deepEqual({assignment_id:adminOption.assignment_id,
+  work_date:adminOption.work_date instanceof Date ? adminOption.work_date.toISOString().slice(0,10) : String(adminOption.work_date),
+  has_active_assignment:adminOption.has_active_assignment, blocked_reason:adminOption.blocked_reason},
+  {assignment_id:null,work_date:peerOptionDay,has_active_assignment:false,blocked_reason:null},
+  'a peer without a roster row is exposed as unfilled rather than blocked');
+await workflowError('select * from public.shift_exchange_peer_options($1)',[bakerPeerOption.id],'Hanya pengusul');
 await asUser(cashierAuth);
 const exchange=(await scalar("select public.shift_exchange_submit('swap',$1,$2,'Mohon tukar jadwal karena keperluan keluarga',$3) as row",
   [cashierExchange.id,bakerId,'73000000-0000-4000-8000-000000000001'])).row;
