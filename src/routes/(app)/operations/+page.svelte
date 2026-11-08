@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { replaceState } from '$app/navigation';
-  import { app, actions, displayName, isAdmin, isCashier, shiftLabel } from '#lib/state/app';
-  import type { CashierAssignment, Shift } from '#lib/types';
+  import { app, actions, displayName, isAdmin, shiftLabel } from '#lib/state/app';
+  import type { CashierAssignment, Shift, ShiftExchangePeerOption } from '#lib/types';
   import PageHeading from '#lib/components/PageHeading.svelte';
   import Feedback from '#lib/components/Feedback.svelte';
   import Icon from '#lib/components/Icon.svelte';
@@ -75,6 +75,7 @@
     saveShiftHandover(input: HandoverSaveInput): Promise<ShiftHandover>;
     respondShiftHandover(input: HandoverResponseInput): Promise<ShiftHandover>;
     loadShiftExchanges(input: { view: 'active' | 'history' | 'pending_spv'; pageSize?: number; cursor?: Cursor }): Promise<Page<ShiftExchange>>;
+    loadShiftExchangePeers(requesterAssignmentId: string): Promise<ShiftExchangePeerOption[]>;
     submitShiftExchange(input: ExchangeSubmitInput): Promise<ShiftExchange>;
     respondShiftExchange(input: ExchangeResponseInput): Promise<ShiftExchange>;
     decideShiftExchange(input: ExchangeDecisionInput): Promise<ShiftExchange>;
@@ -105,6 +106,7 @@
   let exchangeRows: ShiftExchange[] = [], exchangeTotal = 0, exchangeHasMore = false, exchangeNextCursor: Cursor = null, selectedExchangeId = '', exchangeResponseNote = '', exchangeDecisionNote = '', exchangeCancelNote = '';
   let exchangeSubmitAttempt: PendingAttempt | null = null;
   let exchangeForm = { requestType: 'swap' as ExchangeType, requesterAssignmentId: '', peerEmployeeId: '', reason: '' };
+  let exchangePeers: ShiftExchangePeerOption[] = [], exchangePeersLoading = false, exchangePeersError = '';
   let configuration: OperationsConfiguration | null = null;
   let categoryForm: CategoryForm = { id: '', expectedRevision: null, code: '', name: '', active: true };
   let routeForm: RouteForm = { id: '', expectedRevision: null, categoryId: '', outletId: '', recipientEmployeeId: '', active: true };
@@ -120,7 +122,6 @@
   $: admin = isAdmin($app.user);
   $: activeOutlets = $app.outlets.filter((outlet) => outlet.active);
   $: activeEmployees = $app.employees.filter((employee) => employee.status === 'active' && employee.accountStatus === 'active');
-  $: cashiers = activeEmployees.filter((employee) => isCashier(employee));
   $: allAssignments = ($app.cashierAssignments ?? []).filter((assignment) => assignment.status === 'active');
   $: selectedIssue = issueRows.find((row) => row.id === selectedIssueId) ?? null;
   $: selectedHandover = handoverRows.find((row) => row.id === selectedHandoverId) ?? null;
@@ -128,7 +129,10 @@
   $: selectedExchangeRequester = selectedExchange ? assignmentById(selectedExchange.requesterAssignmentId) : null;
   $: selectedExchangePeer = selectedExchange?.peerAssignmentId ? assignmentById(selectedExchange.peerAssignmentId) : null;
   $: requesterAssignment = assignmentById(exchangeForm.requesterAssignmentId);
-  $: peerAssignment = requesterAssignment ? allAssignments.find((row) => row.employeeId === exchangeForm.peerEmployeeId && row.workDate === requesterAssignment.workDate) ?? null : null;
+  $: exchangePeerOption = exchangePeers.find((option) => option.employeeId === exchangeForm.peerEmployeeId) ?? null;
+  $: exchangePeerChoices = exchangePeers.filter((option) => !option.blockedReason
+    && (exchangeForm.requestType === 'swap' ? option.hasActiveAssignment : !option.hasActiveAssignment));
+  $: exchangePeerBlocked = exchangePeers.find((option) => !!option.blockedReason) ?? null;
   $: handoverSenderAssignments = allAssignments.filter((row) => row.employeeId === $app.user?.id && row.shift !== 'off');
   $: handoverRecipientAssignments = (() => {
     const draft = handoverDraft;
@@ -165,6 +169,10 @@
   function employeeName(id: string | null | undefined) { return id ? displayName(id) : 'Belum ditetapkan'; }
   function assignmentById(id: string | null | undefined) { return allAssignments.find((row) => row.id === id) ?? null; }
   function assignmentText(row: CashierAssignment | null | undefined) { return row ? `${outletName(row.outletId)} · ${row.shift === 'off' ? 'Libur' : shiftLabel(row.shift as Shift)} · ${dateLabel(row.workDate)}` : 'Belum ada penugasan'; }
+  function peerOptionText(option: ShiftExchangePeerOption | null) {
+    if (!option?.assignmentId || !option.shift || !option.outletId) return 'Belum ada penugasan';
+    return `${outletName(option.outletId)} · ${option.shift === 'off' ? 'Libur' : shiftLabel(option.shift as Shift)} · ${dateLabel(option.workDate)}`;
+  }
   function isoToLocal(value: string | null | undefined) {
     if (!value) return '';
     return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'Asia/Jakarta' }).format(new Date(value)).replace(', ', 'T');
@@ -594,19 +602,45 @@
     catch (error) { setFeedback(error instanceof Error ? error.message : 'Respons belum memiliki hasil pasti. Coba lagi dengan key yang sama.', true); }
     finally { busy = ''; busyControl = ''; }
   }
-  function exchangeRequesterChanged() {
-    const assignment = requesterAssignment;
-    if (!assignment) return;
-    const peer = allAssignments.find((row) => row.employeeId === exchangeForm.peerEmployeeId && row.workDate === assignment.workDate && row.shift !== 'off');
-    if (exchangeForm.requestType === 'swap' && !peer) exchangeForm = { ...exchangeForm, peerEmployeeId: '' };
+  async function exchangeRequesterChanged() {
+    // Svelte runs reactive declarations after the DOM event, so read the
+    // selected roster row directly instead of the cached reactive value.
+    const assignment = assignmentById(exchangeForm.requesterAssignmentId);
+    const chosenPeer = exchangeForm.peerEmployeeId;
+    exchangePeersError = '';
+    if (!assignment) {
+      exchangePeers = [];
+      if (chosenPeer) exchangeForm = { ...exchangeForm, peerEmployeeId: '' };
+      return;
+    }
+    exchangePeersLoading = true;
+    try {
+      exchangePeers = await operational.loadShiftExchangePeers(assignment.id);
+    } catch (error) {
+      exchangePeers = [];
+      const detail = error instanceof Error ? error.message : '';
+      // A server that has not received the migration answers with PGRST202.
+      // Keep the raw PostgREST sentence out of the cashier UI and route the
+      // deployment gap to Admin HR instead.
+      exchangePeersError = /Could not find the function|PGRST202/i.test(detail)
+        ? 'Daftar rekan belum tersedia di server. Hubungi Admin HR untuk memperbarui basis data.'
+        : detail || 'Daftar rekan belum dapat dimuat. Coba lagi.';
+    } finally {
+      exchangePeersLoading = false;
+    }
+    const kept = chosenPeer && exchangePeers.some((option) => option.employeeId === chosenPeer
+      && (exchangeForm.requestType === 'swap' ? option.hasActiveAssignment : !option.hasActiveAssignment));
+    if (!kept) exchangeForm = { ...exchangeForm, peerEmployeeId: '' };
   }
   async function submitExchange(replay = false) {
     if (busy) return;
     let attempt = exchangeSubmitAttempt;
     if (!replay || !attempt) {
       if (!exchangeForm.requesterAssignmentId || !exchangeForm.peerEmployeeId || exchangeForm.reason.trim().length < 5) { setFeedback('Pilih jadwal sendiri, rekan, dan alasan minimal 5 karakter.', true); return; }
-      if (exchangeForm.requestType === 'swap' && !peerAssignment) { setFeedback('Tukar dua arah membutuhkan rekan yang memiliki penugasan aktif pada tanggal yang sama.', true); return; }
-      if (exchangeForm.requestType === 'replacement' && peerAssignment) { setFeedback('Pengganti satu arah hanya dapat dipilih bila calon belum memiliki penugasan aktif pada tanggal itu.', true); return; }
+      if (!exchangePeerOption) { setFeedback('Daftar rekan belum dimuat untuk jadwal ini. Pilih ulang jadwal Anda.', true); return; }
+      if (exchangePeerOption.blockedReason) { setFeedback(exchangePeerOption.blockedReason + '. Pilih kandidat lain.', true); return; }
+      if (exchangeForm.requestType === 'swap' && !exchangePeerOption.hasActiveAssignment) { setFeedback('Tukar dua arah membutuhkan rekan yang memiliki penugasan aktif pada tanggal yang sama.', true); return; }
+      if (exchangeForm.requestType === 'replacement' && exchangePeerOption.hasActiveAssignment) { setFeedback('Pengganti satu arah hanya dapat dipilih bila calon belum memiliki penugasan aktif pada tanggal itu.', true); return; }
       const payload: ExchangeSubmitInput = { ...exchangeForm, reason: exchangeForm.reason.trim(), idempotencyKey: randomKey() };
       attempt = { idempotencyKey: payload.idempotencyKey, payload, createdAt: new Date().toISOString() };
       exchangeSubmitAttempt = attempt; writeRecovery('exchange-submit', 'new', { baseline: 0, values: payload, pendingAttempt: attempt, conflict: null });
@@ -616,6 +650,7 @@
       if (!attempt) return;
       const result = await operational.submitShiftExchange(attempt.payload as ExchangeSubmitInput);
       clearRecovery('exchange-submit', 'new'); exchangeSubmitAttempt = null; exchangeForm = { requestType: 'swap', requesterAssignmentId: '', peerEmployeeId: '', reason: '' };
+      exchangePeers = []; exchangePeersError = '';
       await loadExchanges(); selectExchange(exchangeRows.find((row) => row.id === result.id) ?? result);
       setFeedback('Usulan dikirim ke rekan. Jadwal resmi belum berubah sampai Admin HR memutuskan.');
     } catch (error) { setFeedback(error instanceof Error ? error.message : 'Pengajuan belum memiliki hasil pasti. Coba lagi dengan payload yang sama.', true); }
@@ -972,8 +1007,8 @@
       <form on:submit|preventDefault={() => submitExchange(false)}>
         <label class="field">Jenis usulan<select class="select" bind:value={exchangeForm.requestType} on:change={exchangeRequesterChanged}><option value="swap">Tukar dua arah</option><option value="replacement">Pengganti satu arah</option></select></label>
         <label class="field">Jadwal saya<select class="select" bind:value={exchangeForm.requesterAssignmentId} on:change={exchangeRequesterChanged} required><option value="">Pilih jadwal aktif mendatang</option>{#each allAssignments.filter((assignment) => assignment.employeeId === $app.user?.id && assignment.shift !== 'off' && assignment.workDate >= todayJakarta()) as assignment}<option value={assignment.id}>{assignmentText(assignment)}</option>{/each}</select></label>
-        <label class="field">Rekan kasir<select class="select" bind:value={exchangeForm.peerEmployeeId} on:change={exchangeRequesterChanged} required><option value="">Pilih rekan</option>{#each cashiers.filter((employee) => employee.id !== $app.user?.id) as employee}<option value={employee.id}>{employee.fullName} · {employee.employeeNumber}</option>{/each}</select></label>
-        {#if requesterAssignment}<div class="preview"><strong>Pratinjau perubahan</strong><p>Pengusul: {assignmentText(requesterAssignment)}</p>{#if exchangeForm.requestType === 'swap'}<p>Rekan: {assignmentText(peerAssignment)}</p>{:else}<p>{peerAssignment ? 'Calon pengganti sudah memiliki jadwal aktif; pilih kandidat lain.' : 'Jika disetujui, jadwal pengusul dibatalkan dan kandidat menerima konteks jadwal tersebut.'}</p>{/if}<small>Server mengecek ulang absensi, Libur, waktu mulai, versi jadwal, izin Middle, serta konflik sebelum keputusan.</small></div>{/if}
+        <label class="field">Rekan kasir<select class="select" bind:value={exchangeForm.peerEmployeeId} required><option value="">{exchangePeersLoading ? 'Memuat rekan…' : exchangePeerChoices.length ? 'Pilih rekan' : 'Tidak ada rekan yang sesuai'}</option>{#each exchangePeerChoices as option}<option value={option.employeeId}>{option.fullName} · {option.employeeNumber}</option>{/each}</select>{#if exchangePeersError}<small class="hint">{exchangePeersError}</small>{:else if requesterAssignment && !exchangePeersLoading && !exchangePeerChoices.length}<small class="hint">{exchangeForm.requestType === 'swap' ? 'Belum ada rekan dengan jadwal aktif pada tanggal ini.' : 'Semua rekan kasir sudah memiliki jadwal pada tanggal ini.'}</small>{:else if exchangePeerBlocked}<small class="hint">{exchangePeerBlocked.fullName} tidak dapat dipilih: {exchangePeerBlocked.blockedReason}.</small>{/if}</label>
+        {#if requesterAssignment}<div class="preview"><strong>Pratinjau perubahan</strong><p>Pengusul: {assignmentText(requesterAssignment)}</p>{#if exchangeForm.requestType === 'swap'}<p>Rekan: {peerOptionText(exchangePeerOption)}</p>{:else}<p>{exchangePeerOption?.hasActiveAssignment ? 'Calon pengganti sudah memiliki jadwal aktif; pilih kandidat lain.' : 'Jika disetujui, jadwal pengusul dibatalkan dan kandidat menerima konteks jadwal tersebut.'}</p>{/if}<small>Server mengecek ulang absensi, Libur, waktu mulai, versi jadwal, izin Middle, serta konflik sebelum keputusan.</small></div>{/if}
         <label class="field">Alasan pengajuan<textarea class="textarea" rows="3" bind:value={exchangeForm.reason} minlength="5" maxlength="2000" placeholder="Jelaskan kebutuhan pertukaran atau pengganti."></textarea></label>
         <button aria-busy={busyControl === 'exchange-submit'} class="btn btn-primary full" type="submit" disabled={!!busy}>{busyControl === 'exchange-submit' ? 'Mengirim…' : 'Kirim ke rekan'}</button>
       </form>

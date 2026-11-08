@@ -133,6 +133,26 @@ describe('supervisor operation client boundary', () => {
     });
   });
 
+  it('loads exchange peer candidates from the server so a cashier never needs peers\' roster rows', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: [
+      { employee_id: 'employee-2', employee_number: 'RK000002', full_name: 'Dimas Saputra', assignment_id: 'assignment-peer',
+        shift: 'afternoon', outlet_id: 'outlet-b', work_date: '2026-11-20', has_active_assignment: true, blocked_reason: null },
+      { employee_id: 'employee-3', employee_number: 'RK000003', full_name: 'Raka Wijaya', assignment_id: null,
+        shift: null, outlet_id: null, work_date: '2026-11-20', has_active_assignment: false, blocked_reason: 'Rekan harus kasir aktif' }
+    ], error: null, status: 200 });
+    live.supabase = { rpc, auth: { getSession: vi.fn() }, storage: { from: vi.fn() } };
+
+    await expect(actions.loadShiftExchangePeers('assignment-a')).resolves.toEqual([
+      { employeeId: 'employee-2', employeeNumber: 'RK000002', fullName: 'Dimas Saputra', assignmentId: 'assignment-peer',
+        shift: 'afternoon', outletId: 'outlet-b', workDate: '2026-11-20', hasActiveAssignment: true, blockedReason: '' },
+      { employeeId: 'employee-3', employeeNumber: 'RK000003', fullName: 'Raka Wijaya', assignmentId: null,
+        shift: null, outletId: null, workDate: '2026-11-20', hasActiveAssignment: false, blockedReason: 'Rekan harus kasir aktif' }
+    ]);
+    expect(rpc).toHaveBeenCalledWith('shift_exchange_peer_options', { p_requester_assignment_id: 'assignment-a' });
+    await expect(actions.loadShiftExchangePeers('')).resolves.toEqual([]);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a non-eight-hour Middle plan before it can reach the server', async () => {
     const backend = rejectedBackend('should not be called');
     await expect(actions.saveCashierAssignmentPlan({

@@ -198,6 +198,25 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await expect(page.getByRole('link', { name: 'Operasi outlet', exact: true }).last()).toBeVisible();
   });
 
+  test('cashier swap picker lists eligible peers even though a cashier cannot read peer roster rows', async ({ page }) => {
+    await assignCashierToday(page);
+    await page.goto('/operations?exchange');
+    await expect(page.getByRole('heading', { name: 'Tukar atau pengganti', exact: true })).toBeVisible();
+    const form = page.locator('.exchange-form form');
+    const peers = form.locator('select').nth(2);
+    await expect(peers.locator('option')).toHaveCount(1);
+    const requester = form.locator('select').nth(1);
+    await expect(requester.locator('option')).toHaveCount(2);
+    await requester.selectOption({ index: 1 });
+    await expect(page.getByText('Belum ada rekan dengan jadwal aktif pada tanggal ini.', { exact: true })).toBeVisible();
+    await expect(peers.locator('option')).toHaveCount(1);
+    await form.locator('select').nth(0).selectOption('replacement');
+    await expect(peers.locator('option')).toHaveCount(2);
+    await expect(peers.locator('option').nth(1)).toHaveText('Sari Lestari · RK000006');
+    await peers.selectOption('employee-6');
+    await expect(page.getByText('Jika disetujui, jadwal pengusul dibatalkan dan kandidat menerima konteks jadwal tersebut.', { exact: true })).toBeVisible();
+  });
+
   test('Admin HR follows an outlet case and saves a weekly roster and minimum', async ({ page }) => {
     await login(page);
     await expect(page.getByRole('heading', { name: 'Kesiapan outlet dan tindak lanjut', exact: true })).toBeVisible();
