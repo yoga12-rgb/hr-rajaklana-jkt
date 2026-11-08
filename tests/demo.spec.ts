@@ -343,6 +343,8 @@ test.describe('Demo frontend — not hosted Supabase integration', () => {
     await login(page);
     await page.goto(`/assignments?week=${week}`);
     await page.getByLabel(/Shift Sari Lestari,/).nth(0).selectOption('afternoon');
+    // The shift dropdown is colour-coded so the weekly pattern is scannable.
+    await expect(page.getByLabel(/Shift Sari Lestari,/).nth(0)).toHaveClass(/tone-afternoon/);
     await page.getByLabel('Alasan perubahan batch', { exact: true }).fill('Draft sesi pertama harus ditinjau');
     await expect(page.locator('.save-info')).toContainText('1 perubahan draft');
 

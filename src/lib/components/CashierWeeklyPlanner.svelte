@@ -137,6 +137,12 @@
     baseline.status === 'active' ? entry.shift === baseline.shift && entry.outletId === baseline.outletId : entry.shift === '';
   const dayName = (day: string) => new Intl.DateTimeFormat('id-ID', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${day}T12:00:00Z`));
   const shiftName = (shift: string) => ({ morning: 'Pagi', afternoon: 'Sore', middle: 'Middle', off: 'Libur' }[shift] ?? 'Belum diatur');
+  // Colour-code the shift dropdown so the weekly pattern is readable at a
+  // glance: morning blue, middle brown, afternoon yellow, off red.
+  const shiftTone = (shift: string | null | undefined) => shift === 'morning' ? 'tone-morning'
+    : shift === 'middle' ? 'tone-middle'
+      : shift === 'afternoon' ? 'tone-afternoon'
+        : shift === 'off' ? 'tone-off' : 'tone-unset';
   function changeCell(employeeId: string, day: string, field: keyof Draft, value: string) {
     if (day < today) return;
     const current = cell(employeeId, day);
@@ -355,7 +361,7 @@
     <div class="table-scroll"><table class="week-grid"><thead><tr><th class="employee-col">Kasir</th>{#each days as day}<th><strong>{dayName(day)}</strong><small>{dateLabel(day)}</small></th>{/each}</tr></thead><tbody>
       {#each cashiers as employee (employee.id)}<tr><th class="employee-cell"><strong>{employee.fullName}</strong><small>{employee.employeeNumber}</small></th>{#each days as day (day)}{@const current = cell(employee.id, day, drafts)}{@const original = existingFor(employee.id, day)}{@const fixedOff = employee.weeklyOffDays.includes(new Date(`${day}T12:00:00Z`).getUTCDay())}{@const leave = leaveMarkers(employee.id, day)}{@const locked = leaveLocked(employee.id, day)}<td class:readonly={day < today} class:leave-locked={locked}>
         {#if day < today}<strong class="read-only-value">{shiftName(current.shift)}</strong><small>{current.shift ? ($app.outlets.find(outlet => outlet.id === current.outletId)?.name ?? '—') : fixedOff ? 'Libur tetap · belum dijadwalkan' : 'Belum dijadwalkan'}</small>
-        {:else}<select class="select shift-select" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} aria-describedby={leave.length ? `leave-${employee.id}-${day}` : undefined} disabled={working} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="">Belum ditugaskan</option>{#if locked && current.shift && current.shift !== 'off'}<option value={current.shift}>{shiftName(current.shift)} · cuti disetujui</option>{/if}{#if !locked}<option value="morning">Pagi</option><option value="afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle">Middle</option>{/if}{/if}<option value="off">Libur</option></select>
+        {:else}<select class="select shift-select {shiftTone(current.shift)}" aria-label={`Shift ${employee.fullName}, ${dateLabel(day)}`} aria-describedby={leave.length ? `leave-${employee.id}-${day}` : undefined} disabled={working} value={current.shift} on:change={(event) => changeCell(employee.id, day, 'shift', event.currentTarget.value)}><option value="" class="tone-unset">Belum ditugaskan</option>{#if locked && current.shift && current.shift !== 'off'}<option value={current.shift} class={shiftTone(current.shift)}>{shiftName(current.shift)} · cuti disetujui</option>{/if}{#if !locked}<option value="morning" class="tone-morning">Pagi</option><option value="afternoon" class="tone-afternoon">Sore</option>{#if employee.canMiddleShift}<option value="middle" class="tone-middle">Middle</option>{/if}{/if}<option value="off" class="tone-off">Libur</option></select>
           {#if current.shift}<select class="select outlet-select" aria-label={`Outlet ${employee.fullName}, ${dateLabel(day)}`} disabled={working} value={current.outletId} on:change={(event) => changeCell(employee.id, day, 'outletId', event.currentTarget.value)}>{#each $app.outlets.filter(outlet => outlet.active || outlet.id === current.outletId) as outlet}<option value={outlet.id}>{outlet.name}</option>{/each}</select>{:else if fixedOff}<small class="off-hint">Libur tetap · saran</small>{/if}
           {#if original?.status === 'cancelled' && current.shift}<small class="cancelled-hint">Aktifkan kembali jadwal batal</small>{/if}
         {/if}
@@ -382,4 +388,16 @@
   .legend span[data-kind="approved"]{background:#eef4ff;border-color:#b7cdf5;color:#1f3f70}
   .legend span[data-kind="partial"]{background:#e8f6ee;border-color:#a9d9be;color:#1d5137}
   .legend span[data-kind="pending"]{background:#fff5da;border-color:#e0c07a;color:#7b3d28}
+  /* Warna dropdown shift agar pola minggu mudah dibaca saat menyusun jadwal:
+     Pagi biru, Middle coklat, Sore kuning, Libur merah. Teks tetap menyebut
+     nama shift sehingga informasi tidak bergantung pada warna saja. */
+  .shift-select.tone-morning{background:#dbeafe;border-color:#93c5fd;color:#1e40af;box-shadow:inset 2px 2px 4px #ffffff,inset -2px -2px 4px #bfdbfe}
+  .shift-select.tone-middle{background:#eadfd0;border-color:#c8a97e;color:#5b3a1a;box-shadow:inset 2px 2px 4px #ffffff,inset -2px -2px 4px #d8c3a5}
+  .shift-select.tone-afternoon{background:#fbe9a7;border-color:#e3c25a;color:#6b4d09;box-shadow:inset 2px 2px 4px #fffbe8,inset -2px -2px 4px #f3d97c}
+  .shift-select.tone-off{background:#fbdcdc;border-color:#ef9a9a;color:#8a1c1c;box-shadow:inset 2px 2px 4px #fff5f5,inset -2px -2px 4px #f5c2c2}
+  .shift-select:disabled{opacity:.8;-webkit-text-fill-color:currentColor}
+  .shift-select option.tone-morning{background:#dbeafe;color:#1e40af}
+  .shift-select option.tone-middle{background:#eadfd0;color:#5b3a1a}
+  .shift-select option.tone-afternoon{background:#fbe9a7;color:#6b4d09}
+  .shift-select option.tone-off{background:#fbdcdc;color:#8a1c1c}
 </style>
